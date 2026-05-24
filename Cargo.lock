@@ -5224,10 +5224,14 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
+ "dirs 5.0.1",
  "gpui",
  "gpui-component",
+ "regex",
+ "serde",
  "ssh2",
  "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]

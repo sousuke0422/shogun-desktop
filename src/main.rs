@@ -1,3 +1,17 @@
+mod ansi;
+mod app;
+mod settings;
+mod ssh;
+mod tabs;
+mod theme;
+mod window;
+
+use app::open_shogun_window;
+use gpui::Application;
+
 fn main() {
-    println!("Hello, world!");
+    Application::new().run(|cx| {
+        gpui_component::init(cx);
+        open_shogun_window(cx);
+    });
 }
