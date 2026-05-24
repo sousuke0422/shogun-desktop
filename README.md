@@ -50,14 +50,24 @@ cargo run --release
 | `SshClient`（connect / exec / is_connected） | ✅ |
 | `strip_ansi`（ANSI エスケープ除去） | ✅ |
 | `theme.rs`（GPUI 0.2.2 カラーパレット） | ✅ |
-| 将軍/エージェント/戦況タブの中身 | プレースホルダ（Phase 2） |
 
-## Phase 2 以降の課題
+## Phase 4 完成内容（cmd_171 — 将軍タブ）
 
-- エージェント状態のリアルタイム更新（tmux / inbox / タスク YAML）
-- 将軍・戦況タブへのダッシュボード連携
-- ターミナル出力の ANSI 除去表示（`alacritty_terminal` 統合）
-- SSH 経由コマンドの非同期ストリーミング
+| 機能 | 状態 |
+|------|------|
+| 起動時の自動 SSH 接続 | ✅ |
+| 陣幕バー（接続中=緑 `#3C6E47` / 未接続=赤 `#CC3333`） | ✅ |
+| `tmux capture-pane` 3 秒リフレッシュ + ANSI 除去表示 | ✅ |
+| コマンド入力 + Send（`send-keys` + 300ms + Enter） | ✅ |
+| 特殊キーバー 9 ボタン（↵ C-c C-b ↑ ↓ Tab ESC C-o C-d） | ✅ |
+
+将軍タブは設定タブで保存した SSH 情報を使い、リモートの `{shogun_session}:main` ペインを監視・操作します。
+
+## 今後の課題
+
+- エージェントタブのリアルタイム状態（tmux / inbox / タスク YAML）
+- 戦況タブの dashboard 連携
+- `alacritty_terminal` による本格ターミナル描画
 
 ## プロジェクト構成
 
