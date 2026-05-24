@@ -10,3 +10,7 @@ ssh2 = "0.9"
 tokio = { version = "1", features = ["full"] }
 alacritty_terminal = "0.24"
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+regex = "1"
