@@ -1,11 +1,137 @@
+use crate::settings::ShogunDesktopSettings;
+use crate::ssh::SshClient;
+use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
-use gpui::{div, App, IntoElement, ParentElement, Styled, Window};
+use crate::window::{DashboardState, ShogunWindow};
+use gpui::{div, prelude::*, px, rgb, Context, IntoElement, ParentElement, Styled};
+use gpui_component::{
+    button::{Button, ButtonVariants as _},
+    scroll::ScrollableElement,
+    v_flex, Sizable,
+};
 
-pub fn render_dashboard_tab(_window: &mut Window, _cx: &mut App) -> impl IntoElement {
-    div()
+pub fn run_fetch_dashboard(settings: ShogunDesktopSettings) -> anyhow::Result<String> {
+    if settings.project.path.is_empty() {
+        anyhow::bail!("プロジェクトパスが未設定です（設定タブで project_path を入力してください）");
+    }
+    let client = SshClient::from_settings(&settings)?;
+    client.exec(&format!("cat {}/dashboard.md", settings.project.path))
+}
+
+pub fn render_dashboard_tab(
+    state: &DashboardState,
+    cx: &mut Context<ShogunWindow>,
+) -> impl IntoElement {
+    let bg_color = if state.is_connected {
+        Colors::matsuba()
+    } else {
+        Colors::kurenai()
+    };
+
+    let status_text = if let Some(err) = &state.error_message {
+        err.clone()
+    } else if state.is_connected {
+        let secs = state
+            .last_refresh
+            .elapsed()
+            .unwrap_or_default()
+            .as_secs();
+        format!("戦況 — {}秒前に更新", secs)
+    } else {
+        "未接続".to_string()
+    };
+
+    let inner: gpui::AnyElement = if let Some(err) = &state.error_message {
+        div()
+            .text_sm()
+            .font_family(MONO_FONT)
+            .text_color(Colors::kurenai())
+            .child(format!("❌ {err}"))
+            .into_any_element()
+    } else if state.content.is_empty() {
+        div()
+            .text_sm()
+            .font_family(MONO_FONT)
+            .text_color(Colors::zouge())
+            .child("（dashboard.md 読み込み中...）")
+            .into_any_element()
+    } else {
+        render_dashboard_lines(&state.content).into_any_element()
+    };
+
+    v_flex()
         .flex_1()
-        .p_4()
+        .size_full()
         .bg(Colors::shikkoku())
-        .text_color(Colors::zouge())
-        .child("戦況タブ — dashboard 連携は Phase 2 で実装予定")
+        .child(
+            div()
+                .w_full()
+                .h(px(48.))
+                .flex()
+                .items_center()
+                .justify_between()
+                .px_3()
+                .bg(bg_color)
+                .text_color(rgb(0xFFFFFF))
+                .text_sm()
+                .child(status_text)
+                .child(
+                    Button::new("dashboard-refresh")
+                        .small()
+                        .label("更新")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.refresh_dashboard(cx);
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .id("dashboard-pane-content")
+                .flex_1()
+                .w_full()
+                .bg(Colors::shikkoku())
+                .overflow_y_scrollbar()
+                .p_2()
+                .child(inner),
+        )
+}
+
+/// Simple markdown-aware line colorizer for dashboard.md.
+fn render_dashboard_lines(raw: &str) -> impl IntoElement {
+    v_flex().children(raw.lines().map(|line| {
+        let (color, prefix_stripped) = classify_line(line);
+        div()
+            .flex()
+            .flex_row()
+            .child(
+                div()
+                    .text_sm()
+                    .font_family(MONO_FONT)
+                    .text_color(color)
+                    .child(prefix_stripped.to_string()),
+            )
+    }))
+}
+
+/// Return (color, display text) for a markdown line.
+fn classify_line(line: &str) -> (gpui::Rgba, &str) {
+    if line.starts_with("# ") {
+        (Colors::kinpaku(), &line[2..])
+    } else if line.starts_with("## ") {
+        (Colors::kinpaku(), &line[3..])
+    } else if line.starts_with("### ") {
+        (Colors::zouge(), &line[4..])
+    } else if line.contains("🚨") || line.contains("要対応") {
+        (Colors::kurenai(), line)
+    } else if line.starts_with("✅") || line.starts_with("- ✅") {
+        (Colors::matsuba(), line)
+    } else if line.starts_with("---") {
+        (Colors::muted(), line)
+    } else if line.starts_with("- ") || line.starts_with("  - ") {
+        (Colors::zouge(), line)
+    } else if line.starts_with("> ") {
+        (Colors::muted(), &line[2..])
+    } else {
+        (Colors::zouge(), line)
+    }
 }

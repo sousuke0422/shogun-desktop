@@ -1,12 +1,13 @@
 use crate::settings::ShogunDesktopSettings;
 use crate::theme::Colors;
 use gpui::{
-    div, prelude::*, Entity, IntoElement, ParentElement, SharedString, Styled, Window,
+    div, prelude::*, px, Entity, IntoElement, ParentElement, SharedString, Styled, Window,
 };
 use gpui_component::{
     h_flex,
     input::{Input, InputState},
     label::Label,
+    scroll::ScrollableElement,
     v_flex,
 };
 
@@ -101,6 +102,7 @@ pub fn render_settings_tab(
 ) -> impl IntoElement {
     v_flex()
         .flex_1()
+        .overflow_y_scrollbar()
         .gap_3()
         .p_4()
         .bg(Colors::shikkoku())
@@ -116,16 +118,17 @@ pub fn render_settings_tab(
         .child(labeled_input("将軍セッション名", &tab.shogun_session))
         .child(labeled_input("エージェントセッション名", &tab.multiagent_session))
         .child(
+            div()
+                .min_h(px(24.))
+                .text_sm()
+                .text_color(Colors::zouge())
+                .child(status_message),
+        )
+        .child(
             h_flex()
                 .gap_2()
                 .child(save_button)
                 .child(test_button),
-        )
-        .child(
-            div()
-                .text_sm()
-                .text_color(Colors::zouge())
-                .child(status_message),
         )
 }
 

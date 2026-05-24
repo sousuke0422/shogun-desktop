@@ -19,13 +19,11 @@ impl Colors {
     #[allow(dead_code)]
     pub fn shuaka() -> Rgba { rgb(0xB33B24) }
     /// #3C6E47 — Pine garden (success, connected)
-    #[allow(dead_code)]
     pub fn matsuba() -> Rgba { rgb(0x3C6E47) }
     /// #3A4A5C — Iron armor plate (secondary, metadata)
     #[allow(dead_code)]
     pub fn tetsukon() -> Rgba { rgb(0x3A4A5C) }
     /// #CC3333 — Blood red (error, disconnected)
-    #[allow(dead_code)]
     pub fn kurenai() -> Rgba { rgb(0xCC3333) }
     /// #666666 — Disabled, placeholders
     pub fn muted() -> Rgba { rgb(0x666666) }
