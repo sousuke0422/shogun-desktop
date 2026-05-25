@@ -153,3 +153,26 @@ cargo test
 | CI/CD | push → Windows/macOS matrix build → リリース artifact 自動生成 |
 | follow-mode | 手動スクロール中は auto-scroll を無効にするトグル |
 | PTY リサイズ | ウィンドウリサイズ時に ConPTY の列/行数を更新 |
+| パスワード保護 | 下記参照 |
+
+### パスワード保護 (TODO)
+
+現在、SSH パスワードは `settings.toml` に**平文で保存**される。
+OSS 公開・macOS 対応のタイミングで OS キーストアへ移行する。
+
+**方針**: `keyring` クレートを使い、Windows Credential Manager / macOS Keychain /
+libsecret に委譲する。`settings.toml` にはパスワードを書かず、OS のユーザーセッション鍵で
+暗号化されたキーストアから取得する。
+
+```toml
+# 現状 (平文)
+[ssh]
+password = "hunter2"
+
+# 移行後 (settings.toml にパスワードなし、キーストア経由)
+[ssh]
+# password は keyring::Entry::get_password() で取得
+```
+
+**代替案**: パスワード認証を廃止し、秘密鍵 / ssh-agent 専用にする。
+設定ファイルに秘密情報が残らないため最もシンプル。
