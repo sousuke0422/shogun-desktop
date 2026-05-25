@@ -77,7 +77,7 @@ impl SnapshotCell {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ResolvedColor {
     Default,
     Rgb(u8, u8, u8),
@@ -139,5 +139,68 @@ fn resolve_color(
             }
         }
         Color::Spec(rgb) => ResolvedColor::Rgb(rgb.r, rgb.g, rgb.b),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alacritty_terminal::{
+        event::VoidListener,
+        term::{test::TermSize, Config},
+        vte::ansi::{Processor, StdSyncHandler},
+        Term,
+    };
+
+    fn make_term(cols: usize, rows: usize) -> Term<VoidListener> {
+        Term::new(
+            Config::default(),
+            &TermSize::new(cols, rows),
+            VoidListener,
+        )
+    }
+
+    fn advance_bytes(term: &mut Term<VoidListener>, bytes: &[u8]) {
+        let mut parser = Processor::<StdSyncHandler>::new();
+        for &byte in bytes {
+            parser.advance(term, byte);
+        }
+    }
+
+    #[test]
+    fn empty_terminal_snapshot_dimensions_and_blank_cells() {
+        let term = make_term(10, 5);
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.cols, 10);
+        assert_eq!(snap.rows, 5);
+        assert!(snap.cells.iter().flatten().all(|c| c.c == ' '));
+    }
+
+    #[test]
+    fn written_text_appears_in_snapshot() {
+        let mut term = make_term(10, 5);
+        advance_bytes(&mut term, b"H");
+        let snap = take_snapshot(&term);
+        assert!(snap.cells.iter().flatten().any(|c| c.c == 'H'));
+    }
+
+    #[test]
+    fn ansi_rgb_foreground_is_captured() {
+        let mut term = make_term(10, 5);
+        advance_bytes(&mut term, b"\x1b[38;2;255;0;0mR");
+        let snap = take_snapshot(&term);
+        assert!(
+            snap.cells
+                .iter()
+                .flatten()
+                .any(|c| c.c == 'R' && c.fg == ResolvedColor::Rgb(255, 0, 0))
+        );
+    }
+
+    #[test]
+    fn initial_cursor_is_at_origin() {
+        let term = make_term(10, 5);
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.cursor, (0, 0));
     }
 }
