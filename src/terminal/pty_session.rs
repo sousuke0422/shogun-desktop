@@ -39,7 +39,7 @@ pub fn spawn(ssh: &SshClient, tmux_session: &str, cols: u16, rows: u16) -> Resul
             "ControlPersist=30",
         ]);
     }
-    cmd.args(["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10"]);
+    cmd.args(["-o", "ConnectTimeout=10"]);
     if let Some(ref key) = ssh.key_path {
         cmd.args(["-i", key]);
     }
