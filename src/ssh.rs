@@ -161,6 +161,15 @@ impl SshClient {
         }
 
         cmd.stdin(Stdio::null());
+
+        // Prevent 0xc0000142 (STATUS_DLL_INIT_FAILED) when spawning a console
+        // subsystem process from a GUI app with no attached console.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
         cmd.arg(format!("{}@{}", self.user, self.host));
         cmd.arg(command);
 
@@ -286,8 +295,9 @@ fn is_controlmaster_error(e: &anyhow::Error) -> bool {
         || msg.contains("mux_")
         || msg.contains("multiplexing")
         || msg.contains("control socket")
-        // Win32-OpenSSH sometimes emits this when socket creation fails
         || msg.contains("bad controlpath")
+        // Named Pipe ControlPath fails with this on Win32-OpenSSH (socket API mismatch)
+        || msg.contains("getsockname")
 }
 
 #[cfg(test)]
