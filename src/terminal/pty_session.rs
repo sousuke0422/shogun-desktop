@@ -31,7 +31,19 @@ pub fn spawn(
         pixel_height: 0,
     })?;
 
+    // On Windows, spawning ssh.exe directly via ConPTY can trigger
+    // 0xc0000142 (STATUS_DLL_INIT_FAILED). Routing through cmd.exe lets
+    // the console subsystem initialise correctly before ssh.exe starts.
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = CommandBuilder::new("cmd.exe");
+        c.arg("/c");
+        c.arg("ssh");
+        c
+    };
+    #[cfg(not(windows))]
     let mut cmd = CommandBuilder::new("ssh");
+
     cmd.arg("-t");
     cmd.args(["-p", &ssh.port.to_string()]);
     if ssh.ctrl_enabled.load(Ordering::Relaxed) {
