@@ -1,6 +1,6 @@
 mod ansi;
 mod app;
-mod native_ssh;
+pub mod native_ssh;
 mod settings;
 mod ssh;
 mod tabs;

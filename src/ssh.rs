@@ -1,4 +1,5 @@
-use crate::settings::{ControlPathType, ShogunDesktopSettings};
+use crate::native_ssh::NativeSshClient;
+use crate::settings::{ConnectionBackend, ControlPathType, ShogunDesktopSettings};
 use anyhow::{bail, Result};
 use std::hash::{Hash, Hasher};
 use std::io::Write as IoWrite;
@@ -24,7 +25,7 @@ pub enum SshAuth {
 /// it (Win32-OpenSSH issue #405) the flag is atomically cleared and all
 /// subsequent calls fall back to direct connections transparently.
 #[derive(Debug, Clone)]
-pub struct SshClient {
+pub struct SystemSshClient {
     pub(crate) host: String,
     pub(crate) port: u16,
     pub(crate) user: String,
@@ -35,7 +36,7 @@ pub struct SshClient {
     pub(crate) control_path_type: ControlPathType,
 }
 
-impl SshClient {
+impl SystemSshClient {
     #[allow(dead_code)]
     pub fn connect(host: &str, port: u16, user: &str, key_or_pass: &SshAuth) -> Result<Self> {
         let (key_path, password) = match key_or_pass {
@@ -276,8 +277,48 @@ impl SshClient {
     pub fn disconnect(&mut self) {}
 }
 
-impl Drop for SshClient {
+impl Drop for SystemSshClient {
     fn drop(&mut self) {}
+}
+
+/// Unified SSH client — dispatches to system ssh.exe or russh native backend.
+#[derive(Clone)]
+pub enum SshClient {
+    System(SystemSshClient),
+    Native(NativeSshClient),
+}
+
+impl SshClient {
+    pub fn from_settings(settings: &ShogunDesktopSettings) -> Result<Self> {
+        match settings.ssh.connection_backend {
+            ConnectionBackend::Native => Ok(SshClient::Native(NativeSshClient::new(settings)?)),
+            ConnectionBackend::System => {
+                Ok(SshClient::System(SystemSshClient::from_settings(settings)?))
+            }
+        }
+    }
+
+    pub fn exec(&self, command: &str) -> Result<String> {
+        match self {
+            SshClient::System(c) => c.exec(command),
+            SshClient::Native(c) => c.exec(command),
+        }
+    }
+
+    pub fn control_socket_path(&self) -> Option<String> {
+        match self {
+            SshClient::System(c) => c.control_socket_path(),
+            SshClient::Native(_) => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn is_connected(&self) -> bool {
+        match self {
+            SshClient::System(c) => c.is_connected(),
+            SshClient::Native(c) => c.is_connected(),
+        }
+    }
 }
 
 fn cleanup_askpass(files: &Option<(std::path::PathBuf, std::path::PathBuf)>) {
@@ -312,8 +353,8 @@ mod tests {
 
     use crate::settings::ControlPathType;
 
-    fn test_client(control_path_type: ControlPathType) -> SshClient {
-        SshClient {
+    fn test_client(control_path_type: ControlPathType) -> SystemSshClient {
+        SystemSshClient {
             host: "example.com".into(),
             port: 22,
             user: "user".into(),
@@ -351,5 +392,19 @@ mod tests {
         assert!(is_controlmaster_error(&e));
         let e2 = anyhow::anyhow!("Permission denied (publickey)");
         assert!(!is_controlmaster_error(&e2));
+    }
+
+    #[test]
+    fn ssh_client_native_control_path_is_none() {
+        let settings = ShogunDesktopSettings {
+            ssh: crate::settings::SshSettings {
+                user: "u".into(),
+                connection_backend: ConnectionBackend::Native,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let client = SshClient::from_settings(&settings).expect("native client");
+        assert!(client.control_socket_path().is_none());
     }
 }

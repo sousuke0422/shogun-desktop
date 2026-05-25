@@ -13,11 +13,36 @@ use alacritty_terminal::{
 use anyhow::Result;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
-use crate::ssh::SshClient;
+use crate::native_ssh::NativeSshClient;
+use crate::ssh::{SshClient, SystemSshClient};
 use crate::terminal::{take_snapshot, GridSnapshot, TerminalSession};
 
 pub fn spawn(
     ssh: &SshClient,
+    tmux_session: &str,
+    cols: u16,
+    rows: u16,
+    control_path: Option<String>,
+) -> Result<TerminalSession> {
+    match ssh {
+        SshClient::Native(client) => spawn_native(client, tmux_session, cols, rows),
+        SshClient::System(client) => spawn_system(client, tmux_session, cols, rows, control_path),
+    }
+}
+
+fn spawn_native(
+    client: &NativeSshClient,
+    tmux_session: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<TerminalSession> {
+    let (reader, writer) = client.open_pty_channel(tmux_session, cols, rows)?;
+    let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(writer));
+    build_terminal_session(cols, rows, reader, writer)
+}
+
+fn spawn_system(
+    ssh: &SystemSshClient,
     tmux_session: &str,
     cols: u16,
     rows: u16,
@@ -70,7 +95,17 @@ pub fn spawn(
     let _child = pair.slave.spawn_command(cmd)?;
     let writer: Arc<Mutex<Box<dyn Write + Send>>> =
         Arc::new(Mutex::new(pair.master.take_writer()?));
+    let reader: Box<dyn Read + Send> = Box::new(pair.master.try_clone_reader()?);
 
+    build_terminal_session(cols, rows, reader, writer)
+}
+
+fn build_terminal_session(
+    cols: u16,
+    rows: u16,
+    reader: Box<dyn Read + Send>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+) -> Result<TerminalSession> {
     let term = Arc::new(Mutex::new(Term::new(
         Config::default(),
         &TermSize::new(cols as usize, rows as usize),
@@ -87,8 +122,8 @@ pub fn spawn(
         let conn2 = Arc::clone(&connected);
         let gen2 = Arc::clone(&generation);
         let err2 = Arc::clone(&error);
-        let mut reader = pair.master.try_clone_reader()?;
         std::thread::spawn(move || {
+            let mut reader = reader;
             let mut buf = [0u8; 4096];
             let mut parser = Processor::<StdSyncHandler>::new();
             loop {
