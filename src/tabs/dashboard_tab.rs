@@ -3,15 +3,43 @@ use crate::ssh::SshClient;
 use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
 use crate::window::{DashboardState, ShogunWindow};
-use gpui::{div, prelude::*, px, rgb, Context, IntoElement, ParentElement, Styled, Window};
+use gpui::{
+    div, prelude::*, px, rgb, Context, Fill, Hsla, IntoElement, ParentElement, StyleRefinement,
+    Styled, TextStyleRefinement, Window,
+};
 use gpui_component::{
     button::Button,
     highlighter::HighlightTheme,
     scroll::ScrollableElement,
     text::{TextView, TextViewStyle},
-    v_flex,
-    Sizable,
+    v_flex, Theme, ThemeMode, Sizable,
 };
+
+/// Markdown inline `` `code` `` uses `cx.theme().accent` as background (gpui-component node.rs).
+/// On a dark page with a light system theme, accent is near-white and body text stays pale — unreadable.
+fn apply_dashboard_markdown_theme(window: &mut Window, cx: &mut Context<ShogunWindow>) {
+    Theme::change(ThemeMode::Dark, Some(window), cx);
+    let theme = Theme::global_mut(cx);
+    theme.colors.accent = Hsla::from(Colors::sumi());
+    theme.colors.accent_foreground = Hsla::from(Colors::zouge());
+    theme.colors.foreground = Hsla::from(Colors::zouge());
+}
+
+fn dashboard_text_view_style() -> TextViewStyle {
+    TextViewStyle {
+        highlight_theme: HighlightTheme::default_dark(),
+        is_dark: true,
+        code_block: StyleRefinement {
+            background: Some(Fill::from(Colors::sumi())),
+            text: Some(TextStyleRefinement {
+                color: Some(Hsla::from(Colors::zouge())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
 
 pub fn run_fetch_dashboard(settings: ShogunDesktopSettings) -> anyhow::Result<String> {
     if settings.project.path.is_empty() {
@@ -60,12 +88,9 @@ pub fn render_dashboard_tab(
             .child("（dashboard.md 読み込み中...）")
             .into_any_element()
     } else {
+        apply_dashboard_markdown_theme(window, cx);
         TextView::markdown("dashboard-md", state.content.clone(), window, cx)
-            .style(TextViewStyle {
-                highlight_theme: HighlightTheme::default_dark(),
-                is_dark: true,
-                ..Default::default()
-            })
+            .style(dashboard_text_view_style())
             .text_color(Colors::zouge())
             .scrollable(true)
             .into_any_element()
