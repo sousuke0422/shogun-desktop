@@ -1,4 +1,4 @@
-use crate::settings::{load_settings, save_settings, ControlPathType};
+use crate::settings::{load_settings, save_settings, ConnectionBackend, ControlPathType};
 use crate::ssh::SshClient;
 use crate::tabs::{
     fetch_agent_cards, render_agents_tab, render_dashboard_tab, render_settings_tab,
@@ -476,6 +476,11 @@ impl ShogunWindow {
         cx.notify();
     }
 
+    fn set_connection_backend(&mut self, backend: ConnectionBackend, cx: &mut Context<Self>) {
+        self.settings_tab.connection_backend = backend;
+        cx.notify();
+    }
+
     pub fn save_settings(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings_tab.collect(cx);
         self.status_message = match save_settings(&settings) {
@@ -574,6 +579,25 @@ impl Render for ShogunWindow {
                 let test_btn = Button::new("test-ssh")
                     .label("SSH接続テスト")
                     .on_click(cx.listener(Self::test_ssh));
+                let backend = self.settings_tab.connection_backend.clone();
+                let connection_backend_selector = h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("conn-backend-native")
+                            .label("Native (russh)")
+                            .when(backend == ConnectionBackend::Native, |b| b.primary())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_connection_backend(ConnectionBackend::Native, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("conn-backend-system")
+                            .label("System (ssh.exe)")
+                            .when(backend == ConnectionBackend::System, |b| b.primary())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_connection_backend(ConnectionBackend::System, cx);
+                            })),
+                    );
                 #[cfg(windows)]
                 let control_path_selector = {
                     let current = self.settings_tab.control_path.clone();
@@ -609,6 +633,7 @@ impl Render for ShogunWindow {
                     self.status_message.clone(),
                     save_btn,
                     test_btn,
+                    connection_backend_selector,
                     #[cfg(windows)]
                     Some(control_path_selector),
                     #[cfg(not(windows))]
