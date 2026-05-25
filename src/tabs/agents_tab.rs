@@ -5,11 +5,7 @@ use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
 use crate::window::{AgentsState, ShogunWindow};
 use gpui::{div, prelude::*, px, rgb, Context, IntoElement, ParentElement, Styled};
-use gpui_component::{
-    button::{Button, ButtonVariants as _},
-    scroll::ScrollableElement,
-    v_flex, Sizable,
-};
+use gpui_component::{button::Button, scroll::ScrollableElement, v_flex, Sizable};
 
 pub fn run_fetch_agents(settings: ShogunDesktopSettings) -> anyhow::Result<String> {
     if settings.project.path.is_empty() {

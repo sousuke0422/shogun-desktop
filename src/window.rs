@@ -1,36 +1,28 @@
 use crate::settings::{load_settings, save_settings};
 use crate::ssh::SshClient;
 use crate::tabs::{
-    render_agents_tab, render_dashboard_tab, render_settings_tab, render_shogun_tab,
-    run_fetch_agents, run_fetch_dashboard, run_send_command, run_send_special_key, SettingsTab,
-    ShogunTab,
+    render_agents_tab, render_dashboard_tab, render_settings_tab, render_terminal_tab,
+    render_terminal_tab_disconnected, render_terminal_tab_empty, render_terminal_tab_error,
+    run_fetch_agents, run_fetch_dashboard, SettingsTab,
 };
+use crate::terminal::keys::key_to_bytes;
+use crate::terminal::pty_session;
+use crate::terminal::TerminalSession;
 use crate::theme::Colors;
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, ClickEvent, Context, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, size, App, Bounds, ClickEvent, Context, IntoElement, KeyDownEvent,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    Window, WindowBounds, WindowOptions,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex, Root,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-const TAB_LABELS: [&str; 4] = ["将軍", "エージェント", "戦況", "設定"];
-
-/// State for the Shogun tab (subtask_171_001).
-pub struct ShogunState {
-    pub pane_content: String,
-    pub is_connected: bool,
-    pub error_message: Option<String>,
-    #[allow(dead_code)]
-    pub input_text: String,
-    /// Live session is held in the background refresh `Arc<Mutex<SshClient>>`.
-    #[allow(dead_code)]
-    pub ssh_client: Option<SshClient>,
-    pub last_refresh: SystemTime,
-}
+const TAB_LABELS: [&str; 6] = ["将軍", "エージェント", "戦況", "設定", "──", "家老陣"];
 
 /// State for the Agents tab.
 pub struct AgentsState {
@@ -70,192 +62,239 @@ impl Default for DashboardState {
     }
 }
 
-impl Default for ShogunState {
-    fn default() -> Self {
-        Self {
-            pane_content: String::new(),
-            is_connected: false,
-            error_message: None,
-            input_text: String::new(),
-            ssh_client: None,
-            last_refresh: SystemTime::UNIX_EPOCH,
-        }
-    }
-}
-
-fn capture_pane_command(session: &str) -> String {
-    format!("tmux capture-pane -t {session}:main -p -e -S -500")
-}
-
-fn ssh_error_message(err: &anyhow::Error) -> String {
-    format!("SSH接続失敗: {err}")
-}
-
 pub struct ShogunWindow {
     selected_tab: usize,
     settings_tab: SettingsTab,
-    shogun_tab: ShogunTab,
-    shogun_state: ShogunState,
     agents_state: AgentsState,
     dashboard_state: DashboardState,
-    shogun_session: String,
+    pub shogun_session: Option<TerminalSession>,
+    pub multiagent_session: Option<TerminalSession>,
+    pub shogun_error: Option<String>,
+    pub multiagent_error: Option<String>,
+    pub shogun_scroll_handle: ScrollHandle,
+    pub multiagent_scroll_handle: ScrollHandle,
+    shogun_last_gen: u64,
+    multiagent_last_gen: u64,
+    terminal_refresh_started: bool,
     status_message: SharedString,
 }
 
 impl ShogunWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = load_settings().unwrap_or_default();
-        let shogun_session = settings.sessions.shogun.clone();
         Self {
             selected_tab: 0,
             settings_tab: SettingsTab::new(window, cx, &settings),
-            shogun_tab: ShogunTab::new(window, cx),
-            shogun_state: ShogunState::default(),
             agents_state: AgentsState::default(),
             dashboard_state: DashboardState::default(),
-            shogun_session,
+            shogun_session: None,
+            multiagent_session: None,
+            shogun_error: None,
+            multiagent_error: None,
+            shogun_scroll_handle: ScrollHandle::default(),
+            multiagent_scroll_handle: ScrollHandle::default(),
+            shogun_last_gen: 0,
+            multiagent_last_gen: 0,
+            terminal_refresh_started: false,
             status_message: SharedString::default(),
         }
     }
 
-    /// Auto SSH connect + 3s tmux pane refresh (subtask_171_001).
-    pub fn start_shogun_background(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            let settings = load_settings().unwrap_or_default();
-            let session = settings.sessions.shogun.clone();
-            let settings_connect = settings.clone();
+    fn maybe_start_terminal_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.terminal_refresh_started {
+            return;
+        }
+        if self.shogun_session.is_some() || self.multiagent_session.is_some() {
+            self.terminal_refresh_started = true;
+            self.start_terminal_refresh(cx);
+        }
+    }
 
+    pub fn start_shogun_session(&mut self, cx: &mut Context<Self>) {
+        let settings = load_settings().unwrap_or_default();
+        if settings.ssh.host.is_empty() {
+            return;
+        }
+        let tmux_session = settings.sessions.shogun.clone();
+
+        cx.spawn(async move |this, cx| {
+            let settings_bg = settings.clone();
             let connect = cx
                 .background_executor()
-                .spawn(async move { SshClient::from_settings(&settings_connect) })
+                .spawn(async move { SshClient::from_settings(&settings_bg) })
                 .await;
 
-            let client = match connect {
+            let ssh = match connect {
                 Ok(client) => client,
-                Err(err) => {
-                    let msg = ssh_error_message(&err);
+                Err(e) => {
                     let _ = this.update(cx, |view, cx| {
-                        view.shogun_state.is_connected = false;
-                        view.shogun_state.error_message = Some(msg);
+                        view.shogun_error = Some(format!("SSH接続失敗: {e}"));
                         cx.notify();
                     });
                     return;
                 }
             };
 
-            let client = Arc::new(Mutex::new(client));
+            let spawn_result = cx
+                .background_executor()
+                .spawn(async move { pty_session::spawn(&ssh, &tmux_session, 220, 50) })
+                .await;
 
             let _ = this.update(cx, |view, cx| {
-                view.shogun_state.is_connected = true;
-                view.shogun_state.error_message = None;
-                cx.notify();
-            });
-
-            loop {
-                let client = Arc::clone(&client);
-                let session = session.clone();
-                let refresh = cx
-                    .background_executor()
-                    .spawn(async move {
-                        let guard = client
-                            .lock()
-                            .map_err(|_| anyhow::anyhow!("SSHクライアントのロックに失敗しました"))?;
-                        guard.exec(&capture_pane_command(&session))
-                    })
-                    .await;
-
-                match refresh {
-                    Ok(content) => {
-                        let now = SystemTime::now();
-                        let _ = this.update(cx, |view, cx| {
-                            view.shogun_state.pane_content = content;
-                            view.shogun_state.is_connected = true;
-                            view.shogun_state.error_message = None;
-                            view.shogun_state.last_refresh = now;
-                            cx.notify();
-                        });
+                match spawn_result {
+                    Ok(session) => {
+                        view.shogun_session = Some(session);
+                        view.shogun_error = None;
+                        view.maybe_start_terminal_refresh(cx);
                     }
-                    Err(err) => {
-                        let msg = ssh_error_message(&err);
-                        let _ = this.update(cx, |view, cx| {
-                            view.shogun_state.is_connected = false;
-                            view.shogun_state.error_message = Some(msg);
-                            cx.notify();
-                        });
-                        break;
+                    Err(e) => {
+                        view.shogun_error = Some(format!("PTY起動失敗: {e}"));
                     }
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 
+    pub fn start_multiagent_session(&mut self, cx: &mut Context<Self>) {
+        let settings = load_settings().unwrap_or_default();
+        if settings.ssh.host.is_empty() {
+            return;
+        }
+        let tmux_session = settings.sessions.multiagent.clone();
+
+        cx.spawn(async move |this, cx| {
+            let settings_bg = settings.clone();
+            let connect = cx
+                .background_executor()
+                .spawn(async move { SshClient::from_settings(&settings_bg) })
+                .await;
+
+            let ssh = match connect {
+                Ok(client) => client,
+                Err(e) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.multiagent_error = Some(format!("SSH接続失敗: {e}"));
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+
+            let spawn_result = cx
+                .background_executor()
+                .spawn(async move { pty_session::spawn(&ssh, &tmux_session, 220, 50) })
+                .await;
+
+            let _ = this.update(cx, |view, cx| {
+                match spawn_result {
+                    Ok(session) => {
+                        view.multiagent_session = Some(session);
+                        view.multiagent_error = None;
+                        view.maybe_start_terminal_refresh(cx);
+                    }
+                    Err(e) => {
+                        view.multiagent_error = Some(format!("PTY起動失敗: {e}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn start_terminal_refresh(&self, cx: &mut Context<Self>) {
+        let gen_s = self
+            .shogun_session
+            .as_ref()
+            .map(|s| Arc::clone(&s.generation));
+        let gen_m = self
+            .multiagent_session
+            .as_ref()
+            .map(|s| Arc::clone(&s.generation));
+        let scroll_s = self.shogun_scroll_handle.clone();
+        let scroll_m = self.multiagent_scroll_handle.clone();
+
+        cx.spawn(async move |this, cx| {
+            let mut last_s = 0u64;
+            let mut last_m = 0u64;
+            loop {
                 cx.background_executor()
-                    .timer(Duration::from_secs(1))
+                    .timer(Duration::from_millis(16))
                     .await;
+
+                let cur_s = gen_s
+                    .as_ref()
+                    .map(|g| g.load(Ordering::Relaxed))
+                    .unwrap_or(0);
+                let cur_m = gen_m
+                    .as_ref()
+                    .map(|g| g.load(Ordering::Relaxed))
+                    .unwrap_or(0);
+
+                if cur_s != last_s || cur_m != last_m {
+                    let s_changed = cur_s != last_s;
+                    let m_changed = cur_m != last_m;
+                    last_s = cur_s;
+                    last_m = cur_m;
+                    let _ = this.update(cx, |view, cx| {
+                        view.shogun_last_gen = cur_s;
+                        view.multiagent_last_gen = cur_m;
+                        if s_changed {
+                            scroll_s.scroll_to_bottom();
+                        }
+                        if m_changed {
+                            scroll_m.scroll_to_bottom();
+                        }
+                        cx.notify();
+                    });
+                }
             }
         })
         .detach();
     }
 
-    pub fn send_shogun_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.shogun_state.is_connected {
+    fn handle_terminal_key(&mut self, event: &KeyDownEvent) {
+        let bytes = key_to_bytes(&event.keystroke);
+        if bytes.is_empty() {
             return;
         }
-        let text = self.shogun_tab.command_input.read(cx).value().to_string();
-        if text.is_empty() {
-            return;
-        }
-        self.shogun_tab.command_input.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-        });
-
-        let settings = load_settings().unwrap_or_default();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { run_send_command(settings, text) })
-                .await;
-
-            let _ = this.update(cx, |view, cx| {
-                match result {
-                    Ok(content) if !content.is_empty() => {
-                        view.shogun_state.pane_content = content;
-                        view.shogun_state.last_refresh = SystemTime::now();
-                    }
-                    Err(err) => {
-                        view.shogun_state.error_message =
-                            Some(format!("コマンド送信失敗: {err}"));
-                    }
-                    _ => {}
+        match self.selected_tab {
+            0 => {
+                if let Some(ref session) = self.shogun_session {
+                    session.send_bytes(&bytes);
                 }
-                cx.notify();
-            });
-        })
-        .detach();
+            }
+            5 => {
+                if let Some(ref session) = self.multiagent_session {
+                    session.send_bytes(&bytes);
+                }
+            }
+            _ => {}
+        }
     }
 
-    pub fn send_shogun_special_key(
-        &mut self,
-        key_value: &'static str,
-        _window: &mut Window,
+    fn render_terminal_for_session(
+        &self,
+        session: &Option<TerminalSession>,
+        error: &Option<String>,
+        scroll_handle: &ScrollHandle,
         cx: &mut Context<Self>,
-    ) {
-        if !self.shogun_state.is_connected {
-            return;
+    ) -> gpui::AnyElement {
+        if let Some(err) = error {
+            return render_terminal_tab_error(err.clone(), cx).into_any_element();
         }
-        let settings = load_settings().unwrap_or_default();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { run_send_special_key(settings, key_value) })
-                .await;
-
-            let _ = this.update(cx, |view, cx| {
-                if let Err(err) = result {
-                    view.shogun_state.error_message =
-                        Some(format!("特殊キー送信失敗: {err}"));
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
+        if let Some(session) = session {
+            if session.is_connected() {
+                let snap = session.snapshot.lock().unwrap().clone();
+                render_terminal_tab(&snap, scroll_handle, cx).into_any_element()
+            } else {
+                render_terminal_tab_disconnected(cx).into_any_element()
+            }
+        } else {
+            render_terminal_tab_empty(cx).into_any_element()
+        }
     }
 
     /// Start the agents status auto-refresh loop (10 s interval).
@@ -399,7 +438,6 @@ impl ShogunWindow {
 
     pub fn save_settings(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings_tab.collect(cx);
-        self.shogun_session = settings.sessions.shogun.clone();
         self.status_message = match save_settings(&settings) {
             Ok(()) => "設定を保存しました".into(),
             Err(err) => format!("保存失敗: {err}").into(),
@@ -447,7 +485,7 @@ impl ShogunWindow {
             .bg(Colors::sumi())
             .border_t_1()
             .border_color(Colors::border())
-            .children((0..4).map(|index| {
+            .children((0..6).map(|index| {
                 let selected = self.selected_tab == index;
                 div()
                     .id(("tab", index))
@@ -459,30 +497,35 @@ impl ShogunWindow {
                     .cursor_pointer()
                     .text_color(if selected {
                         Colors::kinpaku()
+                    } else if index == 4 {
+                        Colors::border()
                     } else {
                         Colors::muted()
                     })
                     .child(TAB_LABELS[index])
                     .on_click(cx.listener(move |this, event, window, cx| {
-                        this.select_tab(index, event, window, cx);
+                        if index != 4 {
+                            this.select_tab(index, event, window, cx);
+                        }
                     }))
             }))
     }
 }
 
 impl Render for ShogunWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _ = (self.shogun_last_gen, self.multiagent_last_gen);
+
         let content: gpui::AnyElement = match self.selected_tab {
-            0 => render_shogun_tab(
-                &self.shogun_tab,
-                &self.shogun_state,
+            0 => self.render_terminal_for_session(
                 &self.shogun_session,
+                &self.shogun_error,
+                &self.shogun_scroll_handle,
                 cx,
-            )
-            .into_any_element(),
+            ),
             1 => render_agents_tab(&self.agents_state, cx).into_any_element(),
             2 => render_dashboard_tab(&self.dashboard_state, cx).into_any_element(),
-            _ => {
+            3 => {
                 let save_btn = Button::new("save-settings")
                     .primary()
                     .label("保存")
@@ -498,6 +541,17 @@ impl Render for ShogunWindow {
                 )
                 .into_any_element()
             }
+            5 => self.render_terminal_for_session(
+                &self.multiagent_session,
+                &self.multiagent_error,
+                &self.multiagent_scroll_handle,
+                cx,
+            ),
+            _ => div()
+                .flex_1()
+                .size_full()
+                .bg(Colors::shikkoku())
+                .into_any_element(),
         };
 
         div()
@@ -505,6 +559,10 @@ impl Render for ShogunWindow {
             .flex()
             .flex_col()
             .bg(Colors::shikkoku())
+            .tab_stop(true)
+            .on_key_down(cx.listener(|this, event, _window, _cx| {
+                this.handle_terminal_key(event);
+            }))
             .child(div().flex_1().overflow_hidden().child(content))
             .child(self.render_tab_bar(cx))
     }
@@ -524,8 +582,9 @@ pub fn open_shogun_window(cx: &mut App) {
         },
         |window, cx| {
             let view = cx.new(|cx| {
-                let win = ShogunWindow::new(window, cx);
-                win.start_shogun_background(cx);
+                let mut win = ShogunWindow::new(window, cx);
+                win.start_shogun_session(cx);
+                win.start_multiagent_session(cx);
                 win.start_agents_background(cx);
                 win.start_dashboard_background(cx);
                 win

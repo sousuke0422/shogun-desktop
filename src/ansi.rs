@@ -1,14 +1,3 @@
-use regex::Regex;
-use std::sync::LazyLock;
-
-static ANSI_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").expect("valid ansi regex"));
-
-/// Strip all ANSI escape sequences (used for error messages, not for display).
-pub fn strip_ansi(s: &str) -> String {
-    ANSI_RE.replace_all(s, "").into_owned()
-}
-
 /// A run of text with an optional RGB foreground color.
 #[derive(Debug, Clone)]
 pub struct AnsiSpan {
@@ -154,11 +143,6 @@ fn color256(n: u8) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_strip_ansi_basic() {
-        assert_eq!(strip_ansi("\x1b[31mRed Text\x1b[0m"), "Red Text");
-    }
 
     #[test]
     fn test_parse_spans_basic() {

@@ -3,6 +3,7 @@ mod app;
 mod settings;
 mod ssh;
 mod tabs;
+mod terminal;
 mod theme;
 mod window;
 
