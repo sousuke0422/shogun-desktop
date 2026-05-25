@@ -142,7 +142,6 @@ impl SshClient {
         }
 
         cmd.args([
-            "-o", "StrictHostKeyChecking=no",
             "-o", "ConnectTimeout=10",
         ]);
 
