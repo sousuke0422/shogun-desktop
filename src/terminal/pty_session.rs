@@ -101,9 +101,7 @@ pub fn spawn(
                     }
                     Ok(n) => {
                         let mut t = term2.lock().unwrap_or_else(|e| e.into_inner());
-                        for &byte in &buf[..n] {
-                            parser.advance(&mut *t, byte);
-                        }
+                        parser.advance(&mut *t, &buf[..n]);
                         *snap2.lock().unwrap_or_else(|e| e.into_inner()) = take_snapshot(&t);
                         gen2.fetch_add(1, Ordering::Relaxed);
                     }

@@ -8,7 +8,7 @@ use gpui::{
     div, prelude::*, px, rgb, Context, IntoElement, ParentElement, Styled,
 };
 use gpui_component::{button::Button, h_flex, scroll::ScrollableElement, v_flex, Sizable};
-use serde_yaml::Value;
+use serde_yml::Value;
 
 const PLACEHOLDER: &str = "---";
 const CARD_BG: u32 = 0x242424;
@@ -81,7 +81,7 @@ fn ssh_cat(ssh: &SshClient, path: &str) -> Option<String> {
 
 fn parse_yaml(raw: &Option<String>) -> Option<Value> {
     let raw = raw.as_ref()?;
-    serde_yaml::from_str(raw).ok()
+    serde_yml::from_str(raw).ok()
 }
 
 fn yaml_str(v: &Value, keys: &[&str]) -> Option<String> {
