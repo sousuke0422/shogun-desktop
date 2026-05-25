@@ -558,7 +558,7 @@ impl ShogunWindow {
 }
 
 impl Render for ShogunWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = (self.shogun_last_gen, self.multiagent_last_gen);
 
         let content: gpui::AnyElement = match self.selected_tab {
@@ -570,7 +570,7 @@ impl Render for ShogunWindow {
                 cx,
             ),
             1 => render_agents_tab(&self.agents_state, cx).into_any_element(),
-            2 => render_dashboard_tab(&self.dashboard_state, cx).into_any_element(),
+            2 => render_dashboard_tab(&self.dashboard_state, window, cx).into_any_element(),
             3 => {
                 let save_btn = Button::new("save-settings")
                     .primary()

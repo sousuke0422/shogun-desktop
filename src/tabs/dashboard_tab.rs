@@ -3,8 +3,8 @@ use crate::ssh::SshClient;
 use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
 use crate::window::{DashboardState, ShogunWindow};
-use gpui::{div, prelude::*, px, rgb, Context, IntoElement, ParentElement, Styled};
-use gpui_component::{button::Button, scroll::ScrollableElement, v_flex, Sizable};
+use gpui::{div, prelude::*, px, rgb, Context, IntoElement, ParentElement, Styled, Window};
+use gpui_component::{button::Button, scroll::ScrollableElement, text::TextView, v_flex, Sizable};
 
 pub fn run_fetch_dashboard(settings: ShogunDesktopSettings) -> anyhow::Result<String> {
     if settings.project.path.is_empty() {
@@ -16,6 +16,7 @@ pub fn run_fetch_dashboard(settings: ShogunDesktopSettings) -> anyhow::Result<St
 
 pub fn render_dashboard_tab(
     state: &DashboardState,
+    window: &mut Window,
     cx: &mut Context<ShogunWindow>,
 ) -> impl IntoElement {
     let bg_color = if state.is_connected {
@@ -52,7 +53,9 @@ pub fn render_dashboard_tab(
             .child("（dashboard.md 読み込み中...）")
             .into_any_element()
     } else {
-        render_dashboard_lines(&state.content).into_any_element()
+        TextView::markdown("dashboard-md", state.content.clone(), window, cx)
+            .scrollable(true)
+            .into_any_element()
     };
 
     v_flex()
@@ -90,44 +93,4 @@ pub fn render_dashboard_tab(
                 .p_2()
                 .child(inner),
         )
-}
-
-/// Simple markdown-aware line colorizer for dashboard.md.
-fn render_dashboard_lines(raw: &str) -> impl IntoElement {
-    v_flex().children(raw.lines().map(|line| {
-        let (color, prefix_stripped) = classify_line(line);
-        div()
-            .flex()
-            .flex_row()
-            .child(
-                div()
-                    .text_sm()
-                    .font_family(MONO_FONT)
-                    .text_color(color)
-                    .child(prefix_stripped.to_string()),
-            )
-    }))
-}
-
-/// Return (color, display text) for a markdown line.
-fn classify_line(line: &str) -> (gpui::Rgba, &str) {
-    if line.starts_with("# ") {
-        (Colors::kinpaku(), &line[2..])
-    } else if line.starts_with("## ") {
-        (Colors::kinpaku(), &line[3..])
-    } else if line.starts_with("### ") {
-        (Colors::zouge(), &line[4..])
-    } else if line.contains("🚨") || line.contains("要対応") {
-        (Colors::kurenai(), line)
-    } else if line.starts_with("✅") || line.starts_with("- ✅") {
-        (Colors::matsuba(), line)
-    } else if line.starts_with("---") {
-        (Colors::muted(), line)
-    } else if line.starts_with("- ") || line.starts_with("  - ") {
-        (Colors::zouge(), line)
-    } else if line.starts_with("> ") {
-        (Colors::muted(), &line[2..])
-    } else {
-        (Colors::zouge(), line)
-    }
 }
