@@ -13,6 +13,15 @@ pub struct ShogunDesktopSettings {
     pub sessions: SessionSettings,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlPathType {
+    #[default]
+    Socket,
+    NamedPipe,
+    None,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshSettings {
     #[serde(default = "default_ssh_host")]
@@ -25,6 +34,8 @@ pub struct SshSettings {
     pub key_path: String,
     #[serde(default)]
     pub password: String,
+    #[serde(default)]
+    pub control_path: ControlPathType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -75,6 +86,7 @@ impl Default for SshSettings {
             user: String::new(),
             key_path: String::new(),
             password: String::new(),
+            control_path: ControlPathType::default(),
         }
     }
 }
@@ -104,6 +116,37 @@ pub fn load_settings() -> Result<ShogunDesktopSettings> {
         .with_context(|| format!("read {}", path.display()))?;
     let settings = toml::from_str(&raw).context("parse settings.toml")?;
     Ok(settings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_path_type_serde_roundtrip() {
+        for variant in [
+            ControlPathType::Socket,
+            ControlPathType::NamedPipe,
+            ControlPathType::None,
+        ] {
+            let settings = ShogunDesktopSettings {
+                ssh: SshSettings {
+                    control_path: variant.clone(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let raw = toml::to_string(&settings).unwrap();
+            let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
+            assert_eq!(parsed.ssh.control_path, variant);
+        }
+    }
+
+    #[test]
+    fn ssh_settings_includes_control_path_default() {
+        let settings = ShogunDesktopSettings::default();
+        assert_eq!(settings.ssh.control_path, ControlPathType::Socket);
+    }
 }
 
 pub fn save_settings(settings: &ShogunDesktopSettings) -> Result<()> {

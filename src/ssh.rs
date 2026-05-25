@@ -1,4 +1,4 @@
-use crate::settings::ShogunDesktopSettings;
+use crate::settings::{ControlPathType, ShogunDesktopSettings};
 use anyhow::{bail, Result};
 use std::hash::{Hash, Hasher};
 use std::io::Write as IoWrite;
@@ -32,6 +32,7 @@ pub struct SshClient {
     pub(crate) password: Option<String>,
     /// Shared across clones; flipped to false on first ControlMaster failure.
     pub(crate) ctrl_enabled: Arc<AtomicBool>,
+    pub(crate) control_path_type: ControlPathType,
 }
 
 impl SshClient {
@@ -48,6 +49,7 @@ impl SshClient {
             key_path,
             password,
             ctrl_enabled: Arc::new(AtomicBool::new(true)),
+            control_path_type: ControlPathType::Socket,
         })
     }
 
@@ -71,6 +73,7 @@ impl SshClient {
             key_path,
             password,
             ctrl_enabled: Arc::new(AtomicBool::new(true)),
+            control_path_type: ssh.control_path.clone(),
         })
     }
 
@@ -88,28 +91,29 @@ impl SshClient {
         let use_ctrl = self.ctrl_enabled.load(Ordering::Relaxed);
 
         if use_ctrl {
-            let ctrl = self.control_socket_path();
-            let master_alive = std::path::Path::new(&ctrl).exists();
-            let askpass = if self.password.is_some() && !master_alive {
-                Some(self.write_askpass_pub(self.password.as_deref().unwrap())?)
-            } else {
-                None
-            };
+            if let Some(ctrl) = self.control_socket_path() {
+                let master_alive = std::path::Path::new(&ctrl).exists();
+                let askpass = if self.password.is_some() && !master_alive {
+                    Some(self.write_askpass_pub(self.password.as_deref().unwrap())?)
+                } else {
+                    None
+                };
 
-            let result = self.run_ssh(command, Some(&ctrl), askpass.as_ref());
-            cleanup_askpass(&askpass);
+                let result = self.run_ssh(command, Some(&ctrl), askpass.as_ref());
+                cleanup_askpass(&askpass);
 
-            match result {
-                Err(ref e) if is_controlmaster_error(e) => {
-                    // ControlMaster not supported on this platform — disable and retry.
-                    self.ctrl_enabled.store(false, Ordering::Relaxed);
-                    self.exec_direct(command)
-                }
-                other => other,
+                return match result {
+                    Err(ref e) if is_controlmaster_error(e) => {
+                        // ControlMaster not supported on this platform — disable and retry.
+                        self.ctrl_enabled.store(false, Ordering::Relaxed);
+                        self.exec_direct(command)
+                    }
+                    other => other,
+                };
             }
-        } else {
-            self.exec_direct(command)
         }
+
+        self.exec_direct(command)
     }
 
     /// Direct connection (no ControlMaster).
@@ -186,16 +190,33 @@ impl SshClient {
         Ok(combined)
     }
 
-    /// Stable socket path derived from host+port+user.
-    /// Forward slashes: Windows OpenSSH parses ControlPath with them.
-    pub fn control_socket_path(&self) -> String {
+    /// Stable control path derived from host+port+user and settings.
+    /// Returns `None` when ControlMaster is disabled (`ControlPathType::None`).
+    pub fn control_socket_path(&self) -> Option<String> {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.host.hash(&mut h);
         self.port.hash(&mut h);
         self.user.hash(&mut h);
         let key = h.finish() as u32;
-        let tmp = std::env::temp_dir().to_string_lossy().replace('\\', "/");
-        format!("{tmp}/sg{key:08x}")
+
+        match self.control_path_type {
+            ControlPathType::None => None,
+            ControlPathType::NamedPipe => {
+                #[cfg(windows)]
+                {
+                    Some(format!(r"\\.\pipe\sg{key:08x}"))
+                }
+                #[cfg(not(windows))]
+                {
+                    let tmp = std::env::temp_dir().to_string_lossy().replace('\\', "/");
+                    Some(format!("{tmp}/sg{key:08x}"))
+                }
+            }
+            ControlPathType::Socket => {
+                let tmp = std::env::temp_dir().to_string_lossy().replace('\\', "/");
+                Some(format!("{tmp}/sg{key:08x}"))
+            }
+        }
     }
 
     /// Write password to a temp file and create a platform-appropriate askpass wrapper.
@@ -277,6 +298,41 @@ mod tests {
     fn ssh_auth_variants() {
         let _ = SshAuth::PrivateKey("/tmp/key".into());
         let _ = SshAuth::Password("secret".into());
+    }
+
+    use crate::settings::ControlPathType;
+
+    fn test_client(control_path_type: ControlPathType) -> SshClient {
+        SshClient {
+            host: "example.com".into(),
+            port: 22,
+            user: "user".into(),
+            key_path: None,
+            password: None,
+            ctrl_enabled: Arc::new(AtomicBool::new(true)),
+            control_path_type,
+        }
+    }
+
+    #[test]
+    fn control_socket_path_none() {
+        let client = test_client(ControlPathType::None);
+        assert!(client.control_socket_path().is_none());
+    }
+
+    #[test]
+    fn control_socket_path_socket() {
+        let client = test_client(ControlPathType::Socket);
+        let path = client.control_socket_path().expect("socket path");
+        assert!(path.contains("/sg"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn control_socket_path_named_pipe() {
+        let client = test_client(ControlPathType::NamedPipe);
+        let path = client.control_socket_path().expect("named pipe path");
+        assert!(path.starts_with(r"\\.\pipe\sg"));
     }
 
     #[test]

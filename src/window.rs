@@ -1,4 +1,4 @@
-use crate::settings::{load_settings, save_settings};
+use crate::settings::{load_settings, save_settings, ControlPathType};
 use crate::ssh::SshClient;
 use crate::tabs::{
     render_agents_tab, render_dashboard_tab, render_settings_tab, render_terminal_tab,
@@ -135,9 +135,10 @@ impl ShogunWindow {
                 }
             };
 
+            let control_path = ssh.control_socket_path();
             let spawn_result = cx
                 .background_executor()
-                .spawn(async move { pty_session::spawn(&ssh, &tmux_session, 220, 50) })
+                .spawn(async move { pty_session::spawn(&ssh, &tmux_session, 220, 50, control_path) })
                 .await;
 
             let _ = this.update(cx, |view, cx| {
@@ -182,9 +183,10 @@ impl ShogunWindow {
                 }
             };
 
+            let control_path = ssh.control_socket_path();
             let spawn_result = cx
                 .background_executor()
-                .spawn(async move { pty_session::spawn(&ssh, &tmux_session, 220, 50) })
+                .spawn(async move { pty_session::spawn(&ssh, &tmux_session, 220, 50, control_path) })
                 .await;
 
             let _ = this.update(cx, |view, cx| {
@@ -451,6 +453,11 @@ impl ShogunWindow {
         cx.notify();
     }
 
+    fn set_control_path(&mut self, path: ControlPathType, cx: &mut Context<Self>) {
+        self.settings_tab.control_path = path;
+        cx.notify();
+    }
+
     pub fn save_settings(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings_tab.collect(cx);
         self.status_message = match save_settings(&settings) {
@@ -549,11 +556,45 @@ impl Render for ShogunWindow {
                 let test_btn = Button::new("test-ssh")
                     .label("SSH接続テスト")
                     .on_click(cx.listener(Self::test_ssh));
+                #[cfg(windows)]
+                let control_path_selector = {
+                    let current = self.settings_tab.control_path.clone();
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("ctrl-path-socket")
+                                .label("Socket（%TEMP% ファイル）")
+                                .when(current == ControlPathType::Socket, |b| b.primary())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_control_path(ControlPathType::Socket, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("ctrl-path-named-pipe")
+                                .label("Named Pipe（\\\\.\\pipe\\）")
+                                .when(current == ControlPathType::NamedPipe, |b| b.primary())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_control_path(ControlPathType::NamedPipe, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("ctrl-path-none")
+                                .label("無効（毎回新規接続）")
+                                .when(current == ControlPathType::None, |b| b.primary())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_control_path(ControlPathType::None, cx);
+                                })),
+                        )
+                };
                 render_settings_tab(
                     &self.settings_tab,
                     self.status_message.clone(),
                     save_btn,
                     test_btn,
+                    #[cfg(windows)]
+                    Some(control_path_selector),
+                    #[cfg(not(windows))]
+                    None::<gpui::Empty>,
                 )
                 .into_any_element()
             }
