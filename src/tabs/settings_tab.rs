@@ -1,4 +1,4 @@
-use crate::settings::ShogunDesktopSettings;
+use crate::settings::{ControlPathType, ShogunDesktopSettings};
 use crate::theme::Colors;
 use gpui::{
     div, prelude::*, px, Entity, IntoElement, ParentElement, SharedString, Styled, Window,
@@ -17,6 +17,7 @@ pub struct SettingsTab {
     user: Entity<InputState>,
     key_path: Entity<InputState>,
     password: Entity<InputState>,
+    pub control_path: ControlPathType,
     project_path: Entity<InputState>,
     shogun_session: Entity<InputState>,
     multiagent_session: Entity<InputState>,
@@ -64,6 +65,7 @@ impl SettingsTab {
             user,
             key_path,
             password,
+            control_path: settings.ssh.control_path.clone(),
             project_path,
             shogun_session,
             multiagent_session,
@@ -81,6 +83,7 @@ impl SettingsTab {
                 user: self.user.read(cx).value().to_string(),
                 key_path: self.key_path.read(cx).value().to_string(),
                 password: self.password.read(cx).unmask_value().to_string(),
+                control_path: self.control_path.clone(),
             },
             project: crate::settings::ProjectSettings {
                 path: self.project_path.read(cx).value().to_string(),
@@ -99,8 +102,9 @@ pub fn render_settings_tab(
     status_message: SharedString,
     save_button: impl IntoElement,
     test_button: impl IntoElement,
+    control_path_selector: Option<impl IntoElement>,
 ) -> impl IntoElement {
-    v_flex()
+    let mut panel = v_flex()
         .flex_1()
         .overflow_y_scrollbar()
         .gap_3()
@@ -111,7 +115,15 @@ pub fn render_settings_tab(
         .child(labeled_input("SSHポート", &tab.port))
         .child(labeled_input("SSHユーザー", &tab.user))
         .child(labeled_input("SSH秘密鍵パス", &tab.key_path))
-        .child(labeled_input("SSHパスワード", &tab.password))
+        .child(labeled_input("SSHパスワード", &tab.password));
+
+    if let Some(selector) = control_path_selector {
+        panel = panel
+            .child(section_label("ControlPath（Windows）"))
+            .child(selector);
+    }
+
+    panel
         .child(section_label("プロジェクト設定"))
         .child(labeled_input("プロジェクトパス", &tab.project_path))
         .child(section_label("セッション設定"))

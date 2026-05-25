@@ -16,7 +16,13 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use crate::ssh::SshClient;
 use crate::terminal::{take_snapshot, GridSnapshot, TerminalSession};
 
-pub fn spawn(ssh: &SshClient, tmux_session: &str, cols: u16, rows: u16) -> Result<TerminalSession> {
+pub fn spawn(
+    ssh: &SshClient,
+    tmux_session: &str,
+    cols: u16,
+    rows: u16,
+    control_path: Option<String>,
+) -> Result<TerminalSession> {
     let pty = native_pty_system();
     let pair = pty.openpty(PtySize {
         rows,
@@ -29,15 +35,16 @@ pub fn spawn(ssh: &SshClient, tmux_session: &str, cols: u16, rows: u16) -> Resul
     cmd.arg("-t");
     cmd.args(["-p", &ssh.port.to_string()]);
     if ssh.ctrl_enabled.load(Ordering::Relaxed) {
-        let ctrl = ssh.control_socket_path();
-        cmd.args([
-            "-o",
-            "ControlMaster=auto",
-            "-o",
-            &format!("ControlPath={ctrl}"),
-            "-o",
-            "ControlPersist=30",
-        ]);
+        if let Some(ctrl) = control_path {
+            cmd.args([
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                &format!("ControlPath={ctrl}"),
+                "-o",
+                "ControlPersist=30",
+            ]);
+        }
     }
     cmd.args(["-o", "ConnectTimeout=10"]);
     if let Some(ref key) = ssh.key_path {
