@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 gpui = "0.2.2"
 gpui-component = "0.5.1"
-alacritty_terminal = "0.26"
+alacritty_terminal = "0.24"
 portable-pty = "0.9"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -15,13 +15,8 @@ toml = "1"
 dirs = "6"
 regex = "1"
 russh = { version = "0.61", default-features = false, features = ["ring"] }
-# russh-keys pins home=0.5.5 which conflicts with gpui (home ^0.5.9); enable in Phase 2 when resolved
-russh-keys = { version = "0.50.0-beta.7", optional = true }
+# russh-keys deferred to Phase 2 (pins home=0.5.5, conflicts with gpui ^0.5.9)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "io-util", "time", "net", "macros"] }
-
-[features]
-default = []
-native-ssh-keys = ["dep:russh-keys"]
 
 [build-dependencies]
 winres = "0.1"
