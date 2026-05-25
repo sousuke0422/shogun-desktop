@@ -5303,6 +5303,7 @@ dependencies = [
  "portable-pty",
  "regex",
  "serde",
+ "serde_yaml",
  "toml 0.8.23",
  "winres",
 ]
