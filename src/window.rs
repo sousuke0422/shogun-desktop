@@ -280,6 +280,7 @@ impl ShogunWindow {
         session: &Option<TerminalSession>,
         error: &Option<String>,
         scroll_handle: &ScrollHandle,
+        is_shogun: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         if let Some(err) = error {
@@ -287,10 +288,24 @@ impl ShogunWindow {
         }
         if let Some(session) = session {
             if session.is_connected() {
-                let snap = session.snapshot.lock().unwrap().clone();
+                let snap = session
+                    .snapshot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
                 render_terminal_tab(&snap, scroll_handle, cx).into_any_element()
             } else {
-                render_terminal_tab_disconnected(cx).into_any_element()
+                let btn_id = if is_shogun { "reconnect-shogun" } else { "reconnect-multiagent" };
+                let reconnect_btn = Button::new(btn_id)
+                    .label("再接続")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if is_shogun {
+                            this.start_shogun_session(cx);
+                        } else {
+                            this.start_multiagent_session(cx);
+                        }
+                    }));
+                render_terminal_tab_disconnected(reconnect_btn, cx).into_any_element()
             }
         } else {
             render_terminal_tab_empty(cx).into_any_element()
@@ -521,6 +536,7 @@ impl Render for ShogunWindow {
                 &self.shogun_session,
                 &self.shogun_error,
                 &self.shogun_scroll_handle,
+                true,
                 cx,
             ),
             1 => render_agents_tab(&self.agents_state, cx).into_any_element(),
@@ -545,6 +561,7 @@ impl Render for ShogunWindow {
                 &self.multiagent_session,
                 &self.multiagent_error,
                 &self.multiagent_scroll_handle,
+                false,
                 cx,
             ),
             _ => div()

@@ -26,7 +26,10 @@ pub fn render_terminal_tab(
         )
 }
 
-pub fn render_terminal_tab_disconnected(_cx: &mut Context<ShogunWindow>) -> impl IntoElement {
+pub fn render_terminal_tab_disconnected(
+    reconnect_btn: impl IntoElement,
+    _cx: &mut Context<ShogunWindow>,
+) -> impl IntoElement {
     v_flex()
         .flex_1()
         .size_full()
@@ -36,6 +39,7 @@ pub fn render_terminal_tab_disconnected(_cx: &mut Context<ShogunWindow>) -> impl
                 .text_color(Colors::kurenai())
                 .child("SSH接続が切れました"),
         )
+        .child(div().p_2().child(reconnect_btn))
 }
 
 pub fn render_terminal_tab_error(msg: String, _cx: &mut Context<ShogunWindow>) -> impl IntoElement {
