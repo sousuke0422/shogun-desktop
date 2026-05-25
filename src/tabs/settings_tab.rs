@@ -108,6 +108,7 @@ pub fn render_settings_tab(
     status_message: SharedString,
     save_button: impl IntoElement,
     test_button: impl IntoElement,
+    connection_backend_selector: impl IntoElement,
     control_path_selector: Option<impl IntoElement>,
 ) -> impl IntoElement {
     let mut panel = v_flex()
@@ -121,7 +122,9 @@ pub fn render_settings_tab(
         .child(labeled_input("SSHポート", &tab.port))
         .child(labeled_input("SSHユーザー", &tab.user))
         .child(labeled_input("SSH秘密鍵パス", &tab.key_path))
-        .child(labeled_input("SSHパスワード", &tab.password));
+        .child(labeled_input("SSHパスワード", &tab.password))
+        .child(section_label("接続バックエンド"))
+        .child(connection_backend_selector);
 
     if let Some(selector) = control_path_selector {
         panel = panel
