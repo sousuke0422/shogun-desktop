@@ -62,18 +62,8 @@ pub fn spawn(
     if let Some(ref key) = ssh.key_path {
         cmd.args(["-i", key]);
     }
-    if let Some(ref pw) = ssh.password {
-        if let Ok((script, pass)) = ssh.write_askpass_pub(pw) {
-            cmd.env("SSH_ASKPASS", script.to_string_lossy().to_string());
-            cmd.env("SSH_ASKPASS_REQUIRE", "force");
-            std::thread::spawn(move || {
-                // SSH reads ASKPASS during auth; delay matches ConnectTimeout (10s) + margin
-                std::thread::sleep(std::time::Duration::from_secs(12));
-                let _ = std::fs::remove_file(&script);
-                let _ = std::fs::remove_file(&pass);
-            });
-        }
-    }
+    // PTY sessions are interactive: ssh prompts for the password via the
+    // terminal directly. SSH_ASKPASS is for headless exec only — do not set it here.
     cmd.arg(format!("{}@{}", ssh.user, ssh.host));
     cmd.arg(format!("tmux attach-session -t {tmux_session}"));
 
