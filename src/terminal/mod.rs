@@ -28,7 +28,9 @@ impl TerminalSession {
     }
 
     pub fn send_bytes(&self, bytes: &[u8]) {
-        let _ = self.writer.lock().unwrap().write_all(bytes);
+        if let Ok(mut w) = self.writer.lock() {
+            let _ = w.write_all(bytes);
+        }
     }
 }
 
