@@ -48,7 +48,8 @@ pub fn spawn(ssh: &SshClient, tmux_session: &str, cols: u16, rows: u16) -> Resul
             cmd.env("SSH_ASKPASS", script.to_string_lossy().to_string());
             cmd.env("SSH_ASKPASS_REQUIRE", "force");
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(10));
+                // SSH reads ASKPASS during auth; delay matches ConnectTimeout (10s) + margin
+                std::thread::sleep(std::time::Duration::from_secs(12));
                 let _ = std::fs::remove_file(&script);
                 let _ = std::fs::remove_file(&pass);
             });
@@ -85,15 +86,16 @@ pub fn spawn(ssh: &SshClient, tmux_session: &str, cols: u16, rows: u16) -> Resul
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
                         conn2.store(false, Ordering::Relaxed);
-                        *err2.lock().unwrap() = Some("PTY接続が切断されました".into());
+                        *err2.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some("PTY接続が切断されました".into());
                         break;
                     }
                     Ok(n) => {
-                        let mut t = term2.lock().unwrap();
+                        let mut t = term2.lock().unwrap_or_else(|e| e.into_inner());
                         for &byte in &buf[..n] {
                             parser.advance(&mut *t, byte);
                         }
-                        *snap2.lock().unwrap() = take_snapshot(&t);
+                        *snap2.lock().unwrap_or_else(|e| e.into_inner()) = take_snapshot(&t);
                         gen2.fetch_add(1, Ordering::Relaxed);
                     }
                 }
