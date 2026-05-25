@@ -6,13 +6,13 @@ edition = "2024"
 [dependencies]
 gpui = "0.2.2"
 gpui-component = "0.5.1"
-alacritty_terminal = "0.24"
+alacritty_terminal = "0.26"
 portable-pty = "0.9"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
-toml = "0.8"
-dirs = "5"
+serde_yml = "0.0.12"
+toml = "1"
+dirs = "6"
 regex = "1"
 
 [build-dependencies]

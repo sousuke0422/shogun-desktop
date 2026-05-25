@@ -164,9 +164,7 @@ mod tests {
 
     fn advance_bytes(term: &mut Term<VoidListener>, bytes: &[u8]) {
         let mut parser = Processor::<StdSyncHandler>::new();
-        for &byte in bytes {
-            parser.advance(term, byte);
-        }
+        parser.advance(term, bytes);
     }
 
     #[test]
