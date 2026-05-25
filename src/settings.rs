@@ -22,6 +22,14 @@ pub enum ControlPathType {
     None,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionBackend {
+    #[default]
+    System,
+    Native,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshSettings {
     #[serde(default = "default_ssh_host")]
@@ -36,6 +44,8 @@ pub struct SshSettings {
     pub password: String,
     #[serde(default)]
     pub control_path: ControlPathType,
+    #[serde(default)]
+    pub connection_backend: ConnectionBackend,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -99,6 +109,7 @@ impl Default for SshSettings {
             key_path: String::new(),
             password: String::new(),
             control_path: ControlPathType::default(),
+            connection_backend: ConnectionBackend::default(),
         }
     }
 }
@@ -159,6 +170,28 @@ mod tests {
     fn ssh_settings_includes_control_path_default() {
         let settings = ShogunDesktopSettings::default();
         assert_eq!(settings.ssh.control_path, ControlPathType::Socket);
+    }
+
+    #[test]
+    fn connection_backend_serde_roundtrip() {
+        for variant in [ConnectionBackend::System, ConnectionBackend::Native] {
+            let settings = ShogunDesktopSettings {
+                ssh: SshSettings {
+                    connection_backend: variant.clone(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let raw = toml::to_string(&settings).unwrap();
+            let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
+            assert_eq!(parsed.ssh.connection_backend, variant);
+        }
+    }
+
+    #[test]
+    fn ssh_settings_includes_connection_backend_default() {
+        let settings = ShogunDesktopSettings::default();
+        assert_eq!(settings.ssh.connection_backend, ConnectionBackend::System);
     }
 
     #[test]

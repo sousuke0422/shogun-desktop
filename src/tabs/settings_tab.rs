@@ -1,4 +1,4 @@
-use crate::settings::{ControlPathType, ShogunDesktopSettings};
+use crate::settings::{ConnectionBackend, ControlPathType, ShogunDesktopSettings};
 use crate::theme::Colors;
 use gpui::{
     div, prelude::*, px, Entity, IntoElement, ParentElement, SharedString, Styled, Window,
@@ -18,6 +18,7 @@ pub struct SettingsTab {
     key_path: Entity<InputState>,
     password: Entity<InputState>,
     pub control_path: ControlPathType,
+    pub connection_backend: ConnectionBackend,
     project_path: Entity<InputState>,
     shogun_session: Entity<InputState>,
     multiagent_session: Entity<InputState>,
@@ -67,6 +68,7 @@ impl SettingsTab {
             key_path,
             password,
             control_path: settings.ssh.control_path.clone(),
+            connection_backend: settings.ssh.connection_backend.clone(),
             project_path,
             shogun_session,
             multiagent_session,
@@ -86,6 +88,7 @@ impl SettingsTab {
                 key_path: self.key_path.read(cx).value().to_string(),
                 password: self.password.read(cx).unmask_value().to_string(),
                 control_path: self.control_path.clone(),
+                connection_backend: self.connection_backend.clone(),
             },
             project: crate::settings::ProjectSettings {
                 path: self.project_path.read(cx).value().to_string(),
