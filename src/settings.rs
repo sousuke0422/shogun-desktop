@@ -50,6 +50,18 @@ pub struct SessionSettings {
     pub shogun: String,
     #[serde(default = "default_multiagent_session")]
     pub multiagent: String,
+    #[serde(default = "default_agents")]
+    pub agents: Vec<String>,
+}
+
+fn default_agents() -> Vec<String> {
+    vec![
+        "karo".into(),
+        "gunshi".into(),
+        "ashigaru1".into(),
+        "ashigaru2".into(),
+        "ashigaru3".into(),
+    ]
 }
 
 fn default_ssh_host() -> String {
@@ -96,6 +108,7 @@ impl Default for SessionSettings {
         Self {
             shogun: default_shogun_session(),
             multiagent: default_multiagent_session(),
+            agents: default_agents(),
         }
     }
 }
@@ -146,6 +159,21 @@ mod tests {
     fn ssh_settings_includes_control_path_default() {
         let settings = ShogunDesktopSettings::default();
         assert_eq!(settings.ssh.control_path, ControlPathType::Socket);
+    }
+
+    #[test]
+    fn session_settings_default_agents() {
+        let settings = ShogunDesktopSettings::default();
+        assert_eq!(
+            settings.sessions.agents,
+            vec![
+                "karo".to_string(),
+                "gunshi".to_string(),
+                "ashigaru1".to_string(),
+                "ashigaru2".to_string(),
+                "ashigaru3".to_string(),
+            ]
+        );
     }
 }
 

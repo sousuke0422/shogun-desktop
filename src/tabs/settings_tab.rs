@@ -21,6 +21,7 @@ pub struct SettingsTab {
     project_path: Entity<InputState>,
     shogun_session: Entity<InputState>,
     multiagent_session: Entity<InputState>,
+    agents: Vec<String>,
 }
 
 impl SettingsTab {
@@ -69,6 +70,7 @@ impl SettingsTab {
             project_path,
             shogun_session,
             multiagent_session,
+            agents: settings.sessions.agents.clone(),
         }
     }
 
@@ -91,6 +93,7 @@ impl SettingsTab {
             sessions: crate::settings::SessionSettings {
                 shogun: self.shogun_session.read(cx).value().to_string(),
                 multiagent: self.multiagent_session.read(cx).value().to_string(),
+                agents: self.agents.clone(),
             },
         }
     }

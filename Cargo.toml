@@ -10,6 +10,7 @@ alacritty_terminal = "0.24"
 portable-pty = "0.8"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
 toml = "0.8"
 dirs = "5"
 regex = "1"

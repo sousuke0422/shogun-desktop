@@ -1,10 +1,11 @@
 use crate::settings::{load_settings, save_settings, ControlPathType};
 use crate::ssh::SshClient;
 use crate::tabs::{
-    render_agents_tab, render_dashboard_tab, render_settings_tab, render_terminal_tab,
-    render_terminal_tab_disconnected, render_terminal_tab_empty, render_terminal_tab_error,
-    run_fetch_agents, run_fetch_dashboard, SettingsTab,
+    fetch_agent_cards, render_agents_tab, render_dashboard_tab, render_settings_tab,
+    render_terminal_tab, render_terminal_tab_disconnected, render_terminal_tab_empty,
+    render_terminal_tab_error, run_fetch_agents, run_fetch_dashboard, SettingsTab,
 };
+use crate::tabs::AgentCardData;
 use crate::terminal::keys::key_to_bytes;
 use crate::terminal::pty_session;
 use crate::terminal::TerminalSession;
@@ -27,6 +28,7 @@ const TAB_LABELS: [&str; 6] = ["将軍", "エージェント", "戦況", "設定
 /// State for the Agents tab.
 pub struct AgentsState {
     pub content: String,
+    pub cards: Vec<AgentCardData>,
     pub is_connected: bool,
     pub error_message: Option<String>,
     pub last_refresh: SystemTime,
@@ -36,11 +38,25 @@ impl Default for AgentsState {
     fn default() -> Self {
         Self {
             content: String::new(),
+            cards: Vec::new(),
             is_connected: false,
             error_message: None,
             last_refresh: SystemTime::UNIX_EPOCH,
         }
     }
+}
+
+fn fetch_agents_bundle(
+    settings: crate::settings::ShogunDesktopSettings,
+) -> anyhow::Result<(String, Vec<AgentCardData>)> {
+    if settings.project.path.is_empty() {
+        anyhow::bail!("プロジェクトパスが未設定です（設定タブで project_path を入力してください）");
+    }
+    let ssh = SshClient::from_settings(&settings)?;
+    let agents = settings.sessions.agents.clone();
+    let cards = fetch_agent_cards(&ssh, &settings.project.path, &agents);
+    let content = run_fetch_agents(settings).unwrap_or_default();
+    Ok((content, cards))
 }
 
 /// State for the Dashboard tab.
@@ -320,14 +336,15 @@ impl ShogunWindow {
             let settings = load_settings().unwrap_or_default();
             let result = cx
                 .background_executor()
-                .spawn(async move { run_fetch_agents(settings) })
+                .spawn(async move { fetch_agents_bundle(settings) })
                 .await;
 
             let now = SystemTime::now();
             let _ = this.update(cx, |view, cx| {
                 match result {
-                    Ok(content) => {
+                    Ok((content, cards)) => {
                         view.agents_state.content = content;
+                        view.agents_state.cards = cards;
                         view.agents_state.is_connected = true;
                         view.agents_state.error_message = None;
                         view.agents_state.last_refresh = now;
@@ -354,14 +371,15 @@ impl ShogunWindow {
             let settings = load_settings().unwrap_or_default();
             let result = cx
                 .background_executor()
-                .spawn(async move { run_fetch_agents(settings) })
+                .spawn(async move { fetch_agents_bundle(settings) })
                 .await;
 
             let now = SystemTime::now();
             let _ = this.update(cx, |view, cx| {
                 match result {
-                    Ok(content) => {
+                    Ok((content, cards)) => {
                         view.agents_state.content = content;
+                        view.agents_state.cards = cards;
                         view.agents_state.is_connected = true;
                         view.agents_state.error_message = None;
                         view.agents_state.last_refresh = now;
