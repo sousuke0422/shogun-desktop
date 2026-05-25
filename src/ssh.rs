@@ -8,8 +8,9 @@ use std::sync::{
     Arc,
 };
 
-/// SSH authentication method.
+/// SSH authentication method (legacy API; `from_settings` is preferred).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum SshAuth {
     /// Path to a private key file.
     PrivateKey(String),
@@ -24,16 +25,17 @@ pub enum SshAuth {
 /// subsequent calls fall back to direct connections transparently.
 #[derive(Debug, Clone)]
 pub struct SshClient {
-    host: String,
-    port: u16,
-    user: String,
-    key_path: Option<String>,
-    password: Option<String>,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) user: String,
+    pub(crate) key_path: Option<String>,
+    pub(crate) password: Option<String>,
     /// Shared across clones; flipped to false on first ControlMaster failure.
-    ctrl_enabled: Arc<AtomicBool>,
+    pub(crate) ctrl_enabled: Arc<AtomicBool>,
 }
 
 impl SshClient {
+    #[allow(dead_code)]
     pub fn connect(host: &str, port: u16, user: &str, key_or_pass: &SshAuth) -> Result<Self> {
         let (key_path, password) = match key_or_pass {
             SshAuth::PrivateKey(path) => (Some(path.clone()), None),
@@ -89,7 +91,7 @@ impl SshClient {
             let ctrl = self.control_socket_path();
             let master_alive = std::path::Path::new(&ctrl).exists();
             let askpass = if self.password.is_some() && !master_alive {
-                Some(self.write_askpass(self.password.as_deref().unwrap())?)
+                Some(self.write_askpass_pub(self.password.as_deref().unwrap())?)
             } else {
                 None
             };
@@ -113,7 +115,7 @@ impl SshClient {
     /// Direct connection (no ControlMaster).
     fn exec_direct(&self, command: &str) -> Result<String> {
         let askpass = if self.password.is_some() {
-            Some(self.write_askpass(self.password.as_deref().unwrap())?)
+            Some(self.write_askpass_pub(self.password.as_deref().unwrap())?)
         } else {
             None
         };
@@ -198,7 +200,7 @@ impl SshClient {
     }
 
     /// Write password to a temp file and create a platform-appropriate askpass wrapper.
-    fn write_askpass(
+    pub(crate) fn write_askpass_pub(
         &self,
         password: &str,
     ) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
@@ -241,6 +243,7 @@ impl SshClient {
         Ok((script_path, pass_path))
     }
 
+    #[allow(dead_code)]
     pub fn disconnect(&mut self) {}
 }
 
