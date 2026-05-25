@@ -4,7 +4,14 @@ use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
 use crate::window::{DashboardState, ShogunWindow};
 use gpui::{div, prelude::*, px, rgb, Context, IntoElement, ParentElement, Styled, Window};
-use gpui_component::{button::Button, scroll::ScrollableElement, text::TextView, v_flex, Sizable};
+use gpui_component::{
+    button::Button,
+    highlighter::HighlightTheme,
+    scroll::ScrollableElement,
+    text::{TextView, TextViewStyle},
+    v_flex,
+    Sizable,
+};
 
 pub fn run_fetch_dashboard(settings: ShogunDesktopSettings) -> anyhow::Result<String> {
     if settings.project.path.is_empty() {
@@ -54,6 +61,12 @@ pub fn render_dashboard_tab(
             .into_any_element()
     } else {
         TextView::markdown("dashboard-md", state.content.clone(), window, cx)
+            .style(TextViewStyle {
+                highlight_theme: HighlightTheme::default_dark(),
+                is_dark: true,
+                ..Default::default()
+            })
+            .text_color(Colors::zouge())
             .scrollable(true)
             .into_any_element()
     };
