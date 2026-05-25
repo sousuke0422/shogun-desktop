@@ -161,18 +161,20 @@ cargo test
 OSS 公開・macOS 対応のタイミングで OS キーストアへ移行する。
 
 **方針**: `keyring` クレートを使い、Windows Credential Manager / macOS Keychain /
-libsecret に委譲する。`settings.toml` にはパスワードを書かず、OS のユーザーセッション鍵で
-暗号化されたキーストアから取得する。
+libsecret に委譲する。keyring が失敗した場合（環境未対応・デーモン不在など）は
+`settings.toml` の平文にフォールバックする。
 
-```toml
-# 現状 (平文)
-[ssh]
-password = "hunter2"
-
-# 移行後 (settings.toml にパスワードなし、キーストア経由)
-[ssh]
-# password は keyring::Entry::get_password() で取得
 ```
+パスワード取得の優先順位:
+  1. keyring::Entry::get_password()  ← OS キーストア (暗号化)
+  2. settings.toml [ssh] password    ← 平文フォールバック
+  3. (なし) → 接続時にプロンプト
+```
+
+設定 UI では保存方法を選択可能にする（Copilot トークン管理と同様の設計）:
+- **キーストアに保存** (keyring が使える環境で推奨)
+- **設定ファイルに保存** (平文、手動管理)
+- **保存しない** (メモリ上のみ、起動ごとに入力)
 
 **代替案**: パスワード認証を廃止し、秘密鍵 / ssh-agent 専用にする。
 設定ファイルに秘密情報が残らないため最もシンプル。
