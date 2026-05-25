@@ -13,3 +13,6 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 dirs = "5"
 regex = "1"
+
+[build-dependencies]
+winres = "0.1"
