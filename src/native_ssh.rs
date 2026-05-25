@@ -1,13 +1,13 @@
-#![allow(dead_code)]
-
 use crate::settings::ShogunDesktopSettings;
 use anyhow::{bail, Context, Result};
 use russh::client::{self, Handler};
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKey};
-use russh::ChannelMsg;
+use russh::{ChannelMsg, ChannelWriteHalf};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::{mpsc, Mutex};
 
 /// Pure-Rust SSH client backed by russh (lazy connect, session reuse).
 #[derive(Clone)]
@@ -91,6 +91,96 @@ impl NativeSshClient {
             .try_lock()
             .map(|guard| guard.is_some())
             .unwrap_or(false)
+    }
+
+    pub fn open_pty_channel(
+        &self,
+        tmux_session: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+        let (reader, writer) = self
+            .rt
+            .block_on(self.open_pty_async(tmux_session, cols, rows))
+            .map_err(|e| self.reset_session_err(e))?;
+        Ok((Box::new(reader), Box::new(writer)))
+    }
+
+    async fn open_pty_async(
+        &self,
+        tmux_session: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(MpscChannelReader, ChannelSyncWriter)> {
+        let mut guard = self.session.lock().await;
+        if guard.is_none() {
+            let handle = self.connect_async().await?;
+            *guard = Some(handle);
+        }
+        let session = guard
+            .as_mut()
+            .expect("session initialized above");
+        let channel = session
+            .channel_open_session()
+            .await
+            .context("SSH セッションチャンネルのオープンに失敗しました")?;
+        channel
+            .request_pty(
+                false,
+                "xterm-256color",
+                cols as u32,
+                rows as u32,
+                0,
+                0,
+                &[],
+            )
+            .await
+            .context("SSH PTY 要求に失敗しました")?;
+        let command = format!("tmux attach-session -t {tmux_session}");
+        channel
+            .exec(true, command)
+            .await
+            .context("SSH exec の開始に失敗しました")?;
+
+        let (read_half, write_half) = channel.split();
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        self.rt.spawn(async move {
+            let mut read_half = read_half;
+            loop {
+                match read_half.wait().await {
+                    Some(ChannelMsg::Data { data }) => {
+                        if tx.send(data.to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Some(ChannelMsg::ExtendedData { data, ext: 1 }) => {
+                        if tx.send(data.to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Some(ChannelMsg::ExitStatus { .. })
+                    | Some(ChannelMsg::Eof)
+                    | Some(ChannelMsg::Close)
+                    | None => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        Ok((
+            MpscChannelReader {
+                rx,
+                buf: Vec::new(),
+                pos: 0,
+            },
+            ChannelSyncWriter {
+                write_half: Arc::new(Mutex::new(write_half)),
+                rt: Arc::clone(&self.rt),
+            },
+        ))
     }
 
     async fn exec_async(&self, command: &str) -> Result<String> {
@@ -182,6 +272,58 @@ impl NativeSshClient {
             });
         }
         err.into()
+    }
+}
+
+struct MpscChannelReader {
+    rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl Read for MpscChannelReader {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.pos >= self.buf.len() {
+            self.buf = match self.rx.blocking_recv() {
+                Some(data) => data,
+                None => return Ok(0),
+            };
+            self.pos = 0;
+            if self.buf.is_empty() {
+                return Ok(0);
+            }
+        }
+        let available = self.buf.len() - self.pos;
+        let n = available.min(out.len());
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+struct ChannelSyncWriter {
+    write_half: Arc<Mutex<ChannelWriteHalf<client::Msg>>>,
+    rt: Arc<tokio::runtime::Runtime>,
+}
+
+impl Write for ChannelSyncWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let data = buf.to_vec();
+        self.rt
+            .block_on(async {
+                let guard = self.write_half.lock().await;
+                let mut writer = guard.make_writer();
+                writer.write_all(&data).await
+            })
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
