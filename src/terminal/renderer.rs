@@ -1,9 +1,17 @@
-use gpui::{div, px, rgba, IntoElement, ParentElement, Styled};
+use gpui::{div, px, rgba, IntoElement, ParentElement, Rgba, Styled};
 use gpui_component::v_flex;
 
 use crate::tabs::shogun_tab::MONO_FONT;
 use crate::terminal::{GridSnapshot, ResolvedColor};
 use crate::theme::Colors;
+
+/// Map a resolved terminal color to a GPUI `Rgba` for text/background styling.
+pub fn color_to_rgba(color: ResolvedColor) -> Rgba {
+    match color {
+        ResolvedColor::Rgb(r, g, b) => rgba(u32::from_be_bytes([r, g, b, 0xff])),
+        ResolvedColor::Default => Colors::zouge(),
+    }
+}
 
 pub fn render_grid(snap: &GridSnapshot) -> impl IntoElement {
     v_flex()
@@ -15,19 +23,10 @@ pub fn render_grid(snap: &GridSnapshot) -> impl IntoElement {
                 .flex_row()
                 .h(px(20.))
                 .children(coalesce_runs(row).map(|(text, fg, bg)| {
-                    let mut el = div().child(text);
-                    el = match fg {
-                        ResolvedColor::Rgb(r, g, b) => {
-                            el.text_color(rgba(u32::from_be_bytes([r, g, b, 0xff])))
-                        }
-                        ResolvedColor::Default => el.text_color(Colors::zouge()),
-                    };
-                    el = match bg {
-                        ResolvedColor::Rgb(r, g, b) => {
-                            el.bg(rgba(u32::from_be_bytes([r, g, b, 0xff])))
-                        }
-                        ResolvedColor::Default => el,
-                    };
+                    let mut el = div().child(text).text_color(color_to_rgba(fg));
+                    if let ResolvedColor::Rgb(_, _, _) = bg {
+                        el = el.bg(color_to_rgba(bg));
+                    }
                     el
                 }))
         }))
@@ -108,5 +107,36 @@ mod tests {
         assert_eq!(runs[0].0, "ab");
         assert_eq!(runs[1].0, "c");
         assert_eq!(runs[1].1, ResolvedColor::Rgb(0, 255, 0));
+    }
+
+    #[test]
+    fn color_to_rgba_default_matches_zouge() {
+        assert_eq!(color_to_rgba(ResolvedColor::Default), Colors::zouge());
+    }
+
+    #[test]
+    fn color_to_rgba_rgb_packs_bytes() {
+        let c = color_to_rgba(ResolvedColor::Rgb(0x12, 0x34, 0x56));
+        assert!((c.r - 18.0 / 255.0).abs() < 0.01);
+        assert!((c.g - 52.0 / 255.0).abs() < 0.01);
+        assert!((c.b - 86.0 / 255.0).abs() < 0.01);
+    }
+
+    fn cell_bg(c: char, r: u8, g: u8, b: u8) -> SnapshotCell {
+        SnapshotCell {
+            c,
+            fg: ResolvedColor::Default,
+            bg: ResolvedColor::Rgb(r, g, b),
+            bold: false,
+            underline: false,
+        }
+    }
+
+    #[test]
+    fn different_background_splits_runs() {
+        let cells = [cell('a'), cell_bg('b', 0, 0, 255)];
+        let runs: Vec<_> = coalesce_runs(&cells).collect();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].2, ResolvedColor::Rgb(0, 0, 255));
     }
 }
