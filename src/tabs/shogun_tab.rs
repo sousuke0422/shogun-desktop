@@ -1,2 +1,2 @@
-/// Shared monospace font for terminal-style panes.
-pub const MONO_FONT: &str = "Consolas";
+/// Shared monospace font for terminal-style panes (embedded MoralerspaceHW Neon).
+pub const MONO_FONT: &str = "Moralerspace Neon HW";
