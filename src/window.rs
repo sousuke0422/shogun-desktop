@@ -17,7 +17,9 @@ use gpui::{
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    h_flex, Root,
+    h_flex, v_flex, Root,
+    input::{Input, InputState},
+    Sizable,
 };
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -97,11 +99,15 @@ pub struct ShogunWindow {
     multiagent_last_gen: u64,
     terminal_refresh_started: bool,
     status_message: SharedString,
+    shogun_input: gpui::Entity<InputState>,
+    multiagent_input: gpui::Entity<InputState>,
 }
 
 impl ShogunWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = load_settings().unwrap_or_default();
+        let shogun_input = cx.new(|cx| InputState::new(window, cx));
+        let multiagent_input = cx.new(|cx| InputState::new(window, cx));
         Self {
             selected_tab: 0,
             settings_tab: SettingsTab::new(window, cx, &settings),
@@ -121,6 +127,8 @@ impl ShogunWindow {
             multiagent_last_gen: 0,
             terminal_refresh_started: false,
             status_message: SharedString::default(),
+            shogun_input,
+            multiagent_input,
         }
     }
 
@@ -553,6 +561,116 @@ impl ShogunWindow {
         .detach();
     }
 
+    fn render_terminal_with_ui(
+        &self,
+        session_opt: &Option<TerminalSession>,
+        error_opt: &Option<String>,
+        scroll_handle: &ScrollHandle,
+        input_entity: gpui::Entity<InputState>,
+        is_shogun: bool,
+        session_name: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        const SPECIAL_KEYS: [(&str, &str); 9] = [
+            ("↵", "\n"),
+            ("C-c", "\x03"),
+            ("C-b", "\x02"),
+            ("↑", "\x1b[A"),
+            ("↓", "\x1b[B"),
+            ("Tab", "\t"),
+            ("ESC", "\x1b"),
+            ("C-o", "\x0f"),
+            ("C-d", "\x04"),
+        ];
+
+        let is_connected = session_opt.as_ref().map(|s| s.is_connected()).unwrap_or(false);
+        let jinmaku_bg = if is_connected { Colors::matsuba() } else { Colors::kurenai() };
+        let jinmaku_text: SharedString = if is_connected {
+            format!("接続中 — {}:main", session_name).into()
+        } else {
+            "未接続".into()
+        };
+
+        let terminal_content =
+            self.render_terminal_for_session(session_opt, error_opt, scroll_handle, is_shogun, cx);
+
+        let key_buttons = SPECIAL_KEYS.iter().enumerate().map(|(i, (label, seq))| {
+            let seq: &'static str = seq;
+            let label: &'static str = label;
+            let id_base: usize = if is_shogun { i } else { i + 100 };
+            Button::new(("sk", id_base))
+                .label(label)
+                .small()
+                .on_click(cx.listener(move |this, _, _, _cx| {
+                    let session =
+                        if is_shogun { &this.shogun_session } else { &this.multiagent_session };
+                    if let Some(s) = session {
+                        s.send_bytes(seq.as_bytes());
+                    }
+                }))
+        });
+
+        let input_for_send = input_entity.clone();
+        let send_btn =
+            Button::new(if is_shogun { "send-shogun" } else { "send-multiagent" })
+                .label("Send")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let text = input_for_send.read(cx).value().to_string();
+                    if text.is_empty() {
+                        return;
+                    }
+                    let session = if is_shogun {
+                        &this.shogun_session
+                    } else {
+                        &this.multiagent_session
+                    };
+                    if let Some(s) = session {
+                        s.send_bytes(text.as_bytes());
+                        s.send_bytes(b"\n");
+                    }
+                }));
+
+        v_flex()
+            .flex_1()
+            .size_full()
+            .bg(Colors::shikkoku())
+            .child(
+                div()
+                    .w_full()
+                    .h(px(24.))
+                    .bg(jinmaku_bg)
+                    .flex()
+                    .items_center()
+                    .px_2()
+                    .text_color(Colors::zouge())
+                    .text_size(px(12.))
+                    .child(jinmaku_text),
+            )
+            .child(div().flex_1().overflow_hidden().child(terminal_content))
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(px(32.))
+                    .bg(Colors::sumi())
+                    .items_center()
+                    .gap_1()
+                    .px_1()
+                    .children(key_buttons),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(px(40.))
+                    .bg(Colors::sumi())
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .child(Input::new(&input_entity).flex_1())
+                    .child(send_btn),
+            )
+            .into_any_element()
+    }
+
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .w_full()
@@ -592,13 +710,20 @@ impl Render for ShogunWindow {
         let _ = (self.shogun_last_gen, self.multiagent_last_gen);
 
         let content: gpui::AnyElement = match self.selected_tab {
-            0 => self.render_terminal_for_session(
-                &self.shogun_session,
-                &self.shogun_error,
-                &self.shogun_scroll_handle,
-                true,
-                cx,
-            ),
+            0 => {
+                let session_name = load_settings()
+                    .map(|s| s.sessions.shogun)
+                    .unwrap_or_else(|_| "shogun".to_string());
+                self.render_terminal_with_ui(
+                    &self.shogun_session,
+                    &self.shogun_error,
+                    &self.shogun_scroll_handle,
+                    self.shogun_input.clone(),
+                    true,
+                    &session_name,
+                    cx,
+                )
+            }
             1 => render_agents_tab(&self.agents_state, cx).into_any_element(),
             2 => render_dashboard_tab(&self.dashboard_state, window, cx).into_any_element(),
             3 => {
@@ -671,13 +796,20 @@ impl Render for ShogunWindow {
                 )
                 .into_any_element()
             }
-            5 => self.render_terminal_for_session(
-                &self.multiagent_session,
-                &self.multiagent_error,
-                &self.multiagent_scroll_handle,
-                false,
-                cx,
-            ),
+            5 => {
+                let session_name = load_settings()
+                    .map(|s| s.sessions.multiagent)
+                    .unwrap_or_else(|_| "multiagent".to_string());
+                self.render_terminal_with_ui(
+                    &self.multiagent_session,
+                    &self.multiagent_error,
+                    &self.multiagent_scroll_handle,
+                    self.multiagent_input.clone(),
+                    false,
+                    &session_name,
+                    cx,
+                )
+            }
             _ => div()
                 .flex_1()
                 .size_full()
