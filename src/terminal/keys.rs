@@ -11,6 +11,7 @@ pub fn key_to_bytes(keystroke: &gpui::Keystroke) -> Vec<u8> {
         "left" => b"\x1b[D".to_vec(),
         "pageup" => b"\x1b[5~".to_vec(),
         "pagedown" => b"\x1b[6~".to_vec(),
+        "end" => b"\x1b[F".to_vec(),
         k if ctrl && k.len() == 1 => {
             let ch = k.chars().next().unwrap().to_ascii_lowercase() as u8;
             if ch >= b'a' && ch <= b'z' {
@@ -79,6 +80,11 @@ mod tests {
     fn page_keys_map_to_ansi_sequences() {
         assert_eq!(key_to_bytes(&ks("pageup")), b"\x1b[5~");
         assert_eq!(key_to_bytes(&ks("pagedown")), b"\x1b[6~");
+    }
+
+    #[test]
+    fn end_maps_to_csi_f() {
+        assert_eq!(key_to_bytes(&ks("end")), b"\x1b[F");
     }
 
     #[test]

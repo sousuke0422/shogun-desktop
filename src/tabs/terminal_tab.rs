@@ -2,25 +2,70 @@ use crate::terminal::renderer::render_grid;
 use crate::terminal::GridSnapshot;
 use crate::theme::Colors;
 use crate::window::ShogunWindow;
-use gpui::{div, prelude::*, px, Context, IntoElement, ParentElement, ScrollHandle, Styled};
+use gpui::{
+    div, prelude::*, px, Context, IntoElement, ParentElement, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, StatefulInteractiveElement, Styled,
+};
 use gpui_component::v_flex;
+
+const SCROLL_OFFSET_EPSILON: f32 = 0.01;
+
+fn scroll_delta_y(event: &ScrollWheelEvent) -> f32 {
+    match &event.delta {
+        ScrollDelta::Pixels(p) => p.y / px(1.),
+        ScrollDelta::Lines(l) => l.y,
+    }
+}
 
 pub fn render_terminal_tab(
     snap: &GridSnapshot,
     scroll_handle: &ScrollHandle,
-    _cx: &mut Context<ShogunWindow>,
+    is_shogun: bool,
+    cx: &mut Context<ShogunWindow>,
 ) -> impl IntoElement {
+    let scroll_handle = scroll_handle.clone();
     v_flex()
         .flex_1()
         .size_full()
         .bg(Colors::shikkoku())
         .child(
             div()
-                .id("terminal-pane")
+                .id(if is_shogun {
+                    "terminal-pane-shogun"
+                } else {
+                    "terminal-pane-multiagent"
+                })
                 .flex_1()
                 .w_full()
-                .track_scroll(scroll_handle)
+                .track_scroll(&scroll_handle)
                 .overflow_y_scroll()
+                .on_scroll_wheel(cx.listener(
+                    move |this, event: &ScrollWheelEvent, _window, cx| {
+                        let delta_y = scroll_delta_y(event);
+                        if delta_y < 0.0 {
+                            if is_shogun {
+                                this.shogun_scroll_locked = true;
+                            } else {
+                                this.multiagent_scroll_locked = true;
+                            }
+                        } else if delta_y > 0.0 {
+                            let cur_y = scroll_handle.offset().y / px(1.);
+                            let prev_y = if is_shogun {
+                                this.shogun_prev_offset_y
+                            } else {
+                                this.multiagent_prev_offset_y
+                            };
+                            if (cur_y - prev_y).abs() < SCROLL_OFFSET_EPSILON {
+                                if is_shogun {
+                                    this.shogun_scroll_locked = false;
+                                } else {
+                                    this.multiagent_scroll_locked = false;
+                                }
+                            }
+                        }
+                        cx.notify();
+                    },
+                ))
                 .p_1()
                 .child(render_grid(snap)),
         )

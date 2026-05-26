@@ -89,6 +89,10 @@ pub struct ShogunWindow {
     pub multiagent_error: Option<String>,
     pub shogun_scroll_handle: ScrollHandle,
     pub multiagent_scroll_handle: ScrollHandle,
+    pub(crate) shogun_scroll_locked: bool,
+    pub(crate) multiagent_scroll_locked: bool,
+    pub(crate) shogun_prev_offset_y: f32,
+    pub(crate) multiagent_prev_offset_y: f32,
     shogun_last_gen: u64,
     multiagent_last_gen: u64,
     terminal_refresh_started: bool,
@@ -109,6 +113,10 @@ impl ShogunWindow {
             multiagent_error: None,
             shogun_scroll_handle: ScrollHandle::default(),
             multiagent_scroll_handle: ScrollHandle::default(),
+            shogun_scroll_locked: false,
+            multiagent_scroll_locked: false,
+            shogun_prev_offset_y: 0.0,
+            multiagent_prev_offset_y: 0.0,
             shogun_last_gen: 0,
             multiagent_last_gen: 0,
             terminal_refresh_started: false,
@@ -260,10 +268,16 @@ impl ShogunWindow {
                         view.shogun_last_gen = cur_s;
                         view.multiagent_last_gen = cur_m;
                         if s_changed {
-                            scroll_s.scroll_to_bottom();
+                            if !view.shogun_scroll_locked {
+                                scroll_s.scroll_to_bottom();
+                            }
+                            view.shogun_prev_offset_y = scroll_s.offset().y / px(1.);
                         }
                         if m_changed {
-                            scroll_m.scroll_to_bottom();
+                            if !view.multiagent_scroll_locked {
+                                scroll_m.scroll_to_bottom();
+                            }
+                            view.multiagent_prev_offset_y = scroll_m.offset().y / px(1.);
                         }
                         cx.notify();
                     });
@@ -273,7 +287,23 @@ impl ShogunWindow {
         .detach();
     }
 
-    fn handle_terminal_key(&mut self, event: &KeyDownEvent) {
+    fn handle_terminal_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        if event.keystroke.key.as_str() == "end" {
+            match self.selected_tab {
+                0 => {
+                    self.shogun_scroll_locked = false;
+                    self.shogun_scroll_handle.scroll_to_bottom();
+                }
+                5 => {
+                    self.multiagent_scroll_locked = false;
+                    self.multiagent_scroll_handle.scroll_to_bottom();
+                }
+                _ => {}
+            }
+            cx.notify();
+            return;
+        }
+
         let bytes = key_to_bytes(&event.keystroke);
         if bytes.is_empty() {
             return;
@@ -311,7 +341,7 @@ impl ShogunWindow {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
-                render_terminal_tab(&snap, scroll_handle, cx).into_any_element()
+                render_terminal_tab(&snap, scroll_handle, is_shogun, cx).into_any_element()
             } else {
                 let btn_id = if is_shogun { "reconnect-shogun" } else { "reconnect-multiagent" };
                 let reconnect_btn = Button::new(btn_id)
@@ -661,8 +691,8 @@ impl Render for ShogunWindow {
             .flex_col()
             .bg(Colors::shikkoku())
             .tab_stop(true)
-            .on_key_down(cx.listener(|this, event, _window, _cx| {
-                this.handle_terminal_key(event);
+            .on_key_down(cx.listener(|this, event, _window, cx| {
+                this.handle_terminal_key(event, cx);
             }))
             .child(div().flex_1().overflow_hidden().child(content))
             .child(self.render_tab_bar(cx))
