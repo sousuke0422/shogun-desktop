@@ -98,8 +98,15 @@ pub fn take_snapshot(term: &Term<VoidListener>) -> GridSnapshot {
         let row = indexed.point.line.0 as usize;
         let col = indexed.point.column.0;
         if row < rows && col < cols {
+            // Wide char spacer cells occupy a terminal column but carry no glyph.
+            // Set c='\0' so cell_width() returns 0 and they don't widen the rendered run.
+            let c = if indexed.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                '\0'
+            } else {
+                indexed.c
+            };
             cells[row][col] = SnapshotCell {
-                c: indexed.c,
+                c,
                 fg: resolve_color(indexed.fg, content.colors),
                 bg: resolve_color(indexed.bg, content.colors),
                 bold: indexed.flags.contains(Flags::BOLD),
