@@ -56,6 +56,10 @@ pub(crate) fn coalesce_runs(
     let mut runs: Vec<(String, ResolvedColor, ResolvedColor, usize)> = Vec::new();
     for cell in cells {
         let w = cell_width(cell.c);
+        if w == 0 {
+            // Wide char spacer (or NUL): contributes no glyph or width.
+            continue;
+        }
         if let Some(last) = runs.last_mut() {
             if last.1 == cell.fg && last.2 == cell.bg {
                 last.0.push(cell.c);
