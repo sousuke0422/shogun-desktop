@@ -40,6 +40,7 @@ pub fn render_grid(snap: &GridSnapshot) -> impl IntoElement {
                     let mut el = div()
                         .child(text)
                         .w(px(CELL_W * cells as f32))
+                        .overflow_hidden()
                         .text_color(color_to_rgba(fg));
                     if let ResolvedColor::Rgb(_, _, _) = bg {
                         el = el.bg(color_to_rgba(bg));
