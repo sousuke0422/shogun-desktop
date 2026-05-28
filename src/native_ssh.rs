@@ -6,6 +6,7 @@ use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKey};
 use russh::{ChannelMsg, ChannelWriteHalf};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
@@ -18,6 +19,7 @@ pub struct NativeSshClient {
     user: String,
     key_path: Option<String>,
     password: Option<String>,
+    proxy_command: Option<String>,
     session: Arc<Mutex<Option<client::Handle<ShogunHandler>>>>,
     rt: Arc<tokio::runtime::Runtime>,
 }
@@ -66,6 +68,11 @@ impl NativeSshClient {
         } else {
             None
         };
+        let proxy_command = if !ssh.proxy_command.is_empty() {
+            Some(ssh.proxy_command.clone())
+        } else {
+            None
+        };
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -76,6 +83,7 @@ impl NativeSshClient {
             user: ssh.user.clone(),
             key_path,
             password,
+            proxy_command,
             session: Arc::new(Mutex::new(None)),
             rt: Arc::new(rt),
         })
@@ -253,10 +261,40 @@ impl NativeSshClient {
     async fn connect_async(&self) -> Result<client::Handle<ShogunHandler>> {
         let config = Arc::new(client::Config::default());
         let handler = ShogunHandler::new(&self.host, self.port);
-        let addrs = (self.host.as_str(), self.port);
-        let mut handle = client::connect(config, addrs, handler)
-            .await
-            .context("SSH 接続に失敗しました")?;
+        let mut handle = if let Some(ref proxy_cmd) = self.proxy_command {
+            let expanded = proxy_cmd
+                .replace("%h", &self.host)
+                .replace("%p", &self.port.to_string());
+
+            #[cfg(unix)]
+            let child_result = tokio::process::Command::new("sh")
+                .args(["-c", &expanded])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn();
+            #[cfg(windows)]
+            let child_result = tokio::process::Command::new("cmd")
+                .args(["/c", &expanded])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn();
+
+            let mut child = child_result.context("ProxyCommand の起動に失敗しました")?;
+            let stdin = child.stdin.take().context("ProxyCommand stdin 取得失敗")?;
+            let stdout = child.stdout.take().context("ProxyCommand stdout 取得失敗")?;
+            let stream = tokio::io::join(stdout, stdin);
+
+            client::connect_stream(config, stream, handler)
+                .await
+                .context("ProxyCommand 経由の SSH 接続に失敗しました")?
+        } else {
+            let addrs = (self.host.as_str(), self.port);
+            client::connect(config, addrs, handler)
+                .await
+                .context("SSH 接続に失敗しました")?
+        };
 
         if let Some(ref key_path) = self.key_path {
             let key_pair = load_secret_key(key_path, None)

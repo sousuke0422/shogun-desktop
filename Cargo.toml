@@ -16,7 +16,7 @@ dirs = "6"
 regex = "1"
 russh = { version = "0.61", default-features = false, features = ["ring"] }
 # russh-keys deferred to Phase 2 (pins home=0.5.5, conflicts with gpui ^0.5.9)
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "io-util", "time", "net", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "io-util", "time", "net", "macros", "process"] }
 unicode-width = "0.2"
 parking_lot = "0.12"
 arboard = "3"
