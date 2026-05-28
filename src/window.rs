@@ -8,7 +8,7 @@ use crate::tabs::{
 use crate::tabs::AgentCardData;
 use crate::terminal::keys::key_to_bytes;
 use crate::terminal::pty_session;
-use crate::terminal::renderer::{CELL_H, CELL_W};
+use crate::terminal::renderer::{cell_width_for_font, CELL_H};
 use crate::terminal::TerminalSession;
 use crate::theme::Colors;
 use gpui::{
@@ -700,7 +700,8 @@ impl Render for ShogunWindow {
             let vp = window.viewport_size();
             let content_w = vp.width / px(1.);
             let content_h = ((vp.height / px(1.)) - 104.0).max(CELL_H);
-            let new_cols = (content_w / CELL_W) as u16;
+            let cw = cell_width_for_font(&self.terminal_font);
+            let new_cols = (content_w / cw) as u16;
             let new_rows = (content_h / CELL_H) as u16;
 
             // Resize whenever the viewport changes OR when a session was just
