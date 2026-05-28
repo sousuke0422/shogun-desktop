@@ -1,4 +1,5 @@
 use crate::settings::ShogunDesktopSettings;
+use crate::terminal::PtyResizer;
 use anyhow::{bail, Context, Result};
 use russh::client::{self, Handler};
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKey};
@@ -93,25 +94,41 @@ impl NativeSshClient {
             .unwrap_or(false)
     }
 
+    /// Open a plain interactive shell channel (no tmux), with CWD set to `project_path`.
+    pub fn open_shell_channel(
+        &self,
+        project_path: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>, Box<dyn PtyResizer>)> {
+        let cmd = format!("cd {project_path} && exec $SHELL -l");
+        let (reader, writer, resizer) = self
+            .rt
+            .block_on(self.open_pty_async(&cmd, cols, rows))
+            .map_err(|e| self.reset_session_err(e))?;
+        Ok((Box::new(reader), Box::new(writer), Box::new(resizer)))
+    }
+
     pub fn open_pty_channel(
         &self,
         tmux_session: &str,
         cols: u16,
         rows: u16,
-    ) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
-        let (reader, writer) = self
+    ) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>, Box<dyn PtyResizer>)> {
+        let cmd = format!("tmux attach-session -t {tmux_session}");
+        let (reader, writer, resizer) = self
             .rt
-            .block_on(self.open_pty_async(tmux_session, cols, rows))
+            .block_on(self.open_pty_async(&cmd, cols, rows))
             .map_err(|e| self.reset_session_err(e))?;
-        Ok((Box::new(reader), Box::new(writer)))
+        Ok((Box::new(reader), Box::new(writer), Box::new(resizer)))
     }
 
     async fn open_pty_async(
         &self,
-        tmux_session: &str,
+        command: &str,
         cols: u16,
         rows: u16,
-    ) -> Result<(MpscChannelReader, ChannelSyncWriter)> {
+    ) -> Result<(MpscChannelReader, ChannelSyncWriter, NativeResizer)> {
         let mut guard = self.session.lock().await;
         if guard.is_none() {
             let handle = self.connect_async().await?;
@@ -136,7 +153,6 @@ impl NativeSshClient {
             )
             .await
             .context("SSH PTY 要求に失敗しました")?;
-        let command = format!("tmux attach-session -t {tmux_session}");
         channel
             .exec(true, command)
             .await
@@ -144,6 +160,9 @@ impl NativeSshClient {
 
         let (read_half, write_half) = channel.split();
         let (tx, rx) = mpsc::unbounded_channel();
+
+        // Share the write half between the writer and the resizer.
+        let write_half_arc = Arc::new(Mutex::new(write_half));
 
         self.rt.spawn(async move {
             let mut read_half = read_half;
@@ -170,16 +189,23 @@ impl NativeSshClient {
             }
         });
 
+        let writer = ChannelSyncWriter {
+            write_half: Arc::clone(&write_half_arc),
+            rt: Arc::clone(&self.rt),
+        };
+        let resizer = NativeResizer {
+            write_half: write_half_arc,
+            rt: Arc::clone(&self.rt),
+        };
+
         Ok((
             MpscChannelReader {
                 rx,
                 buf: Vec::new(),
                 pos: 0,
             },
-            ChannelSyncWriter {
-                write_half: Arc::new(Mutex::new(write_half)),
-                rt: Arc::clone(&self.rt),
-            },
+            writer,
+            resizer,
         ))
     }
 
@@ -324,6 +350,28 @@ impl Write for ChannelSyncWriter {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// PTY resizer for the native russh backend.
+///
+/// Sends an SSH `window-change` request on the existing channel so that the
+/// remote pty (and tmux) can reflow to the new dimensions.
+struct NativeResizer {
+    write_half: Arc<Mutex<ChannelWriteHalf<client::Msg>>>,
+    rt: Arc<tokio::runtime::Runtime>,
+}
+
+impl PtyResizer for NativeResizer {
+    fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
+        let write_half = Arc::clone(&self.write_half);
+        self.rt.block_on(async move {
+            let guard = write_half.lock().await;
+            guard
+                .window_change(cols as u32, rows as u32, 0, 0)
+                .await
+                .map_err(|e| anyhow::anyhow!("SSH window_change failed: {:?}", e))
+        })
     }
 }
 

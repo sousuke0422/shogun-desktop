@@ -4,22 +4,88 @@ pub mod renderer;
 
 use std::io::Write;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, Mutex,
+    atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
+    Arc,
 };
 
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::{event::VoidListener, Term};
+use alacritty_terminal::{event::EventListener, Term};
+use parking_lot::FairMutex;
+
+// ── OSC 52 clipboard listener ─────────────────────────────────────────────────
+
+/// Events forwarded from the VTE parser to the clipboard handler thread.
+pub enum ClipboardEvent {
+    /// OSC 52 write: application wants to store text in the host clipboard.
+    Store(String),
+    /// OSC 52 read: application wants the clipboard content back via PTY write.
+    /// The callback formats the OSC 52 response string when called with the
+    /// clipboard text (generated internally by alacritty_terminal).
+    Load(Arc<dyn Fn(&str) -> String + Sync + Send + 'static>),
+    /// Generic PTY write-back (used by OSC color queries etc.).
+    PtyWrite(String),
+}
+
+/// EventListener implementation that forwards clipboard-related events to a
+/// background handler thread via a bounded channel.
+///
+/// Using `try_send` ensures the PTY reader thread never blocks on a slow
+/// clipboard operation — events are silently dropped if the buffer is full.
+pub struct ClipboardListener {
+    pub tx: std::sync::mpsc::SyncSender<ClipboardEvent>,
+}
+
+impl EventListener for ClipboardListener {
+    fn send_event(&self, event: alacritty_terminal::event::Event) {
+        use alacritty_terminal::event::Event;
+        match event {
+            Event::ClipboardStore(_ty, text) => {
+                let _ = self.tx.try_send(ClipboardEvent::Store(text));
+            }
+            Event::ClipboardLoad(_ty, callback) => {
+                let _ = self.tx.try_send(ClipboardEvent::Load(callback));
+            }
+            Event::PtyWrite(text) => {
+                let _ = self.tx.try_send(ClipboardEvent::PtyWrite(text));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Trait implemented by backend-specific PTY resizers.
+///
+/// Implementors must be `Send + Sync` so the resizer can be stored in an `Arc`
+/// and called from any thread (including GPUI's render/event thread).
+pub trait PtyResizer: Send + Sync {
+    fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()>;
+}
+
+/// No-op resizer used as a fallback when the backend provides no resize channel.
+#[allow(dead_code)]
+pub struct NoopResizer;
+
+impl PtyResizer for NoopResizer {
+    fn resize(&self, _cols: u16, _rows: u16) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
 
 pub struct TerminalSession {
     #[allow(dead_code)]
-    pub term: Arc<Mutex<Term<VoidListener>>>,
-    pub writer: Arc<Mutex<Box<dyn std::io::Write + Send>>>,
-    pub snapshot: Arc<Mutex<GridSnapshot>>,
+    pub term: Arc<FairMutex<Term<ClipboardListener>>>,
+    pub writer: Arc<FairMutex<Box<dyn std::io::Write + Send>>>,
+    pub snapshot: Arc<FairMutex<GridSnapshot>>,
     pub connected: Arc<AtomicBool>,
     pub generation: Arc<AtomicU64>,
     #[allow(dead_code)]
-    pub error: Arc<Mutex<Option<String>>>,
+    pub error: Arc<FairMutex<Option<String>>>,
+    /// Current terminal width in columns (updated by `resize`).
+    pub cols: AtomicU16,
+    /// Current terminal height in rows (updated by `resize`).
+    pub rows: AtomicU16,
+    /// Backend-specific mechanism for propagating resize to the PTY / SSH channel.
+    pub resizer: Arc<dyn PtyResizer>,
 }
 
 impl TerminalSession {
@@ -28,9 +94,27 @@ impl TerminalSession {
     }
 
     pub fn send_bytes(&self, bytes: &[u8]) {
-        if let Ok(mut w) = self.writer.lock() {
-            let _ = w.write_all(bytes);
+        let _ = self.writer.lock().write_all(bytes);
+    }
+
+    /// Resize the terminal to the given dimensions.
+    ///
+    /// This updates the internal `alacritty_terminal::Term` geometry **and**
+    /// notifies the backing PTY / SSH channel so that remote applications
+    /// (e.g. tmux) can reflow their layout accordingly.
+    pub fn resize(&self, cols: u16, rows: u16) {
+        use alacritty_terminal::term::test::TermSize;
+        // 1. Resize the in-process term emulator.
+        {
+            let mut t = self.term.lock();
+            t.resize(TermSize::new(cols as usize, rows as usize));
         }
+        // 2. Persist the new size so callers can detect when the session is
+        //    already at the right dimensions without re-sending the resize.
+        self.cols.store(cols, Ordering::Relaxed);
+        self.rows.store(rows, Ordering::Relaxed);
+        // 3. Tell the OS PTY / SSH channel.
+        let _ = self.resizer.resize(cols, rows);
     }
 }
 
@@ -61,9 +145,9 @@ pub struct SnapshotCell {
     pub c: char,
     pub fg: ResolvedColor,
     pub bg: ResolvedColor,
-    #[allow(dead_code)]
+    /// 0 = skip render (wide spacer), 1 = half-width, 2 = wide (Flags::WIDE_CHAR).
+    pub display_width: u8,
     pub bold: bool,
-    #[allow(dead_code)]
     pub underline: bool,
 }
 
@@ -73,6 +157,7 @@ impl SnapshotCell {
             c: ' ',
             fg: ResolvedColor::Default,
             bg: ResolvedColor::Default,
+            display_width: 1,
             bold: false,
             underline: false,
         }
@@ -86,7 +171,10 @@ pub enum ResolvedColor {
 }
 
 /// alacritty_terminal の Cell/Color → SnapshotCell に変換
-pub fn take_snapshot(term: &Term<VoidListener>) -> GridSnapshot {
+///
+/// Generic over any `EventListener` so tests can use `VoidListener` while
+/// production code uses `ClipboardListener`.
+pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     use alacritty_terminal::term::cell::Flags;
 
     let content = term.renderable_content();
@@ -98,17 +186,21 @@ pub fn take_snapshot(term: &Term<VoidListener>) -> GridSnapshot {
         let row = indexed.point.line.0 as usize;
         let col = indexed.point.column.0;
         if row < rows && col < cols {
-            // Wide char spacer cells occupy a terminal column but carry no glyph.
-            // Set c='\0' so cell_width() returns 0 and they don't widen the rendered run.
-            let c = if indexed.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                '\0'
+            let is_spacer = indexed
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
+            let display_width = if is_spacer {
+                0
+            } else if indexed.flags.contains(Flags::WIDE_CHAR) {
+                2
             } else {
-                indexed.c
+                1
             };
             cells[row][col] = SnapshotCell {
-                c,
+                c: indexed.c,
                 fg: resolve_color(indexed.fg, content.colors),
                 bg: resolve_color(indexed.bg, content.colors),
+                display_width,
                 bold: indexed.flags.contains(Flags::BOLD),
                 underline: indexed.flags.contains(Flags::UNDERLINE),
             };
