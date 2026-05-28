@@ -49,10 +49,12 @@ fn main() {
         let mut fonts: Vec<Cow<'static, [u8]>> = vec![Cow::Borrowed(MORALERSPACE_NEON)];
 
         // システムフォントを動的ロード:
-        //   msgothic → "MS Gothic" ファミリー (EAW=A 全角対応の標準日本語端末フォント)
-        //   Cica     → CJK カバレッジ補完用
-        // msgothic.ttc が優先: → ◆ ─ │ あ など全角グリフが揃っている
-        for stem in &["msgothic", "Cica"] {
+        //   Cica → ユーザーが設定タブで選択した場合の CJK カバレッジ補完用
+        // MS Gothic は削除: EAW=A (→ ◆ ▶ など) は alacritty_terminal が
+        // display_width=1 (narrow) で返すため、MS Gothic の全角グリフを当てると
+        // 1-cell コンテナをはみ出して表示が壊れる。
+        // wt も EAW=A を narrow として扱う (PR #2928 / wcwidth() de facto standard)。
+        for stem in &["Cica"] {
             if let Some(data) = load_system_font(stem) {
                 fonts.push(Cow::Owned(data));
             }
