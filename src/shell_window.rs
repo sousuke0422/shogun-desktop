@@ -3,7 +3,8 @@ use crate::tabs::shogun_tab::MONO_FONT;
 use crate::ssh::SshClient;
 use crate::terminal::keys::key_to_bytes;
 use crate::terminal::pty_session;
-use crate::terminal::renderer::{render_grid, CELL_H, CELL_W};
+use crate::terminal::renderer::render_grid;
+use crate::window::measure_cell_metrics;
 use crate::terminal::{GridSnapshot, TerminalSession};
 use crate::theme::Colors;
 use gpui::{
@@ -138,10 +139,11 @@ impl Render for ShellWindow {
         let _ = self.last_gen;
 
         // Resize: full viewport (no chrome except tiny status bar of 24px)
+        let (cw, ch) = measure_cell_metrics(&cx.text_system(), MONO_FONT);
         {
             let vp = window.viewport_size();
-            let new_cols = ((vp.width / px(1.)) / CELL_W) as u16;
-            let new_rows = (((vp.height / px(1.)) - 24.0).max(CELL_H) / CELL_H) as u16;
+            let new_cols = ((vp.width / px(1.)) / cw) as u16;
+            let new_rows = (((vp.height / px(1.)) - 24.0).max(ch) / ch) as u16;
 
             let needs = |s: &Option<TerminalSession>| {
                 s.as_ref().map_or(false, |sess| {
@@ -196,7 +198,7 @@ impl Render for ShellWindow {
                     }
                 }))
                 .p_1()
-                .child(render_grid(&snap, MONO_FONT))
+                .child(render_grid(&snap, MONO_FONT, cw, ch))
                 .into_any_element()
         } else {
             div()

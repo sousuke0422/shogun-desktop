@@ -27,6 +27,40 @@ use std::time::{Duration, SystemTime};
 
 const TAB_LABELS: [&str; 6] = ["将軍", "エージェント", "戦況", "設定", "──", "家老陣"];
 
+/// Measure cell dimensions from the active GPUI `TextSystem`.
+///
+/// Follows Windows Terminal's approach (PR #16729 / #13549):
+///   - **cw** = `ch_advance(font_id, font_size)` — advance width of the '0' glyph
+///     (CSS `ch` unit, the canonical monospace cell width).
+///   - **ch** = `ascent(font_id, font_size) + descent(font_id, font_size)` — natural
+///     line height without extra line-gap, so box-drawing geometry fills cells exactly.
+///
+/// Falls back to the static [`cell_width_for_font`] / [`CELL_H`] table on error
+/// so the terminal keeps working even if a font fails to resolve.
+pub fn measure_cell_metrics(
+    ts: &std::sync::Arc<gpui::TextSystem>,
+    font_name: &str,
+) -> (f32, f32) {
+    // `gpui::font` requires `Into<SharedString>` which expects 'static for &str.
+    // Convert to owned String first to satisfy the lifetime bound.
+    let font_spec = gpui::font(font_name.to_string());
+    let font_id = ts.resolve_font(&font_spec);
+    let font_size = px(13.0);
+
+    let cw = ts
+        .ch_advance(font_id, font_size)
+        .map(f32::from)
+        .unwrap_or_else(|_| cell_width_for_font(font_name));
+
+    // ascent and descent are both positive in GPUI (absolute distances from baseline).
+    // Total natural line height = ascent + descent, clamped to CELL_H for safety.
+    let ascent = f32::from(ts.ascent(font_id, font_size));
+    let descent = f32::from(ts.descent(font_id, font_size));
+    let ch = (ascent + descent).max(CELL_H);
+
+    (cw, ch)
+}
+
 /// State for the Agents tab.
 pub struct AgentsState {
     pub content: String,
@@ -339,6 +373,8 @@ impl ShogunWindow {
         error: &Option<String>,
         scroll_handle: &ScrollHandle,
         is_shogun: bool,
+        cw: f32,
+        ch: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         if let Some(err) = error {
@@ -347,7 +383,7 @@ impl ShogunWindow {
         if let Some(session) = session {
             if session.is_connected() {
                 let snap = session.snapshot.lock().clone();
-                render_terminal_tab(&snap, scroll_handle, is_shogun, &self.terminal_font, cx)
+                render_terminal_tab(&snap, scroll_handle, is_shogun, &self.terminal_font, cw, ch, cx)
                     .into_any_element()
             } else {
                 let btn_id = if is_shogun { "reconnect-shogun" } else { "reconnect-multiagent" };
@@ -584,6 +620,8 @@ impl ShogunWindow {
         scroll_handle: &ScrollHandle,
         is_shogun: bool,
         session_name: &str,
+        cw: f32,
+        ch: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         const SPECIAL_KEYS: [(&str, &str); 9] = [
@@ -607,7 +645,7 @@ impl ShogunWindow {
         };
 
         let terminal_content =
-            self.render_terminal_for_session(session_opt, error_opt, scroll_handle, is_shogun, cx);
+            self.render_terminal_for_session(session_opt, error_opt, scroll_handle, is_shogun, cw, ch, cx);
 
         let key_buttons = SPECIAL_KEYS.iter().enumerate().map(|(i, (label, seq))| {
             let seq: &'static str = seq;
@@ -696,13 +734,16 @@ impl Render for ShogunWindow {
         // ── PTY resize on viewport change ─────────────────────────────────────
         // Calculate the terminal dimensions from the current viewport.
         // Chrome heights: jinmaku status bar (24) + key buttons (32) + tab bar (48) = 104 px.
+        //
+        // Cell dimensions are measured from the active font via TextSystem::ch_advance
+        // (Windows Terminal–style; see measure_cell_metrics).
+        let (cw, ch) = measure_cell_metrics(&cx.text_system(), &self.terminal_font);
         {
             let vp = window.viewport_size();
             let content_w = vp.width / px(1.);
-            let content_h = ((vp.height / px(1.)) - 104.0).max(CELL_H);
-            let cw = cell_width_for_font(&self.terminal_font);
+            let content_h = ((vp.height / px(1.)) - 104.0).max(ch);
             let new_cols = (content_w / cw) as u16;
-            let new_rows = (content_h / CELL_H) as u16;
+            let new_rows = (content_h / ch) as u16;
 
             // Resize whenever the viewport changes OR when a session was just
             // started and its recorded size doesn't yet match the target.
@@ -741,6 +782,8 @@ impl Render for ShogunWindow {
                     &self.shogun_scroll_handle,
                     true,
                     &session_name,
+                    cw,
+                    ch,
                     cx,
                 )
             }
@@ -855,6 +898,8 @@ impl Render for ShogunWindow {
                     &self.multiagent_scroll_handle,
                     false,
                     &session_name,
+                    cw,
+                    ch,
                     cx,
                 )
             }
