@@ -17,6 +17,9 @@ pub const CELL_H: f32 = 20.0;
 /// Return the cell width (in logical pixels) appropriate for the selected font at
 /// `text_size = 13pt`.
 ///
+/// Used as a **static fallback** when `TextSystem` is not available (tests, bench).
+/// At runtime, [`measure_cell_metrics`] supersedes this via `TextSystem::ch_advance`.
+///
 /// Measured advances (HAdvanceWidth / UPM × 13):
 ///   Moralerspace Neon HW : ASCII 6.825 px  → use 7.8 (empirical, adds breathing room)
 ///   Cica                  : ASCII 6.500 px  → use 6.5 (exact fit)
@@ -456,8 +459,13 @@ fn paint_box_char(
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
-    let cw = cell_width_for_font(font);
+/// Render the terminal grid.
+///
+/// `cw` and `ch` are the logical-pixel cell dimensions measured at runtime from
+/// the active font via [`crate::window::measure_cell_metrics`] (wt-style
+/// `ch_advance` + `ascent + descent`).  Fall back to [`CELL_W`]/[`CELL_H`] when
+/// `TextSystem` is unavailable (e.g. unit tests).
+pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl IntoElement {
     let (cursor_row, cursor_col) = snap.cursor;
     v_flex()
         .font_family(font.to_string())
@@ -471,7 +479,7 @@ pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
             div()
                 .flex()
                 .flex_row()
-                .h(px(CELL_H))
+                .h(px(ch))
                 .children(coalesce_runs(row, cur_col).map(move |run| -> AnyElement {
                     let (fg_rgba, bg_opt) = resolve_run_colors(&run);
                     let total_w = px(cw * run.width as f32);
@@ -496,16 +504,18 @@ pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
                                 }
                                 let mut x_off = f32::from(bounds.origin.x);
                                 let y_off = f32::from(bounds.origin.y);
-                                let ch = f32::from(bounds.size.height);
+                                // Use actual painted cell height from canvas bounds
+                                // so geometry always fills the row regardless of font size.
+                                let cell_h = f32::from(bounds.size.height);
                                 for &(c, dw) in &chars {
                                     let char_cw = cw_cap * dw as f32;
-                                    paint_box_char(c, x_off, y_off, char_cw, ch, fg_cap, window);
+                                    paint_box_char(c, x_off, y_off, char_cw, cell_h, fg_cap, window);
                                     x_off += char_cw;
                                 }
                             },
                         )
                         .w(total_w)
-                        .h(px(CELL_H))
+                        .h(px(ch))
                         .into_any_element();
                     }
 

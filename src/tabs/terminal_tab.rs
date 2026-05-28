@@ -22,6 +22,10 @@ pub fn render_terminal_tab(
     scroll_handle: &ScrollHandle,
     is_shogun: bool,
     font: &str,
+    // Cell width in logical pixels — measured via `TextSystem::ch_advance`.
+    cw: f32,
+    // Cell height in logical pixels — measured via `ascent + descent`.
+    ch: f32,
     cx: &mut Context<ShogunWindow>,
 ) -> impl IntoElement {
     let scroll_handle = scroll_handle.clone();
@@ -74,7 +78,7 @@ pub fn render_terminal_tab(
                     },
                 ))
                 .p_1()
-                .child(render_grid(snap, font)),
+                .child(render_grid(snap, font, cw, ch)),
         )
 }
 
