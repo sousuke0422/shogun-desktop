@@ -8,6 +8,7 @@ use crate::tabs::{
 use crate::tabs::AgentCardData;
 use crate::terminal::keys::key_to_bytes;
 use crate::terminal::pty_session;
+use crate::terminal::renderer::{CELL_H, CELL_W};
 use crate::terminal::TerminalSession;
 use crate::theme::Colors;
 use gpui::{
@@ -18,7 +19,6 @@ use gpui::{
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex, v_flex, Root,
-    input::{Input, InputState},
     Sizable,
 };
 use std::sync::atomic::Ordering;
@@ -99,15 +99,14 @@ pub struct ShogunWindow {
     multiagent_last_gen: u64,
     terminal_refresh_started: bool,
     status_message: SharedString,
-    shogun_input: gpui::Entity<InputState>,
-    multiagent_input: gpui::Entity<InputState>,
+    /// Last known terminal size, used to detect viewport changes and resize sessions.
+    terminal_cols: u16,
+    terminal_rows: u16,
 }
 
 impl ShogunWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = load_settings().unwrap_or_default();
-        let shogun_input = cx.new(|cx| InputState::new(window, cx));
-        let multiagent_input = cx.new(|cx| InputState::new(window, cx));
         Self {
             selected_tab: 0,
             settings_tab: SettingsTab::new(window, cx, &settings),
@@ -127,8 +126,8 @@ impl ShogunWindow {
             multiagent_last_gen: 0,
             terminal_refresh_started: false,
             status_message: SharedString::default(),
-            shogun_input,
-            multiagent_input,
+            terminal_cols: 0,
+            terminal_rows: 0,
         }
     }
 
@@ -295,7 +294,7 @@ impl ShogunWindow {
         .detach();
     }
 
-    fn handle_terminal_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    pub(crate) fn handle_terminal_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         if event.keystroke.key.as_str() == "end" {
             match self.selected_tab {
                 0 => {
@@ -344,11 +343,7 @@ impl ShogunWindow {
         }
         if let Some(session) = session {
             if session.is_connected() {
-                let snap = session
-                    .snapshot
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
+                let snap = session.snapshot.lock().clone();
                 render_terminal_tab(&snap, scroll_handle, is_shogun, cx).into_any_element()
             } else {
                 let btn_id = if is_shogun { "reconnect-shogun" } else { "reconnect-multiagent" };
@@ -566,7 +561,6 @@ impl ShogunWindow {
         session_opt: &Option<TerminalSession>,
         error_opt: &Option<String>,
         scroll_handle: &ScrollHandle,
-        input_entity: gpui::Entity<InputState>,
         is_shogun: bool,
         session_name: &str,
         cx: &mut Context<Self>,
@@ -610,26 +604,6 @@ impl ShogunWindow {
                 }))
         });
 
-        let input_for_send = input_entity.clone();
-        let send_btn =
-            Button::new(if is_shogun { "send-shogun" } else { "send-multiagent" })
-                .label("Send")
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let text = input_for_send.read(cx).value().to_string();
-                    if text.is_empty() {
-                        return;
-                    }
-                    let session = if is_shogun {
-                        &this.shogun_session
-                    } else {
-                        &this.multiagent_session
-                    };
-                    if let Some(s) = session {
-                        s.send_bytes(text.as_bytes());
-                        s.send_bytes(b"\n");
-                    }
-                }));
-
         v_flex()
             .flex_1()
             .size_full()
@@ -656,17 +630,6 @@ impl ShogunWindow {
                     .gap_1()
                     .px_1()
                     .children(key_buttons),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .h(px(40.))
-                    .bg(Colors::sumi())
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .child(Input::new(&input_entity).flex_1())
-                    .child(send_btn),
             )
             .into_any_element()
     }
@@ -709,6 +672,42 @@ impl Render for ShogunWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = (self.shogun_last_gen, self.multiagent_last_gen);
 
+        // ── PTY resize on viewport change ─────────────────────────────────────
+        // Calculate the terminal dimensions from the current viewport.
+        // Chrome heights: jinmaku status bar (24) + key buttons (32) + tab bar (48) = 104 px.
+        {
+            let vp = window.viewport_size();
+            let content_w = vp.width / px(1.);
+            let content_h = ((vp.height / px(1.)) - 104.0).max(CELL_H);
+            let new_cols = (content_w / CELL_W) as u16;
+            let new_rows = (content_h / CELL_H) as u16;
+
+            // Resize whenever the viewport changes OR when a session was just
+            // started and its recorded size doesn't yet match the target.
+            let session_needs_resize = |s: &Option<TerminalSession>| {
+                s.as_ref().map_or(false, |sess| {
+                    sess.cols.load(Ordering::Relaxed) != new_cols
+                        || sess.rows.load(Ordering::Relaxed) != new_rows
+                })
+            };
+
+            if new_cols != self.terminal_cols
+                || new_rows != self.terminal_rows
+                || session_needs_resize(&self.shogun_session)
+                || session_needs_resize(&self.multiagent_session)
+            {
+                self.terminal_cols = new_cols;
+                self.terminal_rows = new_rows;
+                if let Some(s) = &self.shogun_session {
+                    s.resize(new_cols, new_rows);
+                }
+                if let Some(s) = &self.multiagent_session {
+                    s.resize(new_cols, new_rows);
+                }
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         let content: gpui::AnyElement = match self.selected_tab {
             0 => {
                 let session_name = load_settings()
@@ -718,7 +717,6 @@ impl Render for ShogunWindow {
                     &self.shogun_session,
                     &self.shogun_error,
                     &self.shogun_scroll_handle,
-                    self.shogun_input.clone(),
                     true,
                     &session_name,
                     cx,
@@ -734,6 +732,11 @@ impl Render for ShogunWindow {
                 let test_btn = Button::new("test-ssh")
                     .label("SSH接続テスト")
                     .on_click(cx.listener(Self::test_ssh));
+                let shell_btn = Button::new("open-shell")
+                    .label("シェルを開く")
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        crate::shell_window::open_shell_window(cx);
+                    }));
                 let backend = self.settings_tab.connection_backend.clone();
                 let connection_backend_selector = h_flex()
                     .gap_2()
@@ -788,6 +791,7 @@ impl Render for ShogunWindow {
                     self.status_message.clone(),
                     save_btn,
                     test_btn,
+                    shell_btn,
                     connection_backend_selector,
                     #[cfg(windows)]
                     Some(control_path_selector),
@@ -804,7 +808,6 @@ impl Render for ShogunWindow {
                     &self.multiagent_session,
                     &self.multiagent_error,
                     &self.multiagent_scroll_handle,
-                    self.multiagent_input.clone(),
                     false,
                     &session_name,
                     cx,
@@ -822,10 +825,6 @@ impl Render for ShogunWindow {
             .flex()
             .flex_col()
             .bg(Colors::shikkoku())
-            .tab_stop(true)
-            .on_key_down(cx.listener(|this, event, _window, cx| {
-                this.handle_terminal_key(event, cx);
-            }))
             .child(div().flex_1().overflow_hidden().child(content))
             .child(self.render_tab_bar(cx))
     }

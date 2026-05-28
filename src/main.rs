@@ -2,6 +2,7 @@ mod ansi;
 mod app;
 pub mod native_ssh;
 mod settings;
+mod shell_window;
 mod ssh;
 mod tabs;
 mod terminal;

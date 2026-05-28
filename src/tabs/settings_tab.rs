@@ -108,6 +108,7 @@ pub fn render_settings_tab(
     status_message: SharedString,
     save_button: impl IntoElement,
     test_button: impl IntoElement,
+    shell_button: impl IntoElement,
     connection_backend_selector: impl IntoElement,
     control_path_selector: Option<impl IntoElement>,
 ) -> impl IntoElement {
@@ -149,7 +150,8 @@ pub fn render_settings_tab(
             h_flex()
                 .gap_2()
                 .child(save_button)
-                .child(test_button),
+                .child(test_button)
+                .child(shell_button),
         )
 }
 
