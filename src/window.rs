@@ -102,11 +102,13 @@ pub struct ShogunWindow {
     /// Last known terminal size, used to detect viewport changes and resize sessions.
     terminal_cols: u16,
     terminal_rows: u16,
+    terminal_font: String,
 }
 
 impl ShogunWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = load_settings().unwrap_or_default();
+        let terminal_font = settings.terminal.font.clone();
         Self {
             selected_tab: 0,
             settings_tab: SettingsTab::new(window, cx, &settings),
@@ -128,6 +130,7 @@ impl ShogunWindow {
             status_message: SharedString::default(),
             terminal_cols: 0,
             terminal_rows: 0,
+            terminal_font,
         }
     }
 
@@ -344,7 +347,8 @@ impl ShogunWindow {
         if let Some(session) = session {
             if session.is_connected() {
                 let snap = session.snapshot.lock().clone();
-                render_terminal_tab(&snap, scroll_handle, is_shogun, cx).into_any_element()
+                render_terminal_tab(&snap, scroll_handle, is_shogun, &self.terminal_font, cx)
+                    .into_any_element()
             } else {
                 let btn_id = if is_shogun { "reconnect-shogun" } else { "reconnect-multiagent" };
                 let reconnect_btn = Button::new(btn_id)
@@ -521,10 +525,22 @@ impl ShogunWindow {
 
     pub fn save_settings(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings_tab.collect(cx);
+        self.terminal_font = settings.terminal.font.clone();
         self.status_message = match save_settings(&settings) {
             Ok(()) => "設定を保存しました".into(),
             Err(err) => format!("保存失敗: {err}").into(),
         };
+        cx.notify();
+    }
+
+    fn set_terminal_font_preset(
+        &mut self,
+        font: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_tab
+            .set_terminal_font_preset(font, window, cx);
         cx.notify();
     }
 
@@ -766,6 +782,22 @@ impl Render for ShogunWindow {
                     .label("ホスト鍵を常に受け入れる（known_hosts スキップ）")
                     .when(accept_all, |b| b.primary())
                     .on_click(cx.listener(Self::toggle_accept_all_host_keys));
+                let font_preset_buttons = h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("font-preset-hw")
+                            .label("HW")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.set_terminal_font_preset("Moralerspace Neon HW", window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("font-preset-cica")
+                            .label("Cica")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.set_terminal_font_preset("Cica", window, cx);
+                            })),
+                    );
                 #[cfg(windows)]
                 let control_path_selector = {
                     let current = self.settings_tab.control_path.clone();
@@ -804,6 +836,7 @@ impl Render for ShogunWindow {
                     shell_btn,
                     connection_backend_selector,
                     accept_all_host_keys_toggle,
+                    font_preset_buttons,
                     #[cfg(windows)]
                     Some(control_path_selector),
                     #[cfg(not(windows))]

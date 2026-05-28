@@ -24,6 +24,7 @@ pub struct SettingsTab {
     project_path: Entity<InputState>,
     shogun_session: Entity<InputState>,
     multiagent_session: Entity<InputState>,
+    terminal_font: Entity<InputState>,
     agents: Vec<String>,
 }
 
@@ -65,6 +66,9 @@ impl SettingsTab {
         let multiagent_session = cx.new(|cx| {
             InputState::new(window, cx).default_value(settings.sessions.multiagent.clone())
         });
+        let terminal_font = cx.new(|cx| {
+            InputState::new(window, cx).default_value(settings.terminal.font.clone())
+        });
 
         Self {
             host,
@@ -79,8 +83,23 @@ impl SettingsTab {
             project_path,
             shogun_session,
             multiagent_session,
+            terminal_font,
             agents: settings.sessions.agents.clone(),
         }
+    }
+
+    pub fn set_terminal_font_preset<E>(
+        &self,
+        font: &'static str,
+        window: &mut Window,
+        cx: &mut gpui::Context<E>,
+    ) where
+        E: 'static,
+    {
+        let value = SharedString::from(font);
+        self.terminal_font.update(cx, |state, cx| {
+            state.set_value(value.clone(), window, cx);
+        });
     }
 
     pub fn collect<E>(&self, cx: &gpui::Context<E>) -> ShogunDesktopSettings
@@ -107,6 +126,9 @@ impl SettingsTab {
                 multiagent: self.multiagent_session.read(cx).value().to_string(),
                 agents: self.agents.clone(),
             },
+            terminal: crate::settings::TerminalSettings {
+                font: self.terminal_font.read(cx).value().to_string(),
+            },
         }
     }
 
@@ -120,6 +142,7 @@ pub fn render_settings_tab(
     shell_button: impl IntoElement,
     connection_backend_selector: impl IntoElement,
     accept_all_host_keys_toggle: impl IntoElement,
+    font_preset_buttons: impl IntoElement,
     control_path_selector: Option<impl IntoElement>,
 ) -> impl IntoElement {
     let mut panel = v_flex()
@@ -153,6 +176,15 @@ pub fn render_settings_tab(
     }
 
     panel
+        .child(section_label("ターミナル設定"))
+        .child(labeled_input("フォント名", &tab.terminal_font))
+        .child(font_preset_buttons)
+        .child(
+            div()
+                .text_xs()
+                .text_color(Colors::zouge())
+                .child("例: Moralerspace Neon HW / Cica / 任意のシステムフォント名"),
+        )
         .child(section_label("プロジェクト設定"))
         .child(labeled_input("プロジェクトパス", &tab.project_path))
         .child(section_label("セッション設定"))

@@ -1,4 +1,5 @@
 use crate::settings::load_settings;
+use crate::tabs::shogun_tab::MONO_FONT;
 use crate::ssh::SshClient;
 use crate::terminal::keys::key_to_bytes;
 use crate::terminal::pty_session;
@@ -195,7 +196,7 @@ impl Render for ShellWindow {
                     }
                 }))
                 .p_1()
-                .child(render_grid(&snap))
+                .child(render_grid(&snap, MONO_FONT))
                 .into_any_element()
         } else {
             div()
