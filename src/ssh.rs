@@ -34,6 +34,8 @@ pub struct SystemSshClient {
     /// Shared across clones; flipped to false on first ControlMaster failure.
     pub(crate) ctrl_enabled: Arc<AtomicBool>,
     pub(crate) control_path_type: ControlPathType,
+    pub(crate) proxy_command: String,
+    pub(crate) accept_all_host_keys: bool,
 }
 
 impl SystemSshClient {
@@ -51,12 +53,14 @@ impl SystemSshClient {
             password,
             ctrl_enabled: Arc::new(AtomicBool::new(true)),
             control_path_type: ControlPathType::Socket,
+            proxy_command: String::new(),
+            accept_all_host_keys: false,
         })
     }
 
     pub fn from_settings(settings: &ShogunDesktopSettings) -> Result<Self> {
         let ssh = &settings.ssh;
-        if ssh.user.is_empty() {
+        if ssh.user.is_empty() && ssh.proxy_command.is_empty() {
             bail!("SSHユーザー名が未設定です");
         }
         let key_path = if !ssh.key_path.is_empty()
@@ -75,6 +79,8 @@ impl SystemSshClient {
             password,
             ctrl_enabled: Arc::new(AtomicBool::new(true)),
             control_path_type: ssh.control_path.clone(),
+            proxy_command: ssh.proxy_command.clone(),
+            accept_all_host_keys: ssh.accept_all_host_keys,
         })
     }
 
@@ -150,6 +156,18 @@ impl SystemSshClient {
             "-o", "ConnectTimeout=10",
         ]);
 
+        if !self.proxy_command.is_empty() {
+            cmd.args(["-o", &format!("ProxyCommand={}", self.proxy_command)]);
+        }
+
+        if self.accept_all_host_keys {
+            cmd.args(["-o", "StrictHostKeyChecking=no"]);
+            #[cfg(windows)]
+            cmd.args(["-o", "UserKnownHostsFile=NUL"]);
+            #[cfg(not(windows))]
+            cmd.args(["-o", "UserKnownHostsFile=/dev/null"]);
+        }
+
         if let Some(ref key) = self.key_path {
             cmd.args(["-i", key]);
         }
@@ -171,7 +189,11 @@ impl SystemSshClient {
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
 
-        cmd.arg(format!("{}@{}", self.user, self.host));
+        if self.user.is_empty() {
+            cmd.arg(&self.host);
+        } else {
+            cmd.arg(format!("{}@{}", self.user, self.host));
+        }
         cmd.arg(command);
 
         let output = cmd
@@ -290,12 +312,7 @@ pub enum SshClient {
 
 impl SshClient {
     pub fn from_settings(settings: &ShogunDesktopSettings) -> Result<Self> {
-        let effective_backend = if !settings.ssh.proxy_command.is_empty() {
-            &ConnectionBackend::Native
-        } else {
-            &settings.ssh.connection_backend
-        };
-        match effective_backend {
+        match settings.ssh.connection_backend {
             ConnectionBackend::Native => Ok(SshClient::Native(NativeSshClient::new(settings)?)),
             ConnectionBackend::System => {
                 Ok(SshClient::System(SystemSshClient::from_settings(settings)?))
@@ -367,6 +384,8 @@ mod tests {
             password: None,
             ctrl_enabled: Arc::new(AtomicBool::new(true)),
             control_path_type,
+            proxy_command: String::new(),
+            accept_all_host_keys: false,
         }
     }
 
@@ -400,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn proxy_command_forces_native_backend() {
+    fn proxy_command_respects_connection_backend() {
         let settings = ShogunDesktopSettings {
             ssh: crate::settings::SshSettings {
                 user: "u".into(),
@@ -410,8 +429,8 @@ mod tests {
             },
             ..Default::default()
         };
-        let client = SshClient::from_settings(&settings).expect("native forced");
-        assert!(matches!(client, SshClient::Native(_)));
+        let client = SshClient::from_settings(&settings).expect("system backend");
+        assert!(matches!(client, SshClient::System(_)));
     }
 
     #[test]

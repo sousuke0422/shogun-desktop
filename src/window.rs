@@ -514,6 +514,11 @@ impl ShogunWindow {
         cx.notify();
     }
 
+    fn toggle_accept_all_host_keys(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.settings_tab.accept_all_host_keys = !self.settings_tab.accept_all_host_keys;
+        cx.notify();
+    }
+
     pub fn save_settings(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings_tab.collect(cx);
         self.status_message = match save_settings(&settings) {
@@ -756,6 +761,11 @@ impl Render for ShogunWindow {
                                 this.set_connection_backend(ConnectionBackend::System, cx);
                             })),
                     );
+                let accept_all = self.settings_tab.accept_all_host_keys;
+                let accept_all_host_keys_toggle = Button::new("accept-all-host-keys")
+                    .label("ホスト鍵を常に受け入れる（known_hosts スキップ）")
+                    .when(accept_all, |b| b.primary())
+                    .on_click(cx.listener(Self::toggle_accept_all_host_keys));
                 #[cfg(windows)]
                 let control_path_selector = {
                     let current = self.settings_tab.control_path.clone();
@@ -793,6 +803,7 @@ impl Render for ShogunWindow {
                     test_btn,
                     shell_btn,
                     connection_backend_selector,
+                    accept_all_host_keys_toggle,
                     #[cfg(windows)]
                     Some(control_path_selector),
                     #[cfg(not(windows))]
