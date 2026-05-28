@@ -137,7 +137,7 @@ impl NativeSshClient {
         cols: u16,
         rows: u16,
     ) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>, Box<dyn PtyResizer>)> {
-        let cmd = format!("tmux attach-session -t {tmux_session} -x {cols} -y {rows}");
+        let cmd = format!("tmux attach-session -t {tmux_session}");
         let (reader, writer, resizer) = self
             .rt
             .block_on(self.open_pty_async(&cmd, cols, rows))
