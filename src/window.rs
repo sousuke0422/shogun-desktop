@@ -47,16 +47,27 @@ pub fn measure_cell_metrics(
     let font_id = ts.resolve_font(&font_spec);
     let font_size = px(13.0);
 
-    let cw = ts
+    // ch_advance returns Result<Pixels, _>.  Guard against both Err and Ok(0.0):
+    // GPUI may return Ok(Pixels(0.0)) while the font is still being measured
+    // (lazy load).  A zero cw causes (viewport / 0) = f32::INFINITY, which casts
+    // to u16::MAX = 65535 — sending a 65535-col resize to tmux and breaking layout.
+    let measured_cw = ts
         .ch_advance(font_id, font_size)
         .map(f32::from)
-        .unwrap_or_else(|_| cell_width_for_font(font_name));
+        .unwrap_or(0.0);
+    let cw = if measured_cw > 0.5 {
+        measured_cw
+    } else {
+        cell_width_for_font(font_name)
+    };
 
     // ascent and descent are both positive in GPUI (absolute distances from baseline).
-    // Total natural line height = ascent + descent, clamped to CELL_H for safety.
+    // Total natural line height = ascent + descent.
+    // Guard against zero/near-zero values (font not yet measured) with CELL_H fallback.
     let ascent = f32::from(ts.ascent(font_id, font_size));
     let descent = f32::from(ts.descent(font_id, font_size));
-    let ch = (ascent + descent).max(CELL_H);
+    let natural_ch = ascent + descent;
+    let ch = if natural_ch > 1.0 { natural_ch } else { CELL_H };
 
     (cw, ch)
 }
