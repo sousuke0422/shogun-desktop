@@ -23,10 +23,9 @@ pub const CELL_H: f32 = 20.0;
 /// Measured advances (HAdvanceWidth / UPM × 13):
 ///   Moralerspace Neon HW : ASCII 6.825 px  → use 7.8 (empirical, adds breathing room)
 ///   Cica                  : ASCII 6.500 px  → use 6.5 (exact fit)
-///   MS Gothic             : ASCII 6.500 px  → use 6.5 (exact fit; all EAW=A are full-width)
 pub fn cell_width_for_font(font: &str) -> f32 {
     match font {
-        "Cica" | "MS Gothic" => 6.5,
+        "Cica" => 6.5,
         _ => CELL_W,
     }
 }
@@ -43,27 +42,20 @@ pub(crate) fn is_geom_box_char(c: char) -> bool {
     matches!(cp, 0x2500..=0x259F)
 }
 
-/// Returns `true` for EAW=Ambiguous code-points that need the MS Gothic font
-/// override (full-width glyph) but are **not** drawn as geometry.
-///
-/// Covered:
-///   U+2190-U+21FF  Arrows (→ ← ↑ ↓ ⇒ …)
-///   U+25A0-U+25FF  Geometric Shapes (◆ ■ ▶ …)
-pub(crate) fn is_box_drawing(c: char) -> bool {
-    let cp = c as u32;
-    matches!(cp,
-        0x2190..=0x21FF   // Arrows
-        | 0x25A0..=0x25FF // Geometric Shapes (non-block)
-    )
-}
-
 /// A styled run of consecutive terminal cells with identical visual properties.
 ///
 /// Adjacent cells that share the same fg, bg, bold, and underline flags are merged
 /// into a single `Run` for efficient GPUI rendering.  The cursor cell is always
 /// its own run so colours can be inverted independently.
 ///
-/// Runs are also split at geometry-box / font-box / plain-text boundaries.
+/// Runs are split at geometry-box / plain-text boundaries.
+///
+/// Note: EAW=Ambiguous characters (arrows U+2190-U+21FF, geometric shapes
+/// U+25A0-U+25FF) are rendered with the primary font at 1-cell (narrow) width,
+/// following Windows Terminal's de facto standard (PR #2928 — wcswidth=1 for EAW=A).
+/// A previous implementation switched to MS Gothic for these; that was wrong because
+/// alacritty_terminal already assigns display_width=1 to EAW=A chars, so a full-width
+/// MS Gothic glyph would overflow the 1-cell container.
 pub(crate) struct Run {
     pub text: String,
     pub fg: ResolvedColor,
@@ -77,8 +69,6 @@ pub(crate) struct Run {
     /// True when every char in this run is a geometry-rendered box char (U+2500-U+259F).
     /// The renderer uses `canvas` + `paint_quad` for these.
     pub use_geom: bool,
-    /// True when every char needs the MS Gothic font override (arrows, geometric shapes).
-    pub use_box_font: bool,
     /// Per-char display widths for geometry runs (parallel to `text.chars()`).
     /// Empty for non-geom runs.
     pub geom_char_widths: Vec<u8>,
@@ -109,10 +99,6 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
         (resolved_fg, resolved_bg)
     }
 }
-
-/// Font used for EAW=Ambiguous override (arrows U+2190-U+21FF, geometric shapes
-/// U+25A0-U+25FF).  MS Gothic has full-width glyphs for → ◆ ▶ etc. in EAW=A=2.
-const BOX_FONT: &str = "MS Gothic";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Geometry renderer for U+2500-U+259F
@@ -520,16 +506,11 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
                     }
 
                     // ── Font-rendered text ─────────────────────────────────────
-                    let effective_font = if run.use_box_font && font != BOX_FONT {
-                        BOX_FONT.to_string()
-                    } else {
-                        font.to_string()
-                    };
                     let mut el = div()
                         .child(run.text)
                         .w(total_w)
                         .overflow_hidden()
-                        .font_family(effective_font)
+                        .font_family(font.to_string())
                         .text_color(fg_rgba);
                     if let Some(bg_rgba) = bg_opt {
                         el = el.bg(bg_rgba);
@@ -549,7 +530,7 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
 ///
 /// Wide-char spacer cells (`display_width == 0`) are silently skipped.
 /// The cell at `cursor_col` is always isolated into its own run.
-/// Runs are split at geom / box-font / plain boundaries.
+/// Runs are split at geom / plain boundaries.
 pub(crate) fn coalesce_runs(
     cells: &[SnapshotCell],
     cursor_col: Option<usize>,
@@ -562,7 +543,6 @@ pub(crate) fn coalesce_runs(
         }
         let is_cursor = cursor_col == Some(col);
         let use_geom = is_geom_box_char(cell.c);
-        let use_box_font = !use_geom && is_box_drawing(cell.c);
 
         if let Some(last) = runs.last_mut() {
             if !is_cursor
@@ -572,7 +552,6 @@ pub(crate) fn coalesce_runs(
                 && last.bold == cell.bold
                 && last.underline == cell.underline
                 && last.use_geom == use_geom
-                && last.use_box_font == use_box_font
             {
                 last.text.push(cell.c);
                 last.width += w;
@@ -592,7 +571,6 @@ pub(crate) fn coalesce_runs(
             underline: cell.underline,
             is_cursor,
             use_geom,
-            use_box_font,
             geom_char_widths,
         });
     }
@@ -761,23 +739,24 @@ mod tests {
     }
 
     #[test]
-    fn box_font_chars_are_flagged_not_geom() {
-        // Arrow → is in U+2190-U+21FF → use_box_font=true, use_geom=false
+    fn arrow_is_plain_narrow() {
+        // Arrow → (U+2192, EAW=A) — rendered with primary font at 1-cell width.
+        // No special font override; follows wt standard (EAW=A = narrow).
         let cells = [cell_wide('→'), cell_spacer()];
         let runs: Vec<_> = coalesce_runs(&cells, None).collect();
         assert_eq!(runs.len(), 1);
         assert!(!runs[0].use_geom);
-        assert!(runs[0].use_box_font);
     }
 
     #[test]
-    fn geom_and_box_font_split() {
-        // ─ (geom) followed by → (box_font) should be separate runs
+    fn geom_and_plain_split() {
+        // ─ (geom) followed by → (plain/narrow) should be separate runs
+        // because use_geom differs.
         let cells = [cell_wide('─'), cell_spacer(), cell_wide('→'), cell_spacer()];
         let runs: Vec<_> = coalesce_runs(&cells, None).collect();
         assert_eq!(runs.len(), 2);
         assert!(runs[0].use_geom);
-        assert!(runs[1].use_box_font);
+        assert!(!runs[1].use_geom);
     }
 
     #[test]
@@ -794,19 +773,21 @@ mod tests {
     }
 
     #[test]
-    fn is_box_drawing_coverage() {
-        assert!(is_box_drawing('→'));   // U+2192
-        assert!(is_box_drawing('←'));   // U+2190
-        assert!(is_box_drawing('◆'));   // U+25C6
-        assert!(is_box_drawing('▶'));   // U+25B6
-        assert!(!is_box_drawing('─'));  // geom char, not box_font
-        assert!(!is_box_drawing('a'));
+    fn arrow_and_diamond_are_not_geom() {
+        // Arrows (U+2190-U+21FF) and geometric shapes (U+25A0-U+25FF)
+        // are NOT geometry-rendered — they use the primary font at 1-cell width.
+        assert!(!is_geom_box_char('→'));  // U+2192
+        assert!(!is_geom_box_char('←'));  // U+2190
+        assert!(!is_geom_box_char('◆'));  // U+25C6
+        assert!(!is_geom_box_char('▶'));  // U+25B6
+        // But box-drawing / block-elements ARE geometry:
+        assert!(is_geom_box_char('─'));   // U+2500
+        assert!(is_geom_box_char('█'));   // U+2588
     }
 
     #[test]
     fn cell_width_for_font_variants() {
         assert_eq!(cell_width_for_font("Cica"), 6.5);
-        assert_eq!(cell_width_for_font("MS Gothic"), 6.5);
         assert_eq!(cell_width_for_font("Moralerspace Neon HW"), CELL_W);
         assert_eq!(cell_width_for_font("unknown"), CELL_W);
     }
