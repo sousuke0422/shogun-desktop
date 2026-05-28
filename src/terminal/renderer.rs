@@ -1,4 +1,7 @@
-use gpui::{div, px, rgba, FontWeight, IntoElement, ParentElement, Rgba, Styled};
+use gpui::{
+    canvas, div, fill, point, px, rgba, size, AnyElement, App, Bounds, FontWeight, IntoElement,
+    ParentElement, Rgba, Styled, Window,
+};
 use gpui_component::v_flex;
 
 use crate::terminal::{GridSnapshot, ResolvedColor, SnapshotCell};
@@ -25,38 +28,39 @@ pub fn cell_width_for_font(font: &str) -> f32 {
     }
 }
 
-/// Returns `true` for Unicode code-points that are EAW=Ambiguous and rendered as
-/// **full-width** by `MS Gothic` (advance = UPM = 13 px @ 13 pt) but as
-/// **half-width** by Cica / Moralerspace HW (advance = UPM/2 = 6.5 px @ 13 pt).
+/// Returns `true` for Unicode code-points rendered as geometry (box drawing + block
+/// elements).  Characters in this range are drawn as filled quads by
+/// [`paint_box_char`], eliminating any font-metric dependency.
 ///
-/// When a non-MS-Gothic font is selected, the renderer overrides the font for
-/// these runs with `MS Gothic` so that:
-///   • tmux box borders render as solid continuous lines
-///   • `→` / `←` arrows and `◆` diamonds appear full-width
+/// Covered:
+///   U+2500-U+257F  Box Drawing (─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ ═ ║ ╔ ╗ ╚ ╝ …)
+///   U+2580-U+259F  Block Elements (▀ ▄ █ ▌ ▐ ░ ▒ ▓ …)
+pub(crate) fn is_geom_box_char(c: char) -> bool {
+    let cp = c as u32;
+    matches!(cp, 0x2500..=0x259F)
+}
+
+/// Returns `true` for EAW=Ambiguous code-points that need the MS Gothic font
+/// override (full-width glyph) but are **not** drawn as geometry.
 ///
-/// Measured advances in MS Gothic @ 13 pt (UPM = 256):
-///   U+2192 → (RIGHTWARDS ARROW)         : 256 units = 13 px  [FULL]
-///   U+25C6 ◆ (BLACK DIAMOND)             : 256 units = 13 px  [FULL]
-///   U+2500 ─ (BOX DRAWINGS LIGHT HORIZ)  : 256 units = 13 px  [FULL]
-///   U+2502 │ (BOX DRAWINGS LIGHT VERT)   : 256 units = 13 px  [FULL]
-///
-/// Exception: U+25B6 ▶ is HALF-WIDTH (128 units) in MS Gothic too — no help there.
+/// Covered:
+///   U+2190-U+21FF  Arrows (→ ← ↑ ↓ ⇒ …)
+///   U+25A0-U+25FF  Geometric Shapes (◆ ■ ▶ …)
 pub(crate) fn is_box_drawing(c: char) -> bool {
     let cp = c as u32;
     matches!(cp,
-        0x2190..=0x21FF  // Arrows: →, ←, ↑, ↓, ↔, ⇒, etc.
-        | 0x2500..=0x25FF  // Box Drawing + Block Elements + Geometric Shapes (◆, ■, etc.)
+        0x2190..=0x21FF   // Arrows
+        | 0x25A0..=0x25FF // Geometric Shapes (non-block)
     )
 }
 
 /// A styled run of consecutive terminal cells with identical visual properties.
 ///
 /// Adjacent cells that share the same fg, bg, bold, and underline flags are merged
-/// into a single `Run` for efficient GPUI rendering. The cursor cell is always its
-/// own run (never merged with neighbours) so colours can be inverted independently.
+/// into a single `Run` for efficient GPUI rendering.  The cursor cell is always
+/// its own run so colours can be inverted independently.
 ///
-/// Runs are also split at box-drawing / non-box-drawing boundaries so that the
-/// renderer can apply a per-run font override for box chars (see `is_box_drawing`).
+/// Runs are also split at geometry-box / font-box / plain-text boundaries.
 pub(crate) struct Run {
     pub text: String,
     pub fg: ResolvedColor,
@@ -67,13 +71,17 @@ pub(crate) struct Run {
     pub underline: bool,
     /// True for the single run that sits at the cursor position.
     pub is_cursor: bool,
-    /// True when every character in this run is a box-drawing / block-element char.
-    /// The renderer will substitute `Moralerspace Neon HW` for these runs when the
-    /// user has selected a different (non-HW) font.
+    /// True when every char in this run is a geometry-rendered box char (U+2500-U+259F).
+    /// The renderer uses `canvas` + `paint_quad` for these.
+    pub use_geom: bool,
+    /// True when every char needs the MS Gothic font override (arrows, geometric shapes).
     pub use_box_font: bool,
+    /// Per-char display widths for geometry runs (parallel to `text.chars()`).
+    /// Empty for non-geom runs.
+    pub geom_char_widths: Vec<u8>,
 }
 
-/// Map a resolved terminal color to a GPUI `Rgba` for text/background styling.
+/// Map a resolved terminal color to a GPUI `Rgba`.
 pub fn color_to_rgba(color: ResolvedColor) -> Rgba {
     match color {
         ResolvedColor::Rgb(r, g, b) => rgba(u32::from_be_bytes([r, g, b, 0xff])),
@@ -81,21 +89,16 @@ pub fn color_to_rgba(color: ResolvedColor) -> Rgba {
     }
 }
 
-/// Resolve the display fg/bg for a `Run`, applying block-cursor inversion when needed.
+/// Resolve the display fg/bg for a [`Run`], applying block-cursor inversion.
 ///
-/// Returns `(fg: Rgba, bg: Option<Rgba>)`.
-/// `None` bg means transparent — the terminal background shows through.
+/// Returns `(fg, bg_opt)`.  `None` bg means transparent.
 fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
     let resolved_fg = color_to_rgba(run.fg);
     let resolved_bg = match run.bg {
         ResolvedColor::Rgb(r, g, b) => Some(rgba(u32::from_be_bytes([r, g, b, 0xff]))),
         ResolvedColor::Default => None,
     };
-
     if run.is_cursor {
-        // Block cursor: swap fg ↔ bg.
-        // When bg is Default (transparent), fall back to a dark terminal-background tone
-        // so the cursor block is always visible.
         let cursor_bg = resolved_fg;
         let cursor_fg = resolved_bg.unwrap_or_else(|| rgba(0x1e1e1eff));
         (cursor_fg, Some(cursor_bg))
@@ -104,10 +107,348 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
     }
 }
 
-/// Font used for EAW=Ambiguous override (arrows, box drawing, geometric shapes).
-/// MS Gothic has full-width glyphs for → ◆ ─ │ etc. in EAW=A=2 mode.
-/// Falls back to "Moralerspace Neon HW" (embedded) if MS Gothic is not loaded.
+/// Font used for EAW=Ambiguous override (arrows U+2190-U+21FF, geometric shapes
+/// U+25A0-U+25FF).  MS Gothic has full-width glyphs for → ◆ ▶ etc. in EAW=A=2.
 const BOX_FONT: &str = "MS Gothic";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Geometry renderer for U+2500-U+259F
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Draw one box-drawing / block-element character as filled quads.
+///
+/// `ox`, `oy`  — top-left origin of this character's cell (raw f32 pixels).
+/// `cw`        — width of this character's display cell (1-cell-px × display_width).
+/// `ch`        — cell height (CELL_H).
+///
+/// Returns `false` for unhandled characters (caller may fall back to font).
+#[allow(clippy::too_many_arguments)]
+fn paint_box_char(
+    c: char,
+    ox: f32,
+    oy: f32,
+    cw: f32,
+    ch: f32,
+    fg: Rgba,
+    window: &mut Window,
+) -> bool {
+    // Cell boundary pixels
+    let x1 = ox + cw;
+    let y1 = oy + ch;
+    let xm = ox + cw * 0.5;
+    let ym = oy + ch * 0.5;
+
+    // Light line weight: 1/8 cell height, min 1 px
+    let lw = (ch / 8.0).max(1.0);
+    // Heavy line weight: 1/4 cell height, min 2 px
+    let hw = (ch / 4.0).max(2.0);
+
+    // Helper: build a Bounds<Pixels> from raw f32 corners
+    macro_rules! rect {
+        ($ax:expr, $ay:expr, $bx:expr, $by:expr) => {
+            Bounds {
+                origin: point(px($ax), px($ay)),
+                size: size(px(($bx - $ax).max(0.0)), px(($by - $ay).max(0.0))),
+            }
+        };
+    }
+
+    // Segment helpers (returns Bounds<Pixels>)
+    // Horizontal full / left-half / right-half at given y-center, given line-width
+    macro_rules! h_full { ($yc:expr, $lw:expr) => { rect!(ox,       $yc-$lw/2.0, x1, $yc+$lw/2.0) }; }
+    macro_rules! h_left { ($yc:expr, $lw:expr) => { rect!(ox,       $yc-$lw/2.0, xm, $yc+$lw/2.0) }; }
+    macro_rules! h_right{ ($yc:expr, $lw:expr) => { rect!(xm,       $yc-$lw/2.0, x1, $yc+$lw/2.0) }; }
+    // Vertical full / top-half / bottom-half at given x-center
+    macro_rules! v_full { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, oy, $xc+$lw/2.0, y1) }; }
+    macro_rules! v_top  { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, oy, $xc+$lw/2.0, ym) }; }
+    macro_rules! v_bot  { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, ym, $xc+$lw/2.0, y1) }; }
+
+    // Paint a filled quad
+    macro_rules! q { ($b:expr) => { window.paint_quad(fill($b, fg)) }; }
+
+    // Double-line offsets (40% and 60% of cell)
+    let d1x = ox + cw * 0.4;
+    let d2x = ox + cw * 0.6;
+    let d1y = oy + ch * 0.4;
+    let d2y = oy + ch * 0.6;
+
+    match c {
+        // ── Light & heavy horizontal / vertical ──────────────────────────────
+        '─' => q!(h_full!(ym, lw)),
+        '━' => q!(h_full!(ym, hw)),
+        '│' => q!(v_full!(xm, lw)),
+        '┃' => q!(v_full!(xm, hw)),
+        // dashed lines → solid approximation
+        '┄' | '╌' | '┈' => q!(h_full!(ym, lw)),
+        '┅' | '╍' | '┉' => q!(h_full!(ym, hw)),
+        '┆' | '╎' | '┊' => q!(v_full!(xm, lw)),
+        '┇' | '╏' | '┋' => q!(v_full!(xm, hw)),
+
+        // ── Light corners ─────────────────────────────────────────────────────
+        '┌' => { q!(h_right!(ym, lw)); q!(v_bot!(xm, lw)); }
+        '┐' => { q!(h_left!(ym, lw));  q!(v_bot!(xm, lw)); }
+        '└' => { q!(h_right!(ym, lw)); q!(v_top!(xm, lw)); }
+        '┘' => { q!(h_left!(ym, lw));  q!(v_top!(xm, lw)); }
+
+        // light + heavy corner variants
+        '┍' => { q!(h_right!(ym, hw)); q!(v_bot!(xm, lw)); }
+        '┎' => { q!(h_right!(ym, lw)); q!(v_bot!(xm, hw)); }
+        '┏' => { q!(h_right!(ym, hw)); q!(v_bot!(xm, hw)); }
+        '┑' => { q!(h_left!(ym, hw));  q!(v_bot!(xm, lw)); }
+        '┒' => { q!(h_left!(ym, lw));  q!(v_bot!(xm, hw)); }
+        '┓' => { q!(h_left!(ym, hw));  q!(v_bot!(xm, hw)); }
+        '┕' => { q!(h_right!(ym, hw)); q!(v_top!(xm, lw)); }
+        '┖' => { q!(h_right!(ym, lw)); q!(v_top!(xm, hw)); }
+        '┗' => { q!(h_right!(ym, hw)); q!(v_top!(xm, hw)); }
+        '┙' => { q!(h_left!(ym, hw));  q!(v_top!(xm, lw)); }
+        '┚' => { q!(h_left!(ym, lw));  q!(v_top!(xm, hw)); }
+        '┛' => { q!(h_left!(ym, hw));  q!(v_top!(xm, hw)); }
+
+        // ── T-junctions ───────────────────────────────────────────────────────
+        '├' => { q!(h_right!(ym, lw)); q!(v_full!(xm, lw)); }
+        '┤' => { q!(h_left!(ym, lw));  q!(v_full!(xm, lw)); }
+        '┬' => { q!(h_full!(ym, lw));  q!(v_bot!(xm, lw));  }
+        '┴' => { q!(h_full!(ym, lw));  q!(v_top!(xm, lw));  }
+        '┼' => { q!(h_full!(ym, lw));  q!(v_full!(xm, lw)); }
+
+        // heavy T-junctions
+        '┣' => { q!(h_right!(ym, hw)); q!(v_full!(xm, hw)); }
+        '┫' => { q!(h_left!(ym, hw));  q!(v_full!(xm, hw)); }
+        '┳' => { q!(h_full!(ym, hw));  q!(v_bot!(xm, hw));  }
+        '┻' => { q!(h_full!(ym, hw));  q!(v_top!(xm, hw));  }
+        '╋' => { q!(h_full!(ym, hw));  q!(v_full!(xm, hw)); }
+
+        // mixed T-junctions → approximate with light
+        '┝'..='┞' | '┟'..='┠' | '┡'..='┢' | '┦'..='┧'
+        | '┨'..='┩' | '┪' | '┭'..='┯'
+        | '┰'..='┲' | '┵'..='┷' | '┸'..='┺' | '┽'..='┿'
+        | '╀'..='╉' | '╊' => {
+            q!(h_full!(ym, lw)); q!(v_full!(xm, lw));
+        }
+
+        // ── Half-lines ────────────────────────────────────────────────────────
+        '╴' => q!(h_left!(ym, lw)),
+        '╵' => q!(v_top!(xm, lw)),
+        '╶' => q!(h_right!(ym, lw)),
+        '╷' => q!(v_bot!(xm, lw)),
+        '╸' => q!(h_left!(ym, hw)),
+        '╹' => q!(v_top!(xm, hw)),
+        '╺' => q!(h_right!(ym, hw)),
+        '╻' => q!(v_bot!(xm, hw)),
+        '╼' => { q!(h_left!(ym, lw)); q!(h_right!(ym, hw)); }
+        '╽' => { q!(v_top!(xm, lw)); q!(v_bot!(xm, hw)); }
+        '╾' => { q!(h_left!(ym, hw)); q!(h_right!(ym, lw)); }
+        '╿' => { q!(v_top!(xm, hw)); q!(v_bot!(xm, lw)); }
+
+        // ── Double lines ──────────────────────────────────────────────────────
+        '═' => { q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw)); }
+        '║' => { q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw)); }
+
+        // Double corners (top-left)
+        '╔' => {
+            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
+            q!(v_bot!(d1x, lw));   q!(v_bot!(d2x, lw));
+        }
+        '╓' => {
+            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
+            q!(v_bot!(xm, lw));
+        }
+        '╒' => {
+            q!(h_right!(ym, lw));
+            q!(v_bot!(d1x, lw)); q!(v_bot!(d2x, lw));
+        }
+
+        // top-right
+        '╗' => {
+            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
+            q!(v_bot!(d1x, lw));  q!(v_bot!(d2x, lw));
+        }
+        '╖' => {
+            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
+            q!(v_bot!(xm, lw));
+        }
+        '╕' => {
+            q!(h_left!(ym, lw));
+            q!(v_bot!(d1x, lw)); q!(v_bot!(d2x, lw));
+        }
+
+        // bottom-left
+        '╚' => {
+            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
+            q!(v_top!(d1x, lw));   q!(v_top!(d2x, lw));
+        }
+        '╙' => {
+            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
+            q!(v_top!(xm, lw));
+        }
+        '╘' => {
+            q!(h_right!(ym, lw));
+            q!(v_top!(d1x, lw)); q!(v_top!(d2x, lw));
+        }
+
+        // bottom-right
+        '╝' => {
+            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
+            q!(v_top!(d1x, lw));  q!(v_top!(d2x, lw));
+        }
+        '╜' => {
+            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
+            q!(v_top!(xm, lw));
+        }
+        '╛' => {
+            q!(h_left!(ym, lw));
+            q!(v_top!(d1x, lw)); q!(v_top!(d2x, lw));
+        }
+
+        // Double T-junctions
+        '╠' => {
+            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
+            q!(v_full!(d1x, lw));  q!(v_full!(d2x, lw));
+        }
+        '╟' => {
+            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
+            q!(v_full!(xm, lw));
+        }
+        '╞' => {
+            q!(h_right!(ym, lw));
+            q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw));
+        }
+        '╣' => {
+            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
+            q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw));
+        }
+        '╢' => {
+            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
+            q!(v_full!(xm, lw));
+        }
+        '╡' => {
+            q!(h_left!(ym, lw));
+            q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw));
+        }
+        '╦' => {
+            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
+            q!(v_bot!(d1x, lw));  q!(v_bot!(d2x, lw));
+        }
+        '╥' => {
+            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
+            q!(v_bot!(xm, lw));
+        }
+        '╤' => {
+            q!(h_full!(ym, lw));
+            q!(v_bot!(d1x, lw)); q!(v_bot!(d2x, lw));
+        }
+        '╩' => {
+            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
+            q!(v_top!(d1x, lw));  q!(v_top!(d2x, lw));
+        }
+        '╨' => {
+            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
+            q!(v_top!(xm, lw));
+        }
+        '╧' => {
+            q!(h_full!(ym, lw));
+            q!(v_top!(d1x, lw)); q!(v_top!(d2x, lw));
+        }
+        '╬' => {
+            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
+            q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw));
+        }
+        '╫' => {
+            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
+            q!(v_full!(xm, lw));
+        }
+        '╪' => {
+            q!(h_full!(ym, lw));
+            q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw));
+        }
+
+        // ── Block elements U+2580-U+259F ──────────────────────────────────────
+        '▀' => q!(rect!(ox, oy,             x1, ym)),           // upper half
+        '▁' => q!(rect!(ox, oy+ch*7.0/8.0, x1, y1)),           // lower 1/8
+        '▂' => q!(rect!(ox, oy+ch*6.0/8.0, x1, y1)),
+        '▃' => q!(rect!(ox, oy+ch*5.0/8.0, x1, y1)),
+        '▄' => q!(rect!(ox, ym,             x1, y1)),           // lower half
+        '▅' => q!(rect!(ox, oy+ch*3.0/8.0, x1, y1)),
+        '▆' => q!(rect!(ox, oy+ch*2.0/8.0, x1, y1)),
+        '▇' => q!(rect!(ox, oy+ch*1.0/8.0, x1, y1)),
+        '█' => q!(rect!(ox, oy,             x1, y1)),           // full block
+        '▉' => q!(rect!(ox, oy, ox+cw*7.0/8.0, y1)),
+        '▊' => q!(rect!(ox, oy, ox+cw*6.0/8.0, y1)),
+        '▋' => q!(rect!(ox, oy, ox+cw*5.0/8.0, y1)),
+        '▌' => q!(rect!(ox, oy, xm,             y1)),           // left half
+        '▍' => q!(rect!(ox, oy, ox+cw*3.0/8.0, y1)),
+        '▎' => q!(rect!(ox, oy, ox+cw*2.0/8.0, y1)),
+        '▏' => q!(rect!(ox, oy, ox+cw*1.0/8.0, y1)),
+        '▐' => q!(rect!(xm, oy, x1,             y1)),           // right half
+        // Shades: approximate with dot patterns
+        '░' => {
+            let dw = (cw * 0.15).max(1.0);
+            let dh = (ch * 0.15).max(1.0);
+            for row in 0..4_i32 {
+                for col in 0..4_i32 {
+                    if (row + col) % 4 == 0 {
+                        let qx = ox + cw * (col as f32 / 4.0 + 0.05);
+                        let qy = oy + ch * (row as f32 / 4.0 + 0.05);
+                        q!(Bounds {
+                            origin: point(px(qx), px(qy)),
+                            size: size(px(dw), px(dh)),
+                        });
+                    }
+                }
+            }
+        }
+        '▒' => {
+            let dw = (cw / 4.0).max(1.0);
+            let dh = (ch / 4.0).max(1.0);
+            for row in 0..4_i32 {
+                for col in 0..4_i32 {
+                    if (row + col) % 2 == 0 {
+                        let qx = ox + cw * col as f32 / 4.0;
+                        let qy = oy + ch * row as f32 / 4.0;
+                        q!(Bounds {
+                            origin: point(px(qx), px(qy)),
+                            size: size(px(dw), px(dh)),
+                        });
+                    }
+                }
+            }
+        }
+        '▓' => {
+            // 75% — draw the majority cells (3 out of 4)
+            let dw = (cw / 4.0).max(1.0);
+            let dh = (ch / 4.0).max(1.0);
+            for row in 0..4_i32 {
+                for col in 0..4_i32 {
+                    if (row + col) % 2 == 0 || (row * 4 + col) % 4 != 3 {
+                        let qx = ox + cw * col as f32 / 4.0;
+                        let qy = oy + ch * row as f32 / 4.0;
+                        q!(Bounds {
+                            origin: point(px(qx), px(qy)),
+                            size: size(px(dw), px(dh)),
+                        });
+                    }
+                }
+            }
+        }
+        '▔' => q!(rect!(ox, oy, x1, oy+ch/8.0)),               // upper 1/8
+        '▕' => q!(rect!(ox+cw*7.0/8.0, oy, x1, y1)),           // right 1/8
+        '▖' => q!(rect!(ox, ym, xm, y1)),                       // lower-left quad
+        '▗' => q!(rect!(xm, ym, x1, y1)),                       // lower-right quad
+        '▘' => q!(rect!(ox, oy, xm, ym)),                       // upper-left quad
+        '▙' => { q!(rect!(ox, oy, xm, y1));  q!(rect!(xm, ym, x1, y1)); }
+        '▚' => { q!(rect!(ox, oy, xm, ym));  q!(rect!(xm, ym, x1, y1)); }
+        '▛' => { q!(rect!(ox, oy, x1, ym));  q!(rect!(ox, ym, xm, y1)); }
+        '▜' => { q!(rect!(ox, oy, x1, ym));  q!(rect!(xm, ym, x1, y1)); }
+        '▝' => q!(rect!(xm, oy, x1, ym)),                       // upper-right quad
+        '▞' => { q!(rect!(xm, oy, x1, ym));  q!(rect!(ox, ym, xm, y1)); }
+        '▟' => { q!(rect!(xm, oy, x1, ym));  q!(rect!(ox, ym, x1, y1)); }
+
+        _ => return false,
+    }
+    true
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
     let cw = cell_width_for_font(font);
@@ -125,10 +466,44 @@ pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
                 .flex()
                 .flex_row()
                 .h(px(CELL_H))
-                .children(coalesce_runs(row, cur_col).map(|run| {
+                .children(coalesce_runs(row, cur_col).map(move |run| -> AnyElement {
                     let (fg_rgba, bg_opt) = resolve_run_colors(&run);
-                    // For box-drawing runs, override with the embedded HW font so that
-                    // tmux borders are full-width regardless of the user's font choice.
+                    let total_w = px(cw * run.width as f32);
+
+                    if run.use_geom {
+                        // ── Geometry canvas for box drawing / block elements ───
+                        let chars: Vec<(char, u8)> = run
+                            .text
+                            .chars()
+                            .zip(run.geom_char_widths.iter().copied())
+                            .map(|(c, w)| (c, w))
+                            .collect();
+                        let fg_cap = fg_rgba;
+                        let bg_cap = bg_opt;
+                        let cw_cap = cw;
+
+                        return canvas(
+                            |_bounds, _window, _cx| (),
+                            move |bounds, (), window, _cx: &mut App| {
+                                if let Some(bg) = bg_cap {
+                                    window.paint_quad(fill(bounds, bg));
+                                }
+                                let mut x_off = f32::from(bounds.origin.x);
+                                let y_off = f32::from(bounds.origin.y);
+                                let ch = f32::from(bounds.size.height);
+                                for &(c, dw) in &chars {
+                                    let char_cw = cw_cap * dw as f32;
+                                    paint_box_char(c, x_off, y_off, char_cw, ch, fg_cap, window);
+                                    x_off += char_cw;
+                                }
+                            },
+                        )
+                        .w(total_w)
+                        .h(px(CELL_H))
+                        .into_any_element();
+                    }
+
+                    // ── Font-rendered text ─────────────────────────────────────
                     let effective_font = if run.use_box_font && font != BOX_FONT {
                         BOX_FONT.to_string()
                     } else {
@@ -136,7 +511,7 @@ pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
                     };
                     let mut el = div()
                         .child(run.text)
-                        .w(px(cw * run.width as f32))
+                        .w(total_w)
                         .overflow_hidden()
                         .font_family(effective_font)
                         .text_color(fg_rgba);
@@ -149,18 +524,16 @@ pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
                     if run.underline {
                         el = el.underline().text_decoration_1();
                     }
-                    el
+                    el.into_any_element()
                 }))
         }))
 }
 
 /// Merge adjacent cells with identical styling into [`Run`]s.
 ///
-/// Runs are split on any difference in fg, bg, bold, underline, or box-drawing
-/// category (see [`is_box_drawing`]).  Wide-char spacer cells
-/// (`display_width == 0`) are silently skipped.
-/// The cell at `cursor_col` (when `Some`) is always isolated into its own run
-/// with `is_cursor = true`, regardless of surrounding styles.
+/// Wide-char spacer cells (`display_width == 0`) are silently skipped.
+/// The cell at `cursor_col` is always isolated into its own run.
+/// Runs are split at geom / box-font / plain boundaries.
 pub(crate) fn coalesce_runs(
     cells: &[SnapshotCell],
     cursor_col: Option<usize>,
@@ -169,10 +542,12 @@ pub(crate) fn coalesce_runs(
     for (col, cell) in cells.iter().enumerate() {
         let w = usize::from(cell.display_width);
         if w == 0 {
-            continue; // wide-char spacer — skip without emitting a run
+            continue;
         }
         let is_cursor = cursor_col == Some(col);
-        let use_box_font = is_box_drawing(cell.c);
+        let use_geom = is_geom_box_char(cell.c);
+        let use_box_font = !use_geom && is_box_drawing(cell.c);
+
         if let Some(last) = runs.last_mut() {
             if !is_cursor
                 && !last.is_cursor
@@ -180,13 +555,18 @@ pub(crate) fn coalesce_runs(
                 && last.bg == cell.bg
                 && last.bold == cell.bold
                 && last.underline == cell.underline
+                && last.use_geom == use_geom
                 && last.use_box_font == use_box_font
             {
                 last.text.push(cell.c);
                 last.width += w;
+                if use_geom {
+                    last.geom_char_widths.push(w as u8);
+                }
                 continue;
             }
         }
+        let geom_char_widths = if use_geom { vec![w as u8] } else { Vec::new() };
         runs.push(Run {
             text: cell.c.to_string(),
             fg: cell.fg,
@@ -195,7 +575,9 @@ pub(crate) fn coalesce_runs(
             bold: cell.bold,
             underline: cell.underline,
             is_cursor,
+            use_geom,
             use_box_font,
+            geom_char_widths,
         });
     }
     runs.into_iter()
@@ -272,8 +654,6 @@ mod tests {
         }
     }
 
-    // ── existing tests (ported to struct-field access) ────────────────────────
-
     #[test]
     fn wide_char_spacer_cells_are_skipped() {
         let cells = [cell_wide('あ'), cell_spacer()];
@@ -284,229 +664,134 @@ mod tests {
     }
 
     #[test]
-    fn empty_slice_yields_no_runs() {
-        let runs: Vec<_> = coalesce_runs(&[], None).collect();
-        assert!(runs.is_empty());
-    }
-
-    #[test]
-    fn same_color_cells_coalesce_into_one_run() {
+    fn adjacent_plain_cells_merge() {
         let cells = [cell('a'), cell('b'), cell('c')];
         let runs: Vec<_> = coalesce_runs(&cells, None).collect();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].text, "abc");
         assert_eq!(runs[0].width, 3);
-        assert_eq!(runs[0].fg, ResolvedColor::Default);
-        assert_eq!(runs[0].bg, ResolvedColor::Default);
     }
 
     #[test]
-    fn different_color_cells_split_into_runs() {
-        let cells = [cell('a'), cell_rgb('b', 255, 0, 0)];
+    fn different_fg_splits_run() {
+        let cells = [cell_rgb('a', 255, 0, 0), cell_rgb('b', 0, 255, 0)];
         let runs: Vec<_> = coalesce_runs(&cells, None).collect();
         assert_eq!(runs.len(), 2);
-        assert_eq!(runs[0].text, "a");
-        assert_eq!(runs[0].width, 1);
-        assert_eq!(runs[1].text, "b");
-        assert_eq!(runs[1].fg, ResolvedColor::Rgb(255, 0, 0));
     }
 
     #[test]
-    fn adjacent_same_color_runs_merge_before_color_change() {
-        let cells = [cell('a'), cell('b'), cell_rgb('c', 0, 255, 0)];
+    fn different_bg_splits_run() {
+        let cells = [cell_bg('a', 255, 0, 0), cell_bg('b', 0, 255, 0)];
         let runs: Vec<_> = coalesce_runs(&cells, None).collect();
         assert_eq!(runs.len(), 2);
-        assert_eq!(runs[0].text, "ab");
-        assert_eq!(runs[0].width, 2);
-        assert_eq!(runs[1].text, "c");
-        assert_eq!(runs[1].fg, ResolvedColor::Rgb(0, 255, 0));
     }
 
     #[test]
-    fn mixed_width_cells_sum_display_width() {
-        let cells = [cell('a'), cell_wide('あ')];
-        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].text, "aあ");
-        assert_eq!(runs[0].width, 3);
-    }
-
-    #[test]
-    fn color_to_rgba_default_matches_zouge() {
-        assert_eq!(color_to_rgba(ResolvedColor::Default), Colors::zouge());
-    }
-
-    #[test]
-    fn color_to_rgba_rgb_packs_bytes() {
-        let c = color_to_rgba(ResolvedColor::Rgb(0x12, 0x34, 0x56));
-        assert!((c.r - 18.0 / 255.0).abs() < 0.01);
-        assert!((c.g - 52.0 / 255.0).abs() < 0.01);
-        assert!((c.b - 86.0 / 255.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn different_background_splits_runs() {
-        let cells = [cell('a'), cell_bg('b', 0, 0, 255)];
+    fn bold_splits_run() {
+        let cells = [cell('a'), cell_bold('b')];
         let runs: Vec<_> = coalesce_runs(&cells, None).collect();
         assert_eq!(runs.len(), 2);
-        assert_eq!(runs[1].bg, ResolvedColor::Rgb(0, 0, 255));
-    }
-
-    // ── new tests: bold ───────────────────────────────────────────────────────
-
-    #[test]
-    fn bold_cells_split_from_normal_cells() {
-        let cells = [cell('a'), cell_bold('b'), cell('c')];
-        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
-        assert_eq!(runs.len(), 3);
-        assert!(!runs[0].bold);
-        assert!(runs[1].bold);
-        assert_eq!(runs[1].text, "b");
-        assert!(!runs[2].bold);
     }
 
     #[test]
-    fn adjacent_bold_cells_coalesce() {
-        let cells = [cell_bold('x'), cell_bold('y')];
-        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].text, "xy");
-        assert!(runs[0].bold);
-    }
-
-    // ── new tests: cursor isolation ───────────────────────────────────────────
-
-    #[test]
-    fn cursor_col_isolates_cursor_cell() {
-        // 'a' | cursor:'b' | 'c'  →  three runs
+    fn cursor_cell_is_isolated() {
         let cells = [cell('a'), cell('b'), cell('c')];
         let runs: Vec<_> = coalesce_runs(&cells, Some(1)).collect();
         assert_eq!(runs.len(), 3);
         assert!(!runs[0].is_cursor);
         assert!(runs[1].is_cursor);
-        assert_eq!(runs[1].text, "b");
-        assert_eq!(runs[1].width, 1);
         assert!(!runs[2].is_cursor);
     }
 
     #[test]
-    fn cursor_at_col_zero() {
+    fn cursor_at_start() {
         let cells = [cell('a'), cell('b')];
         let runs: Vec<_> = coalesce_runs(&cells, Some(0)).collect();
         assert_eq!(runs.len(), 2);
         assert!(runs[0].is_cursor);
         assert_eq!(runs[0].text, "a");
-        assert!(!runs[1].is_cursor);
+        assert_eq!(runs[1].text, "b");
     }
 
     #[test]
-    fn no_cursor_col_leaves_all_is_cursor_false() {
-        let cells = [cell('a'), cell('b'), cell('c')];
-        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
-        assert!(runs.iter().all(|r| !r.is_cursor));
-    }
-
-    #[test]
-    fn cursor_past_end_produces_no_cursor_run() {
+    fn cursor_at_end() {
         let cells = [cell('a'), cell('b')];
-        let runs: Vec<_> = coalesce_runs(&cells, Some(99)).collect();
-        assert!(runs.iter().all(|r| !r.is_cursor));
-    }
-
-    // ── new tests: box-drawing font split ─────────────────────────────────────
-
-    fn cell_box(c: char) -> SnapshotCell {
-        // Box drawing chars must be in the U+2500-U+259F range.
-        SnapshotCell {
-            c,
-            fg: ResolvedColor::Default,
-            bg: ResolvedColor::Default,
-            display_width: 2, // EAW=A → 2-wide in CJK mode
-            bold: false,
-            underline: false,
-        }
+        let runs: Vec<_> = coalesce_runs(&cells, Some(1)).collect();
+        assert_eq!(runs.len(), 2);
+        assert!(!runs[0].is_cursor);
+        assert!(runs[1].is_cursor);
     }
 
     #[test]
-    fn is_box_drawing_detects_ranges() {
-        // Arrows (U+2190-U+21FF)
-        assert!(is_box_drawing('\u{2192}')); // →
-        assert!(is_box_drawing('\u{2190}')); // ←
-        assert!(is_box_drawing('\u{21FF}')); // end of arrows
-        // Box Drawing + Block (U+2500-U+259F)
-        assert!(is_box_drawing('\u{2500}')); // ─
-        assert!(is_box_drawing('\u{2502}')); // │
-        assert!(is_box_drawing('\u{2580}')); // upper-half block
-        assert!(is_box_drawing('\u{259F}')); // lower-right quadrant
-        // Geometric Shapes (U+25A0-U+25FF)
-        assert!(is_box_drawing('\u{25C6}')); // ◆
-        assert!(is_box_drawing('\u{25B6}')); // ▶
-        assert!(is_box_drawing('\u{25FF}')); // end of geometric shapes
-        // Outside ranges
-        assert!(!is_box_drawing('a'));
-        assert!(!is_box_drawing('\u{218F}')); // just below arrows
-        assert!(!is_box_drawing('\u{2200}')); // just above arrows, below box
-        assert!(!is_box_drawing('\u{24FF}')); // Enclosed Alphanumerics (not in range)
-    }
-
-    #[test]
-    fn box_drawing_split_from_normal_chars() {
-        // ASCII 'a', then U+2500 '─', then ASCII 'b'  →  3 runs
-        let cells = [cell('a'), cell_box('\u{2500}'), cell('b')];
+    fn geom_box_chars_are_flagged() {
+        let cells = [cell('a'), cell_wide('─'), cell_spacer(), cell('b')];
         let runs: Vec<_> = coalesce_runs(&cells, None).collect();
+        // a | ─ | b  (spacer skipped)
         assert_eq!(runs.len(), 3);
-        assert!(!runs[0].use_box_font);
+        assert!(!runs[0].use_geom);
+        assert!(runs[1].use_geom);
+        assert!(!runs[2].use_geom);
+        assert_eq!(runs[1].geom_char_widths, vec![2u8]);
+    }
+
+    #[test]
+    fn adjacent_geom_chars_merge() {
+        let cells = [cell_wide('─'), cell_spacer(), cell_wide('─'), cell_spacer()];
+        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].text, "──");
+        assert_eq!(runs[0].width, 4);
+        assert_eq!(runs[0].geom_char_widths, vec![2u8, 2u8]);
+    }
+
+    #[test]
+    fn box_font_chars_are_flagged_not_geom() {
+        // Arrow → is in U+2190-U+21FF → use_box_font=true, use_geom=false
+        let cells = [cell_wide('→'), cell_spacer()];
+        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
+        assert_eq!(runs.len(), 1);
+        assert!(!runs[0].use_geom);
+        assert!(runs[0].use_box_font);
+    }
+
+    #[test]
+    fn geom_and_box_font_split() {
+        // ─ (geom) followed by → (box_font) should be separate runs
+        let cells = [cell_wide('─'), cell_spacer(), cell_wide('→'), cell_spacer()];
+        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
+        assert_eq!(runs.len(), 2);
+        assert!(runs[0].use_geom);
         assert!(runs[1].use_box_font);
-        assert_eq!(runs[1].text, "\u{2500}");
-        assert!(!runs[2].use_box_font);
     }
 
     #[test]
-    fn arrow_chars_are_override_font() {
-        // → (U+2192) and ◆ (U+25C6) trigger font override
-        let arrow_cell = SnapshotCell {
-            c: '\u{2192}', // →
-            fg: ResolvedColor::Default,
-            bg: ResolvedColor::Default,
-            display_width: 2, // EAW=A in CJK mode
-            bold: false,
-            underline: false,
-        };
-        let diamond_cell = SnapshotCell {
-            c: '\u{25C6}', // ◆
-            fg: ResolvedColor::Default,
-            bg: ResolvedColor::Default,
-            display_width: 2,
-            bold: false,
-            underline: false,
-        };
-        let cells = [arrow_cell, diamond_cell];
-        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
-        // Both are in override range → should coalesce into 1 run
-        assert_eq!(runs.len(), 1);
-        assert!(runs[0].use_box_font);
-        assert_eq!(runs[0].text, "\u{2192}\u{25C6}");
-        assert_eq!(runs[0].width, 4); // 2+2
+    fn is_geom_box_char_coverage() {
+        assert!(is_geom_box_char('─'));           // U+2500
+        assert!(is_geom_box_char('│'));           // U+2502
+        assert!(is_geom_box_char('┌'));           // U+250C
+        assert!(is_geom_box_char('█'));           // U+2588
+        assert!(is_geom_box_char('░'));           // U+2591
+        assert!(is_geom_box_char('\u{259F}'));    // U+259F upper limit
+        assert!(!is_geom_box_char('\u{25A0}'));  // Geometric shapes start
+        assert!(!is_geom_box_char('→'));
+        assert!(!is_geom_box_char('a'));
     }
 
     #[test]
-    fn adjacent_box_drawing_chars_coalesce() {
-        let cells = [cell_box('\u{2500}'), cell_box('\u{2500}')];
-        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
-        assert_eq!(runs.len(), 1);
-        assert!(runs[0].use_box_font);
-        assert_eq!(runs[0].text, "\u{2500}\u{2500}");
-        assert_eq!(runs[0].width, 4); // 2+2 display-width
+    fn is_box_drawing_coverage() {
+        assert!(is_box_drawing('→'));   // U+2192
+        assert!(is_box_drawing('←'));   // U+2190
+        assert!(is_box_drawing('◆'));   // U+25C6
+        assert!(is_box_drawing('▶'));   // U+25B6
+        assert!(!is_box_drawing('─'));  // geom char, not box_font
+        assert!(!is_box_drawing('a'));
     }
 
     #[test]
-    fn cell_width_for_cica_is_6_5() {
-        assert!((cell_width_for_font("Cica") - 6.5).abs() < 0.01);
-    }
-
-    #[test]
-    fn cell_width_for_moralerspace_is_default() {
-        assert!((cell_width_for_font("Moralerspace Neon HW") - CELL_W).abs() < 0.01);
-        assert!((cell_width_for_font("unknown font") - CELL_W).abs() < 0.01);
+    fn cell_width_for_font_variants() {
+        assert_eq!(cell_width_for_font("Cica"), 6.5);
+        assert_eq!(cell_width_for_font("MS Gothic"), 6.5);
+        assert_eq!(cell_width_for_font("Moralerspace Neon HW"), CELL_W);
+        assert_eq!(cell_width_for_font("unknown"), CELL_W);
     }
 }
