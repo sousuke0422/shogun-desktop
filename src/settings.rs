@@ -48,6 +48,8 @@ pub struct SshSettings {
     pub connection_backend: ConnectionBackend,
     #[serde(default)]
     pub proxy_command: String,
+    #[serde(default)]
+    pub accept_all_host_keys: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -117,6 +119,7 @@ impl Default for SshSettings {
             control_path: ControlPathType::default(),
             connection_backend: ConnectionBackend::default(),
             proxy_command: String::new(),
+            accept_all_host_keys: false,
         }
     }
 }
@@ -205,20 +208,40 @@ mod tests {
     fn proxy_command_serde_roundtrip() {
         let settings = ShogunDesktopSettings {
             ssh: SshSettings {
-                proxy_command: "coder ssh --stdio myworkspace".into(),
+                proxy_command: "coder ssh --stdio %h".into(),
                 ..Default::default()
             },
             ..Default::default()
         };
         let raw = toml::to_string(&settings).unwrap();
         let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
-        assert_eq!(parsed.ssh.proxy_command, "coder ssh --stdio myworkspace");
+        assert_eq!(parsed.ssh.proxy_command, "coder ssh --stdio %h");
     }
 
     #[test]
     fn proxy_command_empty_default() {
         let settings = ShogunDesktopSettings::default();
         assert!(settings.ssh.proxy_command.is_empty());
+    }
+
+    #[test]
+    fn accept_all_host_keys_serde_roundtrip() {
+        let settings = ShogunDesktopSettings {
+            ssh: SshSettings {
+                accept_all_host_keys: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let raw = toml::to_string(&settings).unwrap();
+        let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
+        assert!(parsed.ssh.accept_all_host_keys);
+    }
+
+    #[test]
+    fn accept_all_host_keys_default_false() {
+        let settings = ShogunDesktopSettings::default();
+        assert!(!settings.ssh.accept_all_host_keys);
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub struct SettingsTab {
     key_path: Entity<InputState>,
     password: Entity<InputState>,
     proxy_command: Entity<InputState>,
+    pub accept_all_host_keys: bool,
     pub control_path: ControlPathType,
     pub connection_backend: ConnectionBackend,
     project_path: Entity<InputState>,
@@ -72,6 +73,7 @@ impl SettingsTab {
             key_path,
             password,
             proxy_command,
+            accept_all_host_keys: settings.ssh.accept_all_host_keys,
             control_path: settings.ssh.control_path.clone(),
             connection_backend: settings.ssh.connection_backend.clone(),
             project_path,
@@ -93,6 +95,7 @@ impl SettingsTab {
                 key_path: self.key_path.read(cx).value().to_string(),
                 password: self.password.read(cx).unmask_value().to_string(),
                 proxy_command: self.proxy_command.read(cx).value().to_string(),
+                accept_all_host_keys: self.accept_all_host_keys,
                 control_path: self.control_path.clone(),
                 connection_backend: self.connection_backend.clone(),
             },
@@ -116,6 +119,7 @@ pub fn render_settings_tab(
     test_button: impl IntoElement,
     shell_button: impl IntoElement,
     connection_backend_selector: impl IntoElement,
+    accept_all_host_keys_toggle: impl IntoElement,
     control_path_selector: Option<impl IntoElement>,
 ) -> impl IntoElement {
     let mut panel = v_flex()
@@ -135,8 +139,10 @@ pub fn render_settings_tab(
             div()
                 .text_xs()
                 .text_color(Colors::zouge())
-                .child("例: coder ssh --stdio <workspace>  /  ssh -W %h:%p jump.host"),
+                .child("例: coder ssh --stdio %h  /  ssh -W %h:%p jump.host"),
         )
+        .child(section_label("ホスト鍵"))
+        .child(accept_all_host_keys_toggle)
         .child(section_label("接続バックエンド"))
         .child(connection_backend_selector);
 

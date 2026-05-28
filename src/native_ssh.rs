@@ -20,6 +20,7 @@ pub struct NativeSshClient {
     key_path: Option<String>,
     password: Option<String>,
     proxy_command: Option<String>,
+    accept_all_host_keys: bool,
     session: Arc<Mutex<Option<client::Handle<ShogunHandler>>>>,
     rt: Arc<tokio::runtime::Runtime>,
 }
@@ -28,13 +29,15 @@ pub struct NativeSshClient {
 struct ShogunHandler {
     host: String,
     port: u16,
+    accept_all: bool,
 }
 
 impl ShogunHandler {
-    fn new(host: &str, port: u16) -> Self {
+    fn new(host: &str, port: u16, accept_all: bool) -> Self {
         Self {
             host: host.to_string(),
             port,
+            accept_all,
         }
     }
 }
@@ -46,6 +49,9 @@ impl Handler for ShogunHandler {
         &mut self,
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
+        if self.accept_all {
+            return Ok(true);
+        }
         check_or_accept_server_key(&self.host, self.port, server_public_key)
     }
 }
@@ -53,7 +59,14 @@ impl Handler for ShogunHandler {
 impl NativeSshClient {
     pub fn new(settings: &ShogunDesktopSettings) -> Result<Self> {
         let ssh = &settings.ssh;
-        if ssh.user.is_empty() {
+        let user = if !ssh.user.is_empty() {
+            ssh.user.clone()
+        } else {
+            std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_default()
+        };
+        if user.is_empty() && ssh.proxy_command.is_empty() {
             bail!("SSHユーザー名が未設定です");
         }
         let key_path = if !ssh.key_path.is_empty()
@@ -80,10 +93,11 @@ impl NativeSshClient {
         Ok(Self {
             host: ssh.host.clone(),
             port: ssh.port,
-            user: ssh.user.clone(),
+            user,
             key_path,
             password,
             proxy_command,
+            accept_all_host_keys: ssh.accept_all_host_keys,
             session: Arc::new(Mutex::new(None)),
             rt: Arc::new(rt),
         })
@@ -260,7 +274,7 @@ impl NativeSshClient {
 
     async fn connect_async(&self) -> Result<client::Handle<ShogunHandler>> {
         let config = Arc::new(client::Config::default());
-        let handler = ShogunHandler::new(&self.host, self.port);
+        let handler = ShogunHandler::new(&self.host, self.port, self.accept_all_host_keys);
         let mut handle = if let Some(ref proxy_cmd) = self.proxy_command {
             let expanded = proxy_cmd
                 .replace("%h", &self.host)
