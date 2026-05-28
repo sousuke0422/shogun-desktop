@@ -7,3 +7,19 @@ Kabuto (samurai helmet) silhouette
   Derived from multi-agent-shogun Android companion app
   Source: https://github.com/yohey-w/multi-agent-shogun
   Licensed under the MIT License
+
+## Box Drawing Geometry Renderer
+
+The design of the box-drawing / block-element geometry renderer
+(src/terminal/renderer.rs — paint_box_char) is inspired by the
+Windows Terminal project's custom glyph rendering implementation.
+
+  Windows Terminal
+  Copyright (c) Microsoft Corporation. All rights reserved.
+  Source: https://github.com/microsoft/terminal
+  Licensed under the MIT License
+
+  Relevant pull requests studied:
+    PR #5743  — Scale box drawing glyphs to fit cells (BoxDrawingEffect)
+    PR #13549 — AtlasEngine: scale glyphs to fit cell size
+    PR #16729 — Custom box drawing and powerline glyphs (geometry LUT)
