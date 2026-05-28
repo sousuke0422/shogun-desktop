@@ -211,7 +211,7 @@ fn spawn_system(
     // terminal directly. SSH_ASKPASS is for headless exec only — do not set it here.
     cmd.arg(format!("{}@{}", ssh.user, ssh.host));
     cmd.arg(format!(
-        "tmux attach-session -t {tmux_session} -x {cols} -y {rows}"
+        "tmux attach-session -t {tmux_session}"
     ));
 
     let _child = pair.slave.spawn_command(cmd)?;
