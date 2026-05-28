@@ -4,16 +4,45 @@ use gpui_component::v_flex;
 use crate::terminal::{GridSnapshot, ResolvedColor, SnapshotCell};
 use crate::theme::Colors;
 
-/// Fixed cell width in pixels (tune against tmux box-drawing alignment).
+/// Fixed cell width in pixels for the default font (Moralerspace Neon HW @ 13pt).
+/// Moralerspace HW ASCII advance = 525/1000 × 13 = 6.825px; we use 7.8 for
+/// comfortable inter-char spacing that was empirically validated in cmd_185.
 pub const CELL_W: f32 = 7.8;
 /// Fixed cell height in pixels.
 pub const CELL_H: f32 = 20.0;
+
+/// Return the cell width (in logical pixels) appropriate for the selected font at
+/// `text_size = 13pt`.
+///
+/// Measured advances (HAdvanceWidth / UPM × 13):
+///   Moralerspace Neon HW : ASCII 6.825 px  → use 7.8 (empirical, adds breathing room)
+///   Cica                  : ASCII 6.500 px  → use 6.5 (exact fit; box-drawing also 6.5)
+pub fn cell_width_for_font(font: &str) -> f32 {
+    match font {
+        "Cica" => 6.5,
+        _ => CELL_W,
+    }
+}
+
+/// Returns `true` for Unicode Box Drawing (U+2500–U+257F) and Block Elements
+/// (U+2580–U+259F). These code-points are full-width in `Moralerspace Neon HW`
+/// (advance ≈ 13.65 px @ 13 pt) but **half-width** in Cica (≈ 6.5 px @ 13 pt).
+///
+/// When a non-MoralerspaceHW font is selected we override the font for these
+/// runs with the embedded `Moralerspace Neon HW` so that tmux borders are
+/// rendered as solid continuous lines regardless of the user's font preference.
+pub(crate) fn is_box_drawing(c: char) -> bool {
+    matches!(c as u32, 0x2500..=0x259F)
+}
 
 /// A styled run of consecutive terminal cells with identical visual properties.
 ///
 /// Adjacent cells that share the same fg, bg, bold, and underline flags are merged
 /// into a single `Run` for efficient GPUI rendering. The cursor cell is always its
 /// own run (never merged with neighbours) so colours can be inverted independently.
+///
+/// Runs are also split at box-drawing / non-box-drawing boundaries so that the
+/// renderer can apply a per-run font override for box chars (see `is_box_drawing`).
 pub(crate) struct Run {
     pub text: String,
     pub fg: ResolvedColor,
@@ -24,6 +53,10 @@ pub(crate) struct Run {
     pub underline: bool,
     /// True for the single run that sits at the cursor position.
     pub is_cursor: bool,
+    /// True when every character in this run is a box-drawing / block-element char.
+    /// The renderer will substitute `Moralerspace Neon HW` for these runs when the
+    /// user has selected a different (non-HW) font.
+    pub use_box_font: bool,
 }
 
 /// Map a resolved terminal color to a GPUI `Rgba` for text/background styling.
@@ -57,7 +90,11 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
     }
 }
 
+/// The embedded font always available for box-drawing overrides.
+const BOX_FONT: &str = "Moralerspace Neon HW";
+
 pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
+    let cw = cell_width_for_font(font);
     let (cursor_row, cursor_col) = snap.cursor;
     v_flex()
         .font_family(font.to_string())
@@ -74,10 +111,18 @@ pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
                 .h(px(CELL_H))
                 .children(coalesce_runs(row, cur_col).map(|run| {
                     let (fg_rgba, bg_opt) = resolve_run_colors(&run);
+                    // For box-drawing runs, override with the embedded HW font so that
+                    // tmux borders are full-width regardless of the user's font choice.
+                    let effective_font = if run.use_box_font && font != BOX_FONT {
+                        BOX_FONT.to_string()
+                    } else {
+                        font.to_string()
+                    };
                     let mut el = div()
                         .child(run.text)
-                        .w(px(CELL_W * run.width as f32))
+                        .w(px(cw * run.width as f32))
                         .overflow_hidden()
+                        .font_family(effective_font)
                         .text_color(fg_rgba);
                     if let Some(bg_rgba) = bg_opt {
                         el = el.bg(bg_rgba);
@@ -95,8 +140,9 @@ pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
 
 /// Merge adjacent cells with identical styling into [`Run`]s.
 ///
-/// Runs are split on any difference in fg, bg, bold, or underline.
-/// Wide-char spacer cells (`display_width == 0`) are silently skipped.
+/// Runs are split on any difference in fg, bg, bold, underline, or box-drawing
+/// category (see [`is_box_drawing`]).  Wide-char spacer cells
+/// (`display_width == 0`) are silently skipped.
 /// The cell at `cursor_col` (when `Some`) is always isolated into its own run
 /// with `is_cursor = true`, regardless of surrounding styles.
 pub(crate) fn coalesce_runs(
@@ -110,6 +156,7 @@ pub(crate) fn coalesce_runs(
             continue; // wide-char spacer — skip without emitting a run
         }
         let is_cursor = cursor_col == Some(col);
+        let use_box_font = is_box_drawing(cell.c);
         if let Some(last) = runs.last_mut() {
             if !is_cursor
                 && !last.is_cursor
@@ -117,6 +164,7 @@ pub(crate) fn coalesce_runs(
                 && last.bg == cell.bg
                 && last.bold == cell.bold
                 && last.underline == cell.underline
+                && last.use_box_font == use_box_font
             {
                 last.text.push(cell.c);
                 last.width += w;
@@ -131,6 +179,7 @@ pub(crate) fn coalesce_runs(
             bold: cell.bold,
             underline: cell.underline,
             is_cursor,
+            use_box_font,
         });
     }
     runs.into_iter()
@@ -346,5 +395,63 @@ mod tests {
         let cells = [cell('a'), cell('b')];
         let runs: Vec<_> = coalesce_runs(&cells, Some(99)).collect();
         assert!(runs.iter().all(|r| !r.is_cursor));
+    }
+
+    // ── new tests: box-drawing font split ─────────────────────────────────────
+
+    fn cell_box(c: char) -> SnapshotCell {
+        // Box drawing chars must be in the U+2500-U+259F range.
+        SnapshotCell {
+            c,
+            fg: ResolvedColor::Default,
+            bg: ResolvedColor::Default,
+            display_width: 2, // EAW=A → 2-wide in CJK mode
+            bold: false,
+            underline: false,
+        }
+    }
+
+    #[test]
+    fn is_box_drawing_detects_box_range() {
+        assert!(is_box_drawing('\u{2500}')); // ─
+        assert!(is_box_drawing('\u{2502}')); // │
+        assert!(is_box_drawing('\u{2580}')); // upper-half block
+        assert!(is_box_drawing('\u{259F}')); // lower-right quadrant
+        assert!(!is_box_drawing('a'));
+        assert!(!is_box_drawing('\u{2499}')); // just below range
+        assert!(!is_box_drawing('\u{25A0}')); // just above range
+    }
+
+    #[test]
+    fn box_drawing_split_from_normal_chars() {
+        // ASCII 'a', then U+2500 '─', then ASCII 'b'  →  3 runs
+        let cells = [cell('a'), cell_box('\u{2500}'), cell('b')];
+        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
+        assert_eq!(runs.len(), 3);
+        assert!(!runs[0].use_box_font);
+        assert!(runs[1].use_box_font);
+        assert_eq!(runs[1].text, "\u{2500}");
+        assert!(!runs[2].use_box_font);
+    }
+
+    #[test]
+    fn adjacent_box_drawing_chars_coalesce() {
+        let cells = [cell_box('\u{2500}'), cell_box('\u{2500}')];
+        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].use_box_font);
+        assert_eq!(runs[0].text, "\u{2500}\u{2500}");
+        assert_eq!(runs[0].width, 4); // 2+2 display-width
+    }
+
+    #[test]
+    fn cell_width_for_cica_is_6_5() {
+        assert!((cell_width_for_font("Cica") - 6.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn cell_width_for_moralerspace_is_default() {
+        assert!((cell_width_for_font("Moralerspace Neon HW") - CELL_W).abs() < 0.01);
+        assert!((cell_width_for_font("unknown font") - CELL_W).abs() < 0.01);
     }
 }
