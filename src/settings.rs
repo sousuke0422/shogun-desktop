@@ -11,6 +11,26 @@ pub struct ShogunDesktopSettings {
     pub project: ProjectSettings,
     #[serde(default)]
     pub sessions: SessionSettings,
+    #[serde(default)]
+    pub terminal: TerminalSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalSettings {
+    #[serde(default = "default_terminal_font")]
+    pub font: String,
+}
+
+fn default_terminal_font() -> String {
+    "Moralerspace Neon HW".to_string()
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
+            font: default_terminal_font(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -104,6 +124,7 @@ impl Default for ShogunDesktopSettings {
             ssh: SshSettings::default(),
             project: ProjectSettings::default(),
             sessions: SessionSettings::default(),
+            terminal: TerminalSettings::default(),
         }
     }
 }
@@ -242,6 +263,25 @@ mod tests {
     fn accept_all_host_keys_default_false() {
         let settings = ShogunDesktopSettings::default();
         assert!(!settings.ssh.accept_all_host_keys);
+    }
+
+    #[test]
+    fn terminal_font_serde_roundtrip() {
+        let settings = ShogunDesktopSettings {
+            terminal: TerminalSettings {
+                font: "Cica".into(),
+            },
+            ..Default::default()
+        };
+        let raw = toml::to_string(&settings).unwrap();
+        let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
+        assert_eq!(parsed.terminal.font, "Cica");
+    }
+
+    #[test]
+    fn terminal_font_default() {
+        let settings = ShogunDesktopSettings::default();
+        assert_eq!(settings.terminal.font, "Moralerspace Neon HW");
     }
 
     #[test]

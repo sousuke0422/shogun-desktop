@@ -1,7 +1,6 @@
 use gpui::{div, px, rgba, FontWeight, IntoElement, ParentElement, Rgba, Styled};
 use gpui_component::v_flex;
 
-use crate::tabs::shogun_tab::MONO_FONT;
 use crate::terminal::{GridSnapshot, ResolvedColor, SnapshotCell};
 use crate::theme::Colors;
 
@@ -58,10 +57,10 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
     }
 }
 
-pub fn render_grid(snap: &GridSnapshot) -> impl IntoElement {
+pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
     let (cursor_row, cursor_col) = snap.cursor;
     v_flex()
-        .font_family(MONO_FONT)
+        .font_family(font.to_string())
         .text_size(px(13.))
         .children(snap.cells.iter().enumerate().map(|(row_idx, row)| {
             let cur_col = if row_idx == cursor_row {

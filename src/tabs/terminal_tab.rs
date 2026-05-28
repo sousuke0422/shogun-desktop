@@ -21,6 +21,7 @@ pub fn render_terminal_tab(
     snap: &GridSnapshot,
     scroll_handle: &ScrollHandle,
     is_shogun: bool,
+    font: &str,
     cx: &mut Context<ShogunWindow>,
 ) -> impl IntoElement {
     let scroll_handle = scroll_handle.clone();
@@ -73,7 +74,7 @@ pub fn render_terminal_tab(
                     },
                 ))
                 .p_1()
-                .child(render_grid(snap)),
+                .child(render_grid(snap, font)),
         )
 }
 
