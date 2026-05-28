@@ -210,7 +210,9 @@ fn spawn_system(
     // PTY sessions are interactive: ssh prompts for the password via the
     // terminal directly. SSH_ASKPASS is for headless exec only — do not set it here.
     cmd.arg(format!("{}@{}", ssh.user, ssh.host));
-    cmd.arg(format!("tmux attach-session -t {tmux_session}"));
+    cmd.arg(format!(
+        "tmux attach-session -t {tmux_session} -x {cols} -y {rows}"
+    ));
 
     let _child = pair.slave.spawn_command(cmd)?;
 
