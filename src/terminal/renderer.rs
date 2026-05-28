@@ -153,15 +153,21 @@ fn paint_box_char(
         };
     }
 
+    // Sub-pixel tolerance: extend lines at open ends to prevent 1-device-pixel
+    // gaps caused by GPUI rounding logical→physical coords per-quad.
+    // At 1.25× DPI: 0.5 logical px = 0.625 device px → rounds to 1 full overlap pixel.
+    const TOL: f32 = 0.5;
+
     // Segment helpers (returns Bounds<Pixels>)
-    // Horizontal full / left-half / right-half at given y-center, given line-width
-    macro_rules! h_full { ($yc:expr, $lw:expr) => { rect!(ox,       $yc-$lw/2.0, x1, $yc+$lw/2.0) }; }
-    macro_rules! h_left { ($yc:expr, $lw:expr) => { rect!(ox,       $yc-$lw/2.0, xm, $yc+$lw/2.0) }; }
-    macro_rules! h_right{ ($yc:expr, $lw:expr) => { rect!(xm,       $yc-$lw/2.0, x1, $yc+$lw/2.0) }; }
+    // Open ends are extended by TOL so adjacent segments overlap rather than gap.
+    // Interior endpoints (at xm/ym) are NOT extended — keeps corner geometry clean.
+    macro_rules! h_full { ($yc:expr, $lw:expr) => { rect!(ox-TOL,  $yc-$lw/2.0, x1+TOL, $yc+$lw/2.0) }; }
+    macro_rules! h_left { ($yc:expr, $lw:expr) => { rect!(ox-TOL,  $yc-$lw/2.0, xm,     $yc+$lw/2.0) }; }
+    macro_rules! h_right{ ($yc:expr, $lw:expr) => { rect!(xm,      $yc-$lw/2.0, x1+TOL, $yc+$lw/2.0) }; }
     // Vertical full / top-half / bottom-half at given x-center
-    macro_rules! v_full { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, oy, $xc+$lw/2.0, y1) }; }
-    macro_rules! v_top  { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, oy, $xc+$lw/2.0, ym) }; }
-    macro_rules! v_bot  { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, ym, $xc+$lw/2.0, y1) }; }
+    macro_rules! v_full { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, oy-TOL, $xc+$lw/2.0, y1+TOL) }; }
+    macro_rules! v_top  { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, oy-TOL, $xc+$lw/2.0, ym)     }; }
+    macro_rules! v_bot  { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, ym,     $xc+$lw/2.0, y1+TOL) }; }
 
     // Paint a filled quad
     macro_rules! q { ($b:expr) => { window.paint_quad(fill($b, fg)) }; }
