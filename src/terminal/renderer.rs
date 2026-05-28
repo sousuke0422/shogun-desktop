@@ -16,23 +16,37 @@ pub const CELL_H: f32 = 20.0;
 ///
 /// Measured advances (HAdvanceWidth / UPM × 13):
 ///   Moralerspace Neon HW : ASCII 6.825 px  → use 7.8 (empirical, adds breathing room)
-///   Cica                  : ASCII 6.500 px  → use 6.5 (exact fit; box-drawing also 6.5)
+///   Cica                  : ASCII 6.500 px  → use 6.5 (exact fit)
+///   MS Gothic             : ASCII 6.500 px  → use 6.5 (exact fit; all EAW=A are full-width)
 pub fn cell_width_for_font(font: &str) -> f32 {
     match font {
-        "Cica" => 6.5,
+        "Cica" | "MS Gothic" => 6.5,
         _ => CELL_W,
     }
 }
 
-/// Returns `true` for Unicode Box Drawing (U+2500–U+257F) and Block Elements
-/// (U+2580–U+259F). These code-points are full-width in `Moralerspace Neon HW`
-/// (advance ≈ 13.65 px @ 13 pt) but **half-width** in Cica (≈ 6.5 px @ 13 pt).
+/// Returns `true` for Unicode code-points that are EAW=Ambiguous and rendered as
+/// **full-width** by `MS Gothic` (advance = UPM = 13 px @ 13 pt) but as
+/// **half-width** by Cica / Moralerspace HW (advance = UPM/2 = 6.5 px @ 13 pt).
 ///
-/// When a non-MoralerspaceHW font is selected we override the font for these
-/// runs with the embedded `Moralerspace Neon HW` so that tmux borders are
-/// rendered as solid continuous lines regardless of the user's font preference.
+/// When a non-MS-Gothic font is selected, the renderer overrides the font for
+/// these runs with `MS Gothic` so that:
+///   • tmux box borders render as solid continuous lines
+///   • `→` / `←` arrows and `◆` diamonds appear full-width
+///
+/// Measured advances in MS Gothic @ 13 pt (UPM = 256):
+///   U+2192 → (RIGHTWARDS ARROW)         : 256 units = 13 px  [FULL]
+///   U+25C6 ◆ (BLACK DIAMOND)             : 256 units = 13 px  [FULL]
+///   U+2500 ─ (BOX DRAWINGS LIGHT HORIZ)  : 256 units = 13 px  [FULL]
+///   U+2502 │ (BOX DRAWINGS LIGHT VERT)   : 256 units = 13 px  [FULL]
+///
+/// Exception: U+25B6 ▶ is HALF-WIDTH (128 units) in MS Gothic too — no help there.
 pub(crate) fn is_box_drawing(c: char) -> bool {
-    matches!(c as u32, 0x2500..=0x259F)
+    let cp = c as u32;
+    matches!(cp,
+        0x2190..=0x21FF  // Arrows: →, ←, ↑, ↓, ↔, ⇒, etc.
+        | 0x2500..=0x25FF  // Box Drawing + Block Elements + Geometric Shapes (◆, ■, etc.)
+    )
 }
 
 /// A styled run of consecutive terminal cells with identical visual properties.
@@ -90,8 +104,10 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
     }
 }
 
-/// The embedded font always available for box-drawing overrides.
-const BOX_FONT: &str = "Moralerspace Neon HW";
+/// Font used for EAW=Ambiguous override (arrows, box drawing, geometric shapes).
+/// MS Gothic has full-width glyphs for → ◆ ─ │ etc. in EAW=A=2 mode.
+/// Falls back to "Moralerspace Neon HW" (embedded) if MS Gothic is not loaded.
+const BOX_FONT: &str = "MS Gothic";
 
 pub fn render_grid(snap: &GridSnapshot, font: &str) -> impl IntoElement {
     let cw = cell_width_for_font(font);
@@ -412,14 +428,25 @@ mod tests {
     }
 
     #[test]
-    fn is_box_drawing_detects_box_range() {
+    fn is_box_drawing_detects_ranges() {
+        // Arrows (U+2190-U+21FF)
+        assert!(is_box_drawing('\u{2192}')); // →
+        assert!(is_box_drawing('\u{2190}')); // ←
+        assert!(is_box_drawing('\u{21FF}')); // end of arrows
+        // Box Drawing + Block (U+2500-U+259F)
         assert!(is_box_drawing('\u{2500}')); // ─
         assert!(is_box_drawing('\u{2502}')); // │
         assert!(is_box_drawing('\u{2580}')); // upper-half block
         assert!(is_box_drawing('\u{259F}')); // lower-right quadrant
+        // Geometric Shapes (U+25A0-U+25FF)
+        assert!(is_box_drawing('\u{25C6}')); // ◆
+        assert!(is_box_drawing('\u{25B6}')); // ▶
+        assert!(is_box_drawing('\u{25FF}')); // end of geometric shapes
+        // Outside ranges
         assert!(!is_box_drawing('a'));
-        assert!(!is_box_drawing('\u{2499}')); // just below range
-        assert!(!is_box_drawing('\u{25A0}')); // just above range
+        assert!(!is_box_drawing('\u{218F}')); // just below arrows
+        assert!(!is_box_drawing('\u{2200}')); // just above arrows, below box
+        assert!(!is_box_drawing('\u{24FF}')); // Enclosed Alphanumerics (not in range)
     }
 
     #[test]
@@ -432,6 +459,34 @@ mod tests {
         assert!(runs[1].use_box_font);
         assert_eq!(runs[1].text, "\u{2500}");
         assert!(!runs[2].use_box_font);
+    }
+
+    #[test]
+    fn arrow_chars_are_override_font() {
+        // → (U+2192) and ◆ (U+25C6) trigger font override
+        let arrow_cell = SnapshotCell {
+            c: '\u{2192}', // →
+            fg: ResolvedColor::Default,
+            bg: ResolvedColor::Default,
+            display_width: 2, // EAW=A in CJK mode
+            bold: false,
+            underline: false,
+        };
+        let diamond_cell = SnapshotCell {
+            c: '\u{25C6}', // ◆
+            fg: ResolvedColor::Default,
+            bg: ResolvedColor::Default,
+            display_width: 2,
+            bold: false,
+            underline: false,
+        };
+        let cells = [arrow_cell, diamond_cell];
+        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
+        // Both are in override range → should coalesce into 1 run
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].use_box_font);
+        assert_eq!(runs[0].text, "\u{2192}\u{25C6}");
+        assert_eq!(runs[0].width, 4); // 2+2
     }
 
     #[test]
