@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── macOS 14 (Apple Silicon / aarch64) ────────────────────────────────────
+  build-macos14:
+    name: Build & Test — macOS 14 (aarch64)
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: macos14-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos14-cargo-
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: shogun-desktop-macos14-aarch64
+          path: target/release/shogun-desktop
+          if-no-files-found: error
+          retention-days: 30
+
+  # ── Windows (x86_64-pc-windows-msvc) ─────────────────────────────────────
+  build-windows:
+    name: Build & Test — Windows (x86_64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-cargo-
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: shogun-desktop-windows-x86_64
+          path: target/release/shogun-desktop.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  # ── Release: attach binaries to GitHub Release on v* tag ─────────────────
+  release:
+    name: GitHub Release
+    needs: [build-macos14, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: shogun-desktop-macos14-aarch64
+          path: dist/
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: shogun-desktop-windows-x86_64
+          path: dist/
+
+      - name: Rename binaries
+        run: |
+          mv dist/shogun-desktop     dist/shogun-desktop-macos14-aarch64
+          mv dist/shogun-desktop.exe dist/shogun-desktop-windows-x86_64.exe
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/shogun-desktop-macos14-aarch64
+            dist/shogun-desktop-windows-x86_64.exe
+          generate_release_notes: true
