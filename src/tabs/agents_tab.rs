@@ -5,9 +5,9 @@ use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
 use crate::window::{AgentsState, ShogunWindow};
 use gpui::{
-    div, prelude::*, px, rgb, Context, IntoElement, ParentElement, Styled,
+    div, prelude::*, px, rgb, AlignItems, Context, IntoElement, ParentElement, Styled,
 };
-use gpui_component::{button::Button, h_flex, scroll::ScrollableElement, v_flex, Sizable};
+use gpui_component::{button::Button, scroll::ScrollableElement, v_flex, Sizable};
 use serde_yml::Value;
 
 const PLACEHOLDER: &str = "---";
@@ -43,11 +43,15 @@ pub fn fetch_agent_cards(
 ) -> Vec<AgentCardData> {
     agents
         .iter()
-        .map(|name| fetch_single_agent_card(ssh, project_path, name))
+        .filter_map(|name| fetch_single_agent_card(ssh, project_path, name))
         .collect()
 }
 
-fn fetch_single_agent_card(ssh: &SshClient, project_path: &str, name: &str) -> AgentCardData {
+fn fetch_single_agent_card(ssh: &SshClient, project_path: &str, name: &str) -> Option<AgentCardData> {
+    if name == "karo" {
+        return fetch_karo_card(ssh, project_path);
+    }
+
     let base = format!("{project_path}/queue");
     let task_path = format!("{base}/tasks/{name}.yaml");
     let inbox_path = format!("{base}/inbox/{name}.yaml");
@@ -57,18 +61,64 @@ fn fetch_single_agent_card(ssh: &SshClient, project_path: &str, name: &str) -> A
     let inbox_yaml = ssh_cat(ssh, &inbox_path);
     let report_yaml = ssh_cat(ssh, &report_path);
 
+    // 3つ全て存在しない = 足軽未稼働。カードを出さない。
+    if task_yaml.is_none() && inbox_yaml.is_none() && report_yaml.is_none() {
+        return None;
+    }
+
     let (task_id, status) = parse_task_yaml(&task_yaml);
     let inbox_unread = parse_inbox_unread(&inbox_yaml);
     let (last_report_at, summary) = parse_report_yaml(&report_yaml);
 
-    AgentCardData {
+    Some(AgentCardData {
         name: name.to_string(),
         task_id,
         status,
         inbox_unread,
         last_report_at,
         summary,
+    })
+}
+
+/// 家老は queue/shogun_to_karo.yaml（コマンドリスト）からステータスを読む。
+fn fetch_karo_card(ssh: &SshClient, project_path: &str) -> Option<AgentCardData> {
+    let base = format!("{project_path}/queue");
+    let cmd_yaml = ssh_cat(ssh, &format!("{base}/shogun_to_karo.yaml"));
+    let inbox_yaml = ssh_cat(ssh, &format!("{base}/inbox/karo.yaml"));
+
+    if cmd_yaml.is_none() && inbox_yaml.is_none() {
+        return None;
     }
+
+    let (task_id, status) = parse_karo_cmd_yaml(&cmd_yaml);
+    let inbox_unread = parse_inbox_unread(&inbox_yaml);
+
+    Some(AgentCardData {
+        name: "karo".to_string(),
+        task_id,
+        status,
+        inbox_unread,
+        last_report_at: String::new(),
+        summary: String::new(),
+    })
+}
+
+fn parse_karo_cmd_yaml(raw: &Option<String>) -> (String, String) {
+    let Some(raw) = raw.as_ref() else {
+        return (PLACEHOLDER.into(), PLACEHOLDER.into());
+    };
+    // shogun_to_karo.yaml はコマンドのリスト。先頭が最新。
+    let Ok(val) = serde_yml::from_str::<serde_yml::Value>(raw) else {
+        return (PLACEHOLDER.into(), PLACEHOLDER.into());
+    };
+    let first = val.as_sequence().and_then(|s| s.first());
+    let task_id = first
+        .and_then(|v| v.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(PLACEHOLDER)
+        .to_string();
+    // 家老には個別 status フィールドがないため固定表示
+    (task_id, "active".to_string())
 }
 
 fn ssh_cat(ssh: &SshClient, path: &str) -> Option<String> {
@@ -169,7 +219,7 @@ fn first_line(s: &str) -> String {
 
 fn status_color(status: &str) -> gpui::Rgba {
     match status {
-        "assigned" => Colors::kinpaku(),
+        "assigned" | "work" | "active" => Colors::kinpaku(),
         "done" => Colors::matsuba(),
         _ => Colors::muted(),
     }
@@ -177,7 +227,7 @@ fn status_color(status: &str) -> gpui::Rgba {
 
 fn status_indicator(status: &str) -> &'static str {
     match status {
-        "assigned" => "🟡",
+        "assigned" | "work" | "active" => "🟡",
         "done" => "🟢",
         "idle" => "⚪",
         _ => "⚪",
@@ -203,6 +253,7 @@ fn render_agent_card(card: &AgentCardData) -> impl IntoElement {
         .max_w(px(360.))
         .m_1()
         .p_3()
+        .pb_4()
         .rounded(px(6.))
         .bg(rgb(CARD_BG))
         .flex()
@@ -280,10 +331,24 @@ fn render_card_grid(cards: &[AgentCardData]) -> impl IntoElement {
 
     let rows: Vec<_> = cards.chunks(3).collect();
     v_flex().gap_1().children(rows.into_iter().map(|row| {
-        h_flex()
-            .w_full()
-            .items_start()
-            .children(row.iter().map(render_agent_card))
+        let mut children: Vec<gpui::AnyElement> = row
+            .iter()
+            .map(|c| render_agent_card(c).into_any_element())
+            .collect();
+        // pad incomplete rows so card widths stay consistent across all rows
+        for _ in row.len()..3 {
+            children.push(
+                div()
+                    .flex_1()
+                    .min_w(px(200.))
+                    .max_w(px(360.))
+                    .m_1()
+                    .into_any_element(),
+            );
+        }
+        let mut row = div().flex().flex_row().w_full();
+        row.style().align_items = Some(AlignItems::Stretch);
+        row.children(children)
     }))
 }
 

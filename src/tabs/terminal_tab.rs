@@ -3,8 +3,8 @@ use crate::terminal::GridSnapshot;
 use crate::theme::Colors;
 use crate::window::ShogunWindow;
 use gpui::{
-    div, prelude::*, px, Context, IntoElement, ParentElement, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, StatefulInteractiveElement, Styled,
+    div, prelude::*, px, Context, IntoElement, KeyDownEvent, ParentElement, ScrollDelta,
+    ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled,
 };
 use gpui_component::v_flex;
 
@@ -39,6 +39,12 @@ pub fn render_terminal_tab(
                 .w_full()
                 .track_scroll(&scroll_handle)
                 .overflow_y_scroll()
+                .tab_stop(true)
+                .on_key_down(cx.listener(
+                    |this, event: &KeyDownEvent, _window, cx| {
+                        this.handle_terminal_key(event, cx);
+                    },
+                ))
                 .on_scroll_wheel(cx.listener(
                     move |this, event: &ScrollWheelEvent, _window, cx| {
                         let delta_y = scroll_delta_y(event);

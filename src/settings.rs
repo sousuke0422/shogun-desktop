@@ -71,6 +71,10 @@ fn default_agents() -> Vec<String> {
         "ashigaru1".into(),
         "ashigaru2".into(),
         "ashigaru3".into(),
+        "ashigaru4".into(),
+        "ashigaru5".into(),
+        "ashigaru6".into(),
+        "ashigaru7".into(),
     ]
 }
 
@@ -205,6 +209,10 @@ mod tests {
                 "ashigaru1".to_string(),
                 "ashigaru2".to_string(),
                 "ashigaru3".to_string(),
+                "ashigaru4".to_string(),
+                "ashigaru5".to_string(),
+                "ashigaru6".to_string(),
+                "ashigaru7".to_string(),
             ]
         );
     }
