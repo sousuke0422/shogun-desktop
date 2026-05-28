@@ -1,5 +1,16 @@
 shogun-desktop
 
+## Terminal Emulator Core
+
+The terminal emulation layer (VTE parsing, grid management, color resolution)
+uses a patched fork of alacritty_terminal.
+
+  alacritty_terminal (part of the Alacritty project)
+  Copyright (c) 2022 The Alacritty Project Contributors
+  Source: https://github.com/alacritty/alacritty
+  Licensed under the Apache License, Version 2.0
+  https://www.apache.org/licenses/LICENSE-2.0
+
 ## Icon
 
 Kabuto (samurai helmet) silhouette
