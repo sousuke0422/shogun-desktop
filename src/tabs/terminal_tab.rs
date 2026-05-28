@@ -44,8 +44,19 @@ pub fn render_terminal_tab(
                 .w_full()
                 .track_scroll(&scroll_handle)
                 .overflow_y_scroll()
-                .tab_stop(true)
-                .on_key_down(cx.listener(
+                // focusable() sets focusable=true + tab_stop=true.
+                // This causes GPUI to auto-register a mouse-down handler that
+                // calls window.focus(handle) on click, enabling key event delivery.
+                // tab_stop(true) alone does NOT set focusable=true, so no FocusHandle
+                // was created and key events were never dispatched here.
+                //
+                // capture_key_down fires in the CAPTURE phase (top-down), before GPUI's
+                // action dispatch. on_key_down fires in the BUBBLE phase (after action
+                // dispatch), so GPUI built-in actions (Enter, arrows, Tab, Escape…) would
+                // consume the event first. A terminal emulator must intercept ALL keys
+                // before GPUI's action system — capture phase is the correct hook.
+                .focusable()
+                .capture_key_down(cx.listener(
                     |this, event: &KeyDownEvent, _window, cx| {
                         this.handle_terminal_key(event, cx);
                     },

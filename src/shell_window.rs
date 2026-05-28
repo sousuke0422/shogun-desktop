@@ -188,8 +188,10 @@ impl Render for ShellWindow {
                 .w_full()
                 .track_scroll(&self.scroll_handle)
                 .overflow_y_scroll()
-                .tab_stop(true)
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _win, _cx| {
+                .focusable()
+                // capture_key_down: fires before GPUI action dispatch so built-in
+                // bindings (Enter, arrows, Tab, Escape…) cannot consume the event first.
+                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _win, _cx| {
                     let bytes = key_to_bytes(&event.keystroke);
                     if !bytes.is_empty() {
                         if let Some(s) = &this.session {
