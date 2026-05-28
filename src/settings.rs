@@ -46,6 +46,8 @@ pub struct SshSettings {
     pub control_path: ControlPathType,
     #[serde(default)]
     pub connection_backend: ConnectionBackend,
+    #[serde(default)]
+    pub proxy_command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -114,6 +116,7 @@ impl Default for SshSettings {
             password: String::new(),
             control_path: ControlPathType::default(),
             connection_backend: ConnectionBackend::default(),
+            proxy_command: String::new(),
         }
     }
 }
@@ -196,6 +199,26 @@ mod tests {
     fn ssh_settings_includes_connection_backend_default() {
         let settings = ShogunDesktopSettings::default();
         assert_eq!(settings.ssh.connection_backend, ConnectionBackend::System);
+    }
+
+    #[test]
+    fn proxy_command_serde_roundtrip() {
+        let settings = ShogunDesktopSettings {
+            ssh: SshSettings {
+                proxy_command: "coder ssh --stdio myworkspace".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let raw = toml::to_string(&settings).unwrap();
+        let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
+        assert_eq!(parsed.ssh.proxy_command, "coder ssh --stdio myworkspace");
+    }
+
+    #[test]
+    fn proxy_command_empty_default() {
+        let settings = ShogunDesktopSettings::default();
+        assert!(settings.ssh.proxy_command.is_empty());
     }
 
     #[test]

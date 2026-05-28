@@ -290,7 +290,12 @@ pub enum SshClient {
 
 impl SshClient {
     pub fn from_settings(settings: &ShogunDesktopSettings) -> Result<Self> {
-        match settings.ssh.connection_backend {
+        let effective_backend = if !settings.ssh.proxy_command.is_empty() {
+            &ConnectionBackend::Native
+        } else {
+            &settings.ssh.connection_backend
+        };
+        match effective_backend {
             ConnectionBackend::Native => Ok(SshClient::Native(NativeSshClient::new(settings)?)),
             ConnectionBackend::System => {
                 Ok(SshClient::System(SystemSshClient::from_settings(settings)?))
@@ -392,6 +397,21 @@ mod tests {
         assert!(is_controlmaster_error(&e));
         let e2 = anyhow::anyhow!("Permission denied (publickey)");
         assert!(!is_controlmaster_error(&e2));
+    }
+
+    #[test]
+    fn proxy_command_forces_native_backend() {
+        let settings = ShogunDesktopSettings {
+            ssh: crate::settings::SshSettings {
+                user: "u".into(),
+                proxy_command: "coder ssh --stdio ws".into(),
+                connection_backend: ConnectionBackend::System,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let client = SshClient::from_settings(&settings).expect("native forced");
+        assert!(matches!(client, SshClient::Native(_)));
     }
 
     #[test]

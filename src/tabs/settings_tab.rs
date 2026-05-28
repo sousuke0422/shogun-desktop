@@ -17,6 +17,7 @@ pub struct SettingsTab {
     user: Entity<InputState>,
     key_path: Entity<InputState>,
     password: Entity<InputState>,
+    proxy_command: Entity<InputState>,
     pub control_path: ControlPathType,
     pub connection_backend: ConnectionBackend,
     project_path: Entity<InputState>,
@@ -51,6 +52,9 @@ impl SettingsTab {
                 .default_value(settings.ssh.password.clone())
                 .masked(true)
         });
+        let proxy_command = cx.new(|cx| {
+            InputState::new(window, cx).default_value(settings.ssh.proxy_command.clone())
+        });
         let project_path = cx.new(|cx| {
             InputState::new(window, cx).default_value(settings.project.path.clone())
         });
@@ -67,6 +71,7 @@ impl SettingsTab {
             user,
             key_path,
             password,
+            proxy_command,
             control_path: settings.ssh.control_path.clone(),
             connection_backend: settings.ssh.connection_backend.clone(),
             project_path,
@@ -87,6 +92,7 @@ impl SettingsTab {
                 user: self.user.read(cx).value().to_string(),
                 key_path: self.key_path.read(cx).value().to_string(),
                 password: self.password.read(cx).unmask_value().to_string(),
+                proxy_command: self.proxy_command.read(cx).value().to_string(),
                 control_path: self.control_path.clone(),
                 connection_backend: self.connection_backend.clone(),
             },
@@ -124,6 +130,13 @@ pub fn render_settings_tab(
         .child(labeled_input("SSHユーザー", &tab.user))
         .child(labeled_input("SSH秘密鍵パス", &tab.key_path))
         .child(labeled_input("SSHパスワード", &tab.password))
+        .child(labeled_input("SSH ProxyCommand", &tab.proxy_command))
+        .child(
+            div()
+                .text_xs()
+                .text_color(Colors::zouge())
+                .child("例: coder ssh --stdio <workspace>  /  ssh -W %h:%p jump.host"),
+        )
         .child(section_label("接続バックエンド"))
         .child(connection_backend_selector);
 
