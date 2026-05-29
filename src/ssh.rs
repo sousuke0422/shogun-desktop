@@ -345,8 +345,12 @@ impl SshClient {
         }
     }
 
-    /// Upload a local image to `{project_path}/queue/screenshots/` via `scp`.
-    /// Reuses ControlMaster when the system backend has an active socket.
+    /// Upload a local image to `{project_path}/queue/screenshots/`.
+    ///
+    /// - System backend: uses system `scp`, reusing the ControlMaster socket
+    ///   when available (and warming it up first for password auth).
+    /// - Native backend: streams file bytes over the existing russh session via
+    ///   `cat`; no separate scp process — works with any auth / ProxyCommand.
     pub fn upload_image(
         &self,
         local_path: &std::path::Path,
@@ -356,19 +360,9 @@ impl SshClient {
         match self {
             SshClient::System(c) => c.upload_image(local_path, remote_filename, project_path),
             SshClient::Native(c) => {
-                let (host, port, user, key_path) = c.scp_params();
-                run_scp(
-                    host,
-                    port,
-                    user,
-                    key_path,
-                    None,
-                    &[],
-                    false,
-                    local_path,
-                    remote_filename,
-                    project_path,
-                )
+                let remote_path =
+                    format!("{project_path}/queue/screenshots/{remote_filename}");
+                c.upload_file(local_path, &remote_path)
             }
         }
     }
@@ -381,12 +375,24 @@ impl SystemSshClient {
         remote_filename: &str,
         project_path: &str,
     ) -> Result<()> {
+        // For password auth, scp relies on the ControlMaster socket so it
+        // doesn't need its own password prompt (BatchMode=yes).
+        // Warm up the socket via exec("true") if it doesn't exist yet.
         let socket = if self.ctrl_enabled.load(Ordering::Relaxed) {
-            self.control_socket_path()
-                .filter(|ctrl| std::path::Path::new(ctrl).exists())
+            if let Some(ctrl) = self.control_socket_path() {
+                if !std::path::Path::new(&ctrl).exists() && self.password.is_some() {
+                    // Establish the master connection; ignore errors here —
+                    // run_scp will surface a clearer failure if it still can't connect.
+                    let _ = self.exec("true");
+                }
+                Some(ctrl).filter(|p| std::path::Path::new(p).exists())
+            } else {
+                None
+            }
         } else {
             None
         };
+
         let mut extra_opts: Vec<String> = Vec::new();
         if !self.proxy_command.is_empty() {
             extra_opts.push(format!("ProxyCommand={}", self.proxy_command));

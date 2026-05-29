@@ -114,14 +114,69 @@ impl NativeSshClient {
             .unwrap_or(false)
     }
 
-    /// Connection parameters for system `scp` (fields are private).
-    pub(crate) fn scp_params(&self) -> (&str, u16, &str, Option<&str>) {
-        (
-            self.host.as_str(),
-            self.port,
-            self.user.as_str(),
-            self.key_path.as_deref(),
-        )
+    /// Upload a local file to a remote path using the established russh session.
+    ///
+    /// Runs `mkdir -p <dir> && cat > '<remote_path>'` on the remote, streams
+    /// the file bytes over stdin, then waits for exit status.
+    /// Works with any auth method (key, password, ProxyCommand) because it
+    /// reuses the already-authenticated session — no system scp involved.
+    pub fn upload_file(&self, local_path: &Path, remote_path: &str) -> Result<()> {
+        self.rt
+            .block_on(self.upload_file_async(local_path, remote_path))
+            .map_err(|e| self.reset_session_err(e))
+    }
+
+    async fn upload_file_async(&self, local_path: &Path, remote_path: &str) -> Result<()> {
+        let data = tokio::fs::read(local_path)
+            .await
+            .with_context(|| format!("ローカルファイル読み込み失敗: {}", local_path.display()))?;
+
+        let mut guard = self.session.lock().await;
+        if guard.is_none() {
+            let handle = self.connect_async().await?;
+            *guard = Some(handle);
+        }
+        let session = guard.as_mut().expect("session initialized above");
+
+        let dir = Path::new(remote_path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        // Use cat to write arbitrary bytes — no sftp dependency needed.
+        let cmd = if dir.is_empty() {
+            format!("cat > '{remote_path}'")
+        } else {
+            format!("mkdir -p '{dir}' && cat > '{remote_path}'")
+        };
+
+        let mut channel = session
+            .channel_open_session()
+            .await
+            .context("チャンネルオープン失敗")?;
+        channel.exec(true, cmd).await.context("exec 失敗")?;
+
+        // Stream the file content as stdin data.
+        channel
+            .data_bytes(data)
+            .await
+            .context("データ書き込み失敗")?;
+        // EOF signals end of stdin to the remote process.
+        channel.eof().await.context("EOF 送信失敗")?;
+
+        // Collect exit status.
+        loop {
+            match channel.wait().await {
+                Some(ChannelMsg::ExitStatus { exit_status: 0 }) => break,
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    bail!("リモートコマンドが終了コード {exit_status} で失敗しました");
+                }
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                _ => {}
+            }
+        }
+
+        Ok(())
     }
 
     /// Open a plain interactive shell channel (no tmux), with CWD set to `project_path`.
