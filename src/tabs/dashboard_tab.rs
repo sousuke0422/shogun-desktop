@@ -4,15 +4,16 @@ use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
 use crate::window::{DashboardState, ShogunWindow};
 use gpui::{
-    div, prelude::*, px, rgb, Context, Fill, Hsla, IntoElement, ParentElement, StyleRefinement,
-    Styled, TextStyleRefinement, Window,
+    Context, Fill, Hsla, IntoElement, ParentElement, StyleRefinement, Styled, TextStyleRefinement,
+    Window, div, prelude::*, px, rgb,
 };
 use gpui_component::{
+    Sizable, Theme, ThemeMode,
     button::Button,
     highlighter::HighlightTheme,
     scroll::ScrollableElement,
     text::{TextView, TextViewStyle},
-    v_flex, Theme, ThemeMode, Sizable,
+    v_flex,
 };
 
 /// Markdown inline `` `code` `` uses `cx.theme().accent` as background (gpui-component node.rs).
@@ -63,11 +64,7 @@ pub fn render_dashboard_tab(
     let status_text = if let Some(err) = &state.error_message {
         err.clone()
     } else if state.is_connected {
-        let secs = state
-            .last_refresh
-            .elapsed()
-            .unwrap_or_default()
-            .as_secs();
+        let secs = state.last_refresh.elapsed().unwrap_or_default().as_secs();
         format!("戦況 — {}秒前に更新", secs)
     } else {
         "未接続".to_string()

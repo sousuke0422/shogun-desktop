@@ -4,12 +4,12 @@ pub mod renderer;
 
 use std::io::Write;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
 };
 
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::{event::EventListener, Term};
+use alacritty_terminal::{Term, event::EventListener};
 use parking_lot::FairMutex;
 
 // ── OSC 52 clipboard listener ─────────────────────────────────────────────────
@@ -275,7 +275,9 @@ fn fallback_indexed_color(idx: u8) -> Option<ResolvedColor> {
                 6 => alacritty_terminal::vte::ansi::NamedColor::Cyan,
                 _ => alacritty_terminal::vte::ansi::NamedColor::White,
             })?;
-            let ResolvedColor::Rgb(r, g, b) = base else { return None };
+            let ResolvedColor::Rgb(r, g, b) = base else {
+                return None;
+            };
             (r, g, b)
         }
         8..=15 => {
@@ -289,7 +291,9 @@ fn fallback_indexed_color(idx: u8) -> Option<ResolvedColor> {
                 6 => alacritty_terminal::vte::ansi::NamedColor::BrightCyan,
                 _ => alacritty_terminal::vte::ansi::NamedColor::BrightWhite,
             })?;
-            let ResolvedColor::Rgb(r, g, b) = base else { return None };
+            let ResolvedColor::Rgb(r, g, b) = base else {
+                return None;
+            };
             (r, g, b)
         }
         16..=231 => {
@@ -312,18 +316,14 @@ fn fallback_indexed_color(idx: u8) -> Option<ResolvedColor> {
 mod tests {
     use super::*;
     use alacritty_terminal::{
-        event::VoidListener,
-        term::{test::TermSize, Config},
-        vte::ansi::{Processor, StdSyncHandler},
         Term,
+        event::VoidListener,
+        term::{Config, test::TermSize},
+        vte::ansi::{Processor, StdSyncHandler},
     };
 
     fn make_term(cols: usize, rows: usize) -> Term<VoidListener> {
-        Term::new(
-            Config::default(),
-            &TermSize::new(cols, rows),
-            VoidListener,
-        )
+        Term::new(Config::default(), &TermSize::new(cols, rows), VoidListener)
     }
 
     fn advance_bytes(term: &mut Term<VoidListener>, bytes: &[u8]) {

@@ -1,17 +1,18 @@
 use crate::settings::load_settings;
-use crate::tabs::shogun_tab::MONO_FONT;
 use crate::ssh::SshClient;
+use crate::tabs::shogun_tab::MONO_FONT;
 use crate::terminal::keys::key_to_bytes;
 use crate::terminal::pty_session;
 use crate::terminal::renderer::render_grid;
-use crate::window::measure_cell_metrics;
 use crate::terminal::{GridSnapshot, TerminalSession};
 use crate::theme::Colors;
+use crate::window::measure_cell_metrics;
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, IntoElement, KeyDownEvent, ParentElement,
-    Render, ScrollHandle, StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions,
+    App, Bounds, Context, IntoElement, KeyDownEvent, ParentElement, Render, ScrollHandle,
+    StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    size,
 };
-use gpui_component::{v_flex, Root};
+use gpui_component::{Root, v_flex};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -109,7 +110,10 @@ impl ShellWindow {
                     .timer(Duration::from_millis(16))
                     .await;
 
-                let cur = gen_arc.as_ref().map(|g| g.load(Ordering::Relaxed)).unwrap_or(0);
+                let cur = gen_arc
+                    .as_ref()
+                    .map(|g| g.load(Ordering::Relaxed))
+                    .unwrap_or(0);
                 if cur != last {
                     last = cur;
                     let _ = this.update(cx, |view, cx| {

@@ -1,10 +1,10 @@
-use crate::terminal::renderer::render_grid;
 use crate::terminal::GridSnapshot;
+use crate::terminal::renderer::render_grid;
 use crate::theme::Colors;
 use crate::window::ShogunWindow;
 use gpui::{
-    div, prelude::*, px, Context, IntoElement, KeyDownEvent, ParentElement, ScrollDelta,
-    ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled,
+    Context, IntoElement, KeyDownEvent, ParentElement, ScrollDelta, ScrollHandle, ScrollWheelEvent,
+    StatefulInteractiveElement, Styled, div, prelude::*, px,
 };
 use gpui_component::v_flex;
 
@@ -29,68 +29,62 @@ pub fn render_terminal_tab(
     cx: &mut Context<ShogunWindow>,
 ) -> impl IntoElement {
     let scroll_handle = scroll_handle.clone();
-    v_flex()
-        .flex_1()
-        .size_full()
-        .bg(Colors::shikkoku())
-        .child(
-            div()
-                .id(if is_shogun {
-                    "terminal-pane-shogun"
-                } else {
-                    "terminal-pane-multiagent"
-                })
-                .flex_1()
-                .w_full()
-                .track_scroll(&scroll_handle)
-                .overflow_y_scroll()
-                // focusable() sets focusable=true + tab_stop=true.
-                // This causes GPUI to auto-register a mouse-down handler that
-                // calls window.focus(handle) on click, enabling key event delivery.
-                // tab_stop(true) alone does NOT set focusable=true, so no FocusHandle
-                // was created and key events were never dispatched here.
-                //
-                // capture_key_down fires in the CAPTURE phase (top-down), before GPUI's
-                // action dispatch. on_key_down fires in the BUBBLE phase (after action
-                // dispatch), so GPUI built-in actions (Enter, arrows, Tab, Escape…) would
-                // consume the event first. A terminal emulator must intercept ALL keys
-                // before GPUI's action system — capture phase is the correct hook.
-                .focusable()
-                .capture_key_down(cx.listener(
-                    |this, event: &KeyDownEvent, _window, cx| {
-                        this.handle_terminal_key(event, cx);
-                    },
-                ))
-                .on_scroll_wheel(cx.listener(
-                    move |this, event: &ScrollWheelEvent, _window, cx| {
-                        let delta_y = scroll_delta_y(event);
-                        if delta_y < 0.0 {
+    v_flex().flex_1().size_full().bg(Colors::shikkoku()).child(
+        div()
+            .id(if is_shogun {
+                "terminal-pane-shogun"
+            } else {
+                "terminal-pane-multiagent"
+            })
+            .flex_1()
+            .w_full()
+            .track_scroll(&scroll_handle)
+            .overflow_y_scroll()
+            // focusable() sets focusable=true + tab_stop=true.
+            // This causes GPUI to auto-register a mouse-down handler that
+            // calls window.focus(handle) on click, enabling key event delivery.
+            // tab_stop(true) alone does NOT set focusable=true, so no FocusHandle
+            // was created and key events were never dispatched here.
+            //
+            // capture_key_down fires in the CAPTURE phase (top-down), before GPUI's
+            // action dispatch. on_key_down fires in the BUBBLE phase (after action
+            // dispatch), so GPUI built-in actions (Enter, arrows, Tab, Escape…) would
+            // consume the event first. A terminal emulator must intercept ALL keys
+            // before GPUI's action system — capture phase is the correct hook.
+            .focusable()
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                this.handle_terminal_key(event, cx);
+            }))
+            .on_scroll_wheel(
+                cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
+                    let delta_y = scroll_delta_y(event);
+                    if delta_y < 0.0 {
+                        if is_shogun {
+                            this.shogun_scroll_locked = true;
+                        } else {
+                            this.multiagent_scroll_locked = true;
+                        }
+                    } else if delta_y > 0.0 {
+                        let cur_y = scroll_handle.offset().y / px(1.);
+                        let prev_y = if is_shogun {
+                            this.shogun_prev_offset_y
+                        } else {
+                            this.multiagent_prev_offset_y
+                        };
+                        if (cur_y - prev_y).abs() < SCROLL_OFFSET_EPSILON {
                             if is_shogun {
-                                this.shogun_scroll_locked = true;
+                                this.shogun_scroll_locked = false;
                             } else {
-                                this.multiagent_scroll_locked = true;
-                            }
-                        } else if delta_y > 0.0 {
-                            let cur_y = scroll_handle.offset().y / px(1.);
-                            let prev_y = if is_shogun {
-                                this.shogun_prev_offset_y
-                            } else {
-                                this.multiagent_prev_offset_y
-                            };
-                            if (cur_y - prev_y).abs() < SCROLL_OFFSET_EPSILON {
-                                if is_shogun {
-                                    this.shogun_scroll_locked = false;
-                                } else {
-                                    this.multiagent_scroll_locked = false;
-                                }
+                                this.multiagent_scroll_locked = false;
                             }
                         }
-                        cx.notify();
-                    },
-                ))
-                .p_1()
-                .child(render_grid(snap, font, cw, ch)),
-        )
+                    }
+                    cx.notify();
+                }),
+            )
+            .p_1()
+            .child(render_grid(snap, font, cw, ch)),
+    )
 }
 
 pub fn render_terminal_tab_disconnected(
@@ -110,16 +104,12 @@ pub fn render_terminal_tab_disconnected(
 }
 
 pub fn render_terminal_tab_error(msg: String, _cx: &mut Context<ShogunWindow>) -> impl IntoElement {
-    v_flex()
-        .flex_1()
-        .size_full()
-        .bg(Colors::shikkoku())
-        .child(
-            div()
-                .text_color(Colors::kurenai())
-                .text_size(px(14.))
-                .child(msg),
-        )
+    v_flex().flex_1().size_full().bg(Colors::shikkoku()).child(
+        div()
+            .text_color(Colors::kurenai())
+            .text_size(px(14.))
+            .child(msg),
+    )
 }
 
 pub fn render_terminal_tab_empty(_cx: &mut Context<ShogunWindow>) -> impl IntoElement {
@@ -127,9 +117,5 @@ pub fn render_terminal_tab_empty(_cx: &mut Context<ShogunWindow>) -> impl IntoEl
         .flex_1()
         .size_full()
         .bg(Colors::shikkoku())
-        .child(
-            div()
-                .text_color(Colors::muted())
-                .child("接続中..."),
-        )
+        .child(div().text_color(Colors::muted()).child("接続中..."))
 }

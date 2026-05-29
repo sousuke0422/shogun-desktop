@@ -1,6 +1,6 @@
 use gpui::{
-    canvas, div, fill, point, px, rgba, size, AnyElement, App, Bounds, FontWeight, IntoElement,
-    ParentElement, Rgba, Styled, Window,
+    AnyElement, App, Bounds, FontWeight, IntoElement, ParentElement, Rgba, Styled, Window, canvas,
+    div, fill, point, px, rgba, size,
 };
 use gpui_component::v_flex;
 
@@ -150,16 +150,44 @@ fn paint_box_char(
     // Segment helpers (returns Bounds<Pixels>)
     // Open ends are extended by TOL so adjacent segments overlap rather than gap.
     // Interior endpoints (at xm/ym) are NOT extended — keeps corner geometry clean.
-    macro_rules! h_full { ($yc:expr, $lw:expr) => { rect!(ox-TOL,  $yc-$lw/2.0, x1+TOL, $yc+$lw/2.0) }; }
-    macro_rules! h_left { ($yc:expr, $lw:expr) => { rect!(ox-TOL,  $yc-$lw/2.0, xm,     $yc+$lw/2.0) }; }
-    macro_rules! h_right{ ($yc:expr, $lw:expr) => { rect!(xm,      $yc-$lw/2.0, x1+TOL, $yc+$lw/2.0) }; }
+    macro_rules! h_full {
+        ($yc:expr, $lw:expr) => {
+            rect!(ox - TOL, $yc - $lw / 2.0, x1 + TOL, $yc + $lw / 2.0)
+        };
+    }
+    macro_rules! h_left {
+        ($yc:expr, $lw:expr) => {
+            rect!(ox - TOL, $yc - $lw / 2.0, xm, $yc + $lw / 2.0)
+        };
+    }
+    macro_rules! h_right {
+        ($yc:expr, $lw:expr) => {
+            rect!(xm, $yc - $lw / 2.0, x1 + TOL, $yc + $lw / 2.0)
+        };
+    }
     // Vertical full / top-half / bottom-half at given x-center
-    macro_rules! v_full { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, oy-TOL, $xc+$lw/2.0, y1+TOL) }; }
-    macro_rules! v_top  { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, oy-TOL, $xc+$lw/2.0, ym)     }; }
-    macro_rules! v_bot  { ($xc:expr, $lw:expr) => { rect!($xc-$lw/2.0, ym,     $xc+$lw/2.0, y1+TOL) }; }
+    macro_rules! v_full {
+        ($xc:expr, $lw:expr) => {
+            rect!($xc - $lw / 2.0, oy - TOL, $xc + $lw / 2.0, y1 + TOL)
+        };
+    }
+    macro_rules! v_top {
+        ($xc:expr, $lw:expr) => {
+            rect!($xc - $lw / 2.0, oy - TOL, $xc + $lw / 2.0, ym)
+        };
+    }
+    macro_rules! v_bot {
+        ($xc:expr, $lw:expr) => {
+            rect!($xc - $lw / 2.0, ym, $xc + $lw / 2.0, y1 + TOL)
+        };
+    }
 
     // Paint a filled quad
-    macro_rules! q { ($b:expr) => { window.paint_quad(fill($b, fg)) }; }
+    macro_rules! q {
+        ($b:expr) => {
+            window.paint_quad(fill($b, fg))
+        };
+    }
 
     // Double-line offsets (40% and 60% of cell)
     let d1x = ox + cw * 0.4;
@@ -180,45 +208,133 @@ fn paint_box_char(
         '┇' | '╏' | '┋' => q!(v_full!(xm, hw)),
 
         // ── Light corners ─────────────────────────────────────────────────────
-        '┌' => { q!(h_right!(ym, lw)); q!(v_bot!(xm, lw)); }
-        '┐' => { q!(h_left!(ym, lw));  q!(v_bot!(xm, lw)); }
-        '└' => { q!(h_right!(ym, lw)); q!(v_top!(xm, lw)); }
-        '┘' => { q!(h_left!(ym, lw));  q!(v_top!(xm, lw)); }
+        '┌' => {
+            q!(h_right!(ym, lw));
+            q!(v_bot!(xm, lw));
+        }
+        '┐' => {
+            q!(h_left!(ym, lw));
+            q!(v_bot!(xm, lw));
+        }
+        '└' => {
+            q!(h_right!(ym, lw));
+            q!(v_top!(xm, lw));
+        }
+        '┘' => {
+            q!(h_left!(ym, lw));
+            q!(v_top!(xm, lw));
+        }
 
         // light + heavy corner variants
-        '┍' => { q!(h_right!(ym, hw)); q!(v_bot!(xm, lw)); }
-        '┎' => { q!(h_right!(ym, lw)); q!(v_bot!(xm, hw)); }
-        '┏' => { q!(h_right!(ym, hw)); q!(v_bot!(xm, hw)); }
-        '┑' => { q!(h_left!(ym, hw));  q!(v_bot!(xm, lw)); }
-        '┒' => { q!(h_left!(ym, lw));  q!(v_bot!(xm, hw)); }
-        '┓' => { q!(h_left!(ym, hw));  q!(v_bot!(xm, hw)); }
-        '┕' => { q!(h_right!(ym, hw)); q!(v_top!(xm, lw)); }
-        '┖' => { q!(h_right!(ym, lw)); q!(v_top!(xm, hw)); }
-        '┗' => { q!(h_right!(ym, hw)); q!(v_top!(xm, hw)); }
-        '┙' => { q!(h_left!(ym, hw));  q!(v_top!(xm, lw)); }
-        '┚' => { q!(h_left!(ym, lw));  q!(v_top!(xm, hw)); }
-        '┛' => { q!(h_left!(ym, hw));  q!(v_top!(xm, hw)); }
+        '┍' => {
+            q!(h_right!(ym, hw));
+            q!(v_bot!(xm, lw));
+        }
+        '┎' => {
+            q!(h_right!(ym, lw));
+            q!(v_bot!(xm, hw));
+        }
+        '┏' => {
+            q!(h_right!(ym, hw));
+            q!(v_bot!(xm, hw));
+        }
+        '┑' => {
+            q!(h_left!(ym, hw));
+            q!(v_bot!(xm, lw));
+        }
+        '┒' => {
+            q!(h_left!(ym, lw));
+            q!(v_bot!(xm, hw));
+        }
+        '┓' => {
+            q!(h_left!(ym, hw));
+            q!(v_bot!(xm, hw));
+        }
+        '┕' => {
+            q!(h_right!(ym, hw));
+            q!(v_top!(xm, lw));
+        }
+        '┖' => {
+            q!(h_right!(ym, lw));
+            q!(v_top!(xm, hw));
+        }
+        '┗' => {
+            q!(h_right!(ym, hw));
+            q!(v_top!(xm, hw));
+        }
+        '┙' => {
+            q!(h_left!(ym, hw));
+            q!(v_top!(xm, lw));
+        }
+        '┚' => {
+            q!(h_left!(ym, lw));
+            q!(v_top!(xm, hw));
+        }
+        '┛' => {
+            q!(h_left!(ym, hw));
+            q!(v_top!(xm, hw));
+        }
 
         // ── T-junctions ───────────────────────────────────────────────────────
-        '├' => { q!(h_right!(ym, lw)); q!(v_full!(xm, lw)); }
-        '┤' => { q!(h_left!(ym, lw));  q!(v_full!(xm, lw)); }
-        '┬' => { q!(h_full!(ym, lw));  q!(v_bot!(xm, lw));  }
-        '┴' => { q!(h_full!(ym, lw));  q!(v_top!(xm, lw));  }
-        '┼' => { q!(h_full!(ym, lw));  q!(v_full!(xm, lw)); }
+        '├' => {
+            q!(h_right!(ym, lw));
+            q!(v_full!(xm, lw));
+        }
+        '┤' => {
+            q!(h_left!(ym, lw));
+            q!(v_full!(xm, lw));
+        }
+        '┬' => {
+            q!(h_full!(ym, lw));
+            q!(v_bot!(xm, lw));
+        }
+        '┴' => {
+            q!(h_full!(ym, lw));
+            q!(v_top!(xm, lw));
+        }
+        '┼' => {
+            q!(h_full!(ym, lw));
+            q!(v_full!(xm, lw));
+        }
 
         // heavy T-junctions
-        '┣' => { q!(h_right!(ym, hw)); q!(v_full!(xm, hw)); }
-        '┫' => { q!(h_left!(ym, hw));  q!(v_full!(xm, hw)); }
-        '┳' => { q!(h_full!(ym, hw));  q!(v_bot!(xm, hw));  }
-        '┻' => { q!(h_full!(ym, hw));  q!(v_top!(xm, hw));  }
-        '╋' => { q!(h_full!(ym, hw));  q!(v_full!(xm, hw)); }
+        '┣' => {
+            q!(h_right!(ym, hw));
+            q!(v_full!(xm, hw));
+        }
+        '┫' => {
+            q!(h_left!(ym, hw));
+            q!(v_full!(xm, hw));
+        }
+        '┳' => {
+            q!(h_full!(ym, hw));
+            q!(v_bot!(xm, hw));
+        }
+        '┻' => {
+            q!(h_full!(ym, hw));
+            q!(v_top!(xm, hw));
+        }
+        '╋' => {
+            q!(h_full!(ym, hw));
+            q!(v_full!(xm, hw));
+        }
 
         // mixed T-junctions → approximate with light
-        '┝'..='┞' | '┟'..='┠' | '┡'..='┢' | '┦'..='┧'
-        | '┨'..='┩' | '┪' | '┭'..='┯'
-        | '┰'..='┲' | '┵'..='┷' | '┸'..='┺' | '┽'..='┿'
-        | '╀'..='╉' | '╊' => {
-            q!(h_full!(ym, lw)); q!(v_full!(xm, lw));
+        '┝'..='┞'
+        | '┟'..='┠'
+        | '┡'..='┢'
+        | '┦'..='┧'
+        | '┨'..='┩'
+        | '┪'
+        | '┭'..='┯'
+        | '┰'..='┲'
+        | '┵'..='┷'
+        | '┸'..='┺'
+        | '┽'..='┿'
+        | '╀'..='╉'
+        | '╊' => {
+            q!(h_full!(ym, lw));
+            q!(v_full!(xm, lw));
         }
 
         // ── Half-lines ────────────────────────────────────────────────────────
@@ -230,151 +346,205 @@ fn paint_box_char(
         '╹' => q!(v_top!(xm, hw)),
         '╺' => q!(h_right!(ym, hw)),
         '╻' => q!(v_bot!(xm, hw)),
-        '╼' => { q!(h_left!(ym, lw)); q!(h_right!(ym, hw)); }
-        '╽' => { q!(v_top!(xm, lw)); q!(v_bot!(xm, hw)); }
-        '╾' => { q!(h_left!(ym, hw)); q!(h_right!(ym, lw)); }
-        '╿' => { q!(v_top!(xm, hw)); q!(v_bot!(xm, lw)); }
+        '╼' => {
+            q!(h_left!(ym, lw));
+            q!(h_right!(ym, hw));
+        }
+        '╽' => {
+            q!(v_top!(xm, lw));
+            q!(v_bot!(xm, hw));
+        }
+        '╾' => {
+            q!(h_left!(ym, hw));
+            q!(h_right!(ym, lw));
+        }
+        '╿' => {
+            q!(v_top!(xm, hw));
+            q!(v_bot!(xm, lw));
+        }
 
         // ── Double lines ──────────────────────────────────────────────────────
-        '═' => { q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw)); }
-        '║' => { q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw)); }
+        '═' => {
+            q!(h_full!(d1y, lw));
+            q!(h_full!(d2y, lw));
+        }
+        '║' => {
+            q!(v_full!(d1x, lw));
+            q!(v_full!(d2x, lw));
+        }
 
         // Double corners (top-left)
         '╔' => {
-            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
-            q!(v_bot!(d1x, lw));   q!(v_bot!(d2x, lw));
+            q!(h_right!(d1y, lw));
+            q!(h_right!(d2y, lw));
+            q!(v_bot!(d1x, lw));
+            q!(v_bot!(d2x, lw));
         }
         '╓' => {
-            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
+            q!(h_right!(d1y, lw));
+            q!(h_right!(d2y, lw));
             q!(v_bot!(xm, lw));
         }
         '╒' => {
             q!(h_right!(ym, lw));
-            q!(v_bot!(d1x, lw)); q!(v_bot!(d2x, lw));
+            q!(v_bot!(d1x, lw));
+            q!(v_bot!(d2x, lw));
         }
 
         // top-right
         '╗' => {
-            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
-            q!(v_bot!(d1x, lw));  q!(v_bot!(d2x, lw));
+            q!(h_left!(d1y, lw));
+            q!(h_left!(d2y, lw));
+            q!(v_bot!(d1x, lw));
+            q!(v_bot!(d2x, lw));
         }
         '╖' => {
-            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
+            q!(h_left!(d1y, lw));
+            q!(h_left!(d2y, lw));
             q!(v_bot!(xm, lw));
         }
         '╕' => {
             q!(h_left!(ym, lw));
-            q!(v_bot!(d1x, lw)); q!(v_bot!(d2x, lw));
+            q!(v_bot!(d1x, lw));
+            q!(v_bot!(d2x, lw));
         }
 
         // bottom-left
         '╚' => {
-            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
-            q!(v_top!(d1x, lw));   q!(v_top!(d2x, lw));
+            q!(h_right!(d1y, lw));
+            q!(h_right!(d2y, lw));
+            q!(v_top!(d1x, lw));
+            q!(v_top!(d2x, lw));
         }
         '╙' => {
-            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
+            q!(h_right!(d1y, lw));
+            q!(h_right!(d2y, lw));
             q!(v_top!(xm, lw));
         }
         '╘' => {
             q!(h_right!(ym, lw));
-            q!(v_top!(d1x, lw)); q!(v_top!(d2x, lw));
+            q!(v_top!(d1x, lw));
+            q!(v_top!(d2x, lw));
         }
 
         // bottom-right
         '╝' => {
-            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
-            q!(v_top!(d1x, lw));  q!(v_top!(d2x, lw));
+            q!(h_left!(d1y, lw));
+            q!(h_left!(d2y, lw));
+            q!(v_top!(d1x, lw));
+            q!(v_top!(d2x, lw));
         }
         '╜' => {
-            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
+            q!(h_left!(d1y, lw));
+            q!(h_left!(d2y, lw));
             q!(v_top!(xm, lw));
         }
         '╛' => {
             q!(h_left!(ym, lw));
-            q!(v_top!(d1x, lw)); q!(v_top!(d2x, lw));
+            q!(v_top!(d1x, lw));
+            q!(v_top!(d2x, lw));
         }
 
         // Double T-junctions
         '╠' => {
-            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
-            q!(v_full!(d1x, lw));  q!(v_full!(d2x, lw));
+            q!(h_right!(d1y, lw));
+            q!(h_right!(d2y, lw));
+            q!(v_full!(d1x, lw));
+            q!(v_full!(d2x, lw));
         }
         '╟' => {
-            q!(h_right!(d1y, lw)); q!(h_right!(d2y, lw));
+            q!(h_right!(d1y, lw));
+            q!(h_right!(d2y, lw));
             q!(v_full!(xm, lw));
         }
         '╞' => {
             q!(h_right!(ym, lw));
-            q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw));
+            q!(v_full!(d1x, lw));
+            q!(v_full!(d2x, lw));
         }
         '╣' => {
-            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
-            q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw));
+            q!(h_left!(d1y, lw));
+            q!(h_left!(d2y, lw));
+            q!(v_full!(d1x, lw));
+            q!(v_full!(d2x, lw));
         }
         '╢' => {
-            q!(h_left!(d1y, lw)); q!(h_left!(d2y, lw));
+            q!(h_left!(d1y, lw));
+            q!(h_left!(d2y, lw));
             q!(v_full!(xm, lw));
         }
         '╡' => {
             q!(h_left!(ym, lw));
-            q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw));
+            q!(v_full!(d1x, lw));
+            q!(v_full!(d2x, lw));
         }
         '╦' => {
-            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
-            q!(v_bot!(d1x, lw));  q!(v_bot!(d2x, lw));
+            q!(h_full!(d1y, lw));
+            q!(h_full!(d2y, lw));
+            q!(v_bot!(d1x, lw));
+            q!(v_bot!(d2x, lw));
         }
         '╥' => {
-            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
+            q!(h_full!(d1y, lw));
+            q!(h_full!(d2y, lw));
             q!(v_bot!(xm, lw));
         }
         '╤' => {
             q!(h_full!(ym, lw));
-            q!(v_bot!(d1x, lw)); q!(v_bot!(d2x, lw));
+            q!(v_bot!(d1x, lw));
+            q!(v_bot!(d2x, lw));
         }
         '╩' => {
-            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
-            q!(v_top!(d1x, lw));  q!(v_top!(d2x, lw));
+            q!(h_full!(d1y, lw));
+            q!(h_full!(d2y, lw));
+            q!(v_top!(d1x, lw));
+            q!(v_top!(d2x, lw));
         }
         '╨' => {
-            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
+            q!(h_full!(d1y, lw));
+            q!(h_full!(d2y, lw));
             q!(v_top!(xm, lw));
         }
         '╧' => {
             q!(h_full!(ym, lw));
-            q!(v_top!(d1x, lw)); q!(v_top!(d2x, lw));
+            q!(v_top!(d1x, lw));
+            q!(v_top!(d2x, lw));
         }
         '╬' => {
-            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
-            q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw));
+            q!(h_full!(d1y, lw));
+            q!(h_full!(d2y, lw));
+            q!(v_full!(d1x, lw));
+            q!(v_full!(d2x, lw));
         }
         '╫' => {
-            q!(h_full!(d1y, lw)); q!(h_full!(d2y, lw));
+            q!(h_full!(d1y, lw));
+            q!(h_full!(d2y, lw));
             q!(v_full!(xm, lw));
         }
         '╪' => {
             q!(h_full!(ym, lw));
-            q!(v_full!(d1x, lw)); q!(v_full!(d2x, lw));
+            q!(v_full!(d1x, lw));
+            q!(v_full!(d2x, lw));
         }
 
         // ── Block elements U+2580-U+259F ──────────────────────────────────────
-        '▀' => q!(rect!(ox, oy,             x1, ym)),           // upper half
-        '▁' => q!(rect!(ox, oy+ch*7.0/8.0, x1, y1)),           // lower 1/8
-        '▂' => q!(rect!(ox, oy+ch*6.0/8.0, x1, y1)),
-        '▃' => q!(rect!(ox, oy+ch*5.0/8.0, x1, y1)),
-        '▄' => q!(rect!(ox, ym,             x1, y1)),           // lower half
-        '▅' => q!(rect!(ox, oy+ch*3.0/8.0, x1, y1)),
-        '▆' => q!(rect!(ox, oy+ch*2.0/8.0, x1, y1)),
-        '▇' => q!(rect!(ox, oy+ch*1.0/8.0, x1, y1)),
-        '█' => q!(rect!(ox, oy,             x1, y1)),           // full block
-        '▉' => q!(rect!(ox, oy, ox+cw*7.0/8.0, y1)),
-        '▊' => q!(rect!(ox, oy, ox+cw*6.0/8.0, y1)),
-        '▋' => q!(rect!(ox, oy, ox+cw*5.0/8.0, y1)),
-        '▌' => q!(rect!(ox, oy, xm,             y1)),           // left half
-        '▍' => q!(rect!(ox, oy, ox+cw*3.0/8.0, y1)),
-        '▎' => q!(rect!(ox, oy, ox+cw*2.0/8.0, y1)),
-        '▏' => q!(rect!(ox, oy, ox+cw*1.0/8.0, y1)),
-        '▐' => q!(rect!(xm, oy, x1,             y1)),           // right half
+        '▀' => q!(rect!(ox, oy, x1, ym)), // upper half
+        '▁' => q!(rect!(ox, oy + ch * 7.0 / 8.0, x1, y1)), // lower 1/8
+        '▂' => q!(rect!(ox, oy + ch * 6.0 / 8.0, x1, y1)),
+        '▃' => q!(rect!(ox, oy + ch * 5.0 / 8.0, x1, y1)),
+        '▄' => q!(rect!(ox, ym, x1, y1)), // lower half
+        '▅' => q!(rect!(ox, oy + ch * 3.0 / 8.0, x1, y1)),
+        '▆' => q!(rect!(ox, oy + ch * 2.0 / 8.0, x1, y1)),
+        '▇' => q!(rect!(ox, oy + ch * 1.0 / 8.0, x1, y1)),
+        '█' => q!(rect!(ox, oy, x1, y1)), // full block
+        '▉' => q!(rect!(ox, oy, ox + cw * 7.0 / 8.0, y1)),
+        '▊' => q!(rect!(ox, oy, ox + cw * 6.0 / 8.0, y1)),
+        '▋' => q!(rect!(ox, oy, ox + cw * 5.0 / 8.0, y1)),
+        '▌' => q!(rect!(ox, oy, xm, y1)), // left half
+        '▍' => q!(rect!(ox, oy, ox + cw * 3.0 / 8.0, y1)),
+        '▎' => q!(rect!(ox, oy, ox + cw * 2.0 / 8.0, y1)),
+        '▏' => q!(rect!(ox, oy, ox + cw * 1.0 / 8.0, y1)),
+        '▐' => q!(rect!(xm, oy, x1, y1)), // right half
         // Shades: approximate with dot patterns
         '░' => {
             let dw = (cw * 0.15).max(1.0);
@@ -425,18 +595,36 @@ fn paint_box_char(
                 }
             }
         }
-        '▔' => q!(rect!(ox, oy, x1, oy+ch/8.0)),               // upper 1/8
-        '▕' => q!(rect!(ox+cw*7.0/8.0, oy, x1, y1)),           // right 1/8
-        '▖' => q!(rect!(ox, ym, xm, y1)),                       // lower-left quad
-        '▗' => q!(rect!(xm, ym, x1, y1)),                       // lower-right quad
-        '▘' => q!(rect!(ox, oy, xm, ym)),                       // upper-left quad
-        '▙' => { q!(rect!(ox, oy, xm, y1));  q!(rect!(xm, ym, x1, y1)); }
-        '▚' => { q!(rect!(ox, oy, xm, ym));  q!(rect!(xm, ym, x1, y1)); }
-        '▛' => { q!(rect!(ox, oy, x1, ym));  q!(rect!(ox, ym, xm, y1)); }
-        '▜' => { q!(rect!(ox, oy, x1, ym));  q!(rect!(xm, ym, x1, y1)); }
-        '▝' => q!(rect!(xm, oy, x1, ym)),                       // upper-right quad
-        '▞' => { q!(rect!(xm, oy, x1, ym));  q!(rect!(ox, ym, xm, y1)); }
-        '▟' => { q!(rect!(xm, oy, x1, ym));  q!(rect!(ox, ym, x1, y1)); }
+        '▔' => q!(rect!(ox, oy, x1, oy + ch / 8.0)), // upper 1/8
+        '▕' => q!(rect!(ox + cw * 7.0 / 8.0, oy, x1, y1)), // right 1/8
+        '▖' => q!(rect!(ox, ym, xm, y1)),            // lower-left quad
+        '▗' => q!(rect!(xm, ym, x1, y1)),            // lower-right quad
+        '▘' => q!(rect!(ox, oy, xm, ym)),            // upper-left quad
+        '▙' => {
+            q!(rect!(ox, oy, xm, y1));
+            q!(rect!(xm, ym, x1, y1));
+        }
+        '▚' => {
+            q!(rect!(ox, oy, xm, ym));
+            q!(rect!(xm, ym, x1, y1));
+        }
+        '▛' => {
+            q!(rect!(ox, oy, x1, ym));
+            q!(rect!(ox, ym, xm, y1));
+        }
+        '▜' => {
+            q!(rect!(ox, oy, x1, ym));
+            q!(rect!(xm, ym, x1, y1));
+        }
+        '▝' => q!(rect!(xm, oy, x1, ym)), // upper-right quad
+        '▞' => {
+            q!(rect!(xm, oy, x1, ym));
+            q!(rect!(ox, ym, xm, y1));
+        }
+        '▟' => {
+            q!(rect!(xm, oy, x1, ym));
+            q!(rect!(ox, ym, x1, y1));
+        }
 
         _ => return false,
     }
@@ -495,7 +683,9 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
                                 let cell_h = f32::from(bounds.size.height);
                                 for &(c, dw) in &chars {
                                     let char_cw = cw_cap * dw as f32;
-                                    paint_box_char(c, x_off, y_off, char_cw, cell_h, fg_cap, window);
+                                    paint_box_char(
+                                        c, x_off, y_off, char_cw, cell_h, fg_cap, window,
+                                    );
                                     x_off += char_cw;
                                 }
                             },
@@ -761,13 +951,13 @@ mod tests {
 
     #[test]
     fn is_geom_box_char_coverage() {
-        assert!(is_geom_box_char('─'));           // U+2500
-        assert!(is_geom_box_char('│'));           // U+2502
-        assert!(is_geom_box_char('┌'));           // U+250C
-        assert!(is_geom_box_char('█'));           // U+2588
-        assert!(is_geom_box_char('░'));           // U+2591
-        assert!(is_geom_box_char('\u{259F}'));    // U+259F upper limit
-        assert!(!is_geom_box_char('\u{25A0}'));  // Geometric shapes start
+        assert!(is_geom_box_char('─')); // U+2500
+        assert!(is_geom_box_char('│')); // U+2502
+        assert!(is_geom_box_char('┌')); // U+250C
+        assert!(is_geom_box_char('█')); // U+2588
+        assert!(is_geom_box_char('░')); // U+2591
+        assert!(is_geom_box_char('\u{259F}')); // U+259F upper limit
+        assert!(!is_geom_box_char('\u{25A0}')); // Geometric shapes start
         assert!(!is_geom_box_char('→'));
         assert!(!is_geom_box_char('a'));
     }
@@ -776,13 +966,13 @@ mod tests {
     fn arrow_and_diamond_are_not_geom() {
         // Arrows (U+2190-U+21FF) and geometric shapes (U+25A0-U+25FF)
         // are NOT geometry-rendered — they use the primary font at 1-cell width.
-        assert!(!is_geom_box_char('→'));  // U+2192
-        assert!(!is_geom_box_char('←'));  // U+2190
-        assert!(!is_geom_box_char('◆'));  // U+25C6
-        assert!(!is_geom_box_char('▶'));  // U+25B6
+        assert!(!is_geom_box_char('→')); // U+2192
+        assert!(!is_geom_box_char('←')); // U+2190
+        assert!(!is_geom_box_char('◆')); // U+25C6
+        assert!(!is_geom_box_char('▶')); // U+25B6
         // But box-drawing / block-elements ARE geometry:
-        assert!(is_geom_box_char('─'));   // U+2500
-        assert!(is_geom_box_char('█'));   // U+2588
+        assert!(is_geom_box_char('─')); // U+2500
+        assert!(is_geom_box_char('█')); // U+2588
     }
 
     #[test]

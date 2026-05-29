@@ -1,23 +1,23 @@
 use std::io::{Read, Write};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
 };
 
 use parking_lot::FairMutex;
 
 use alacritty_terminal::{
-    term::{test::TermSize, Config},
-    vte::ansi::{Processor, StdSyncHandler},
     Term,
+    term::{Config, test::TermSize},
+    vte::ansi::{Processor, StdSyncHandler},
 };
 use anyhow::Result;
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::native_ssh::NativeSshClient;
 use crate::ssh::{SshClient, SystemSshClient};
 use crate::terminal::{
-    take_snapshot, ClipboardEvent, ClipboardListener, GridSnapshot, PtyResizer, TerminalSession,
+    ClipboardEvent, ClipboardListener, GridSnapshot, PtyResizer, TerminalSession, take_snapshot,
 };
 
 // ── system-SSH resizer ────────────────────────────────────────────────────────
@@ -77,8 +77,7 @@ fn spawn_shell_native(
     cols: u16,
     rows: u16,
 ) -> Result<TerminalSession> {
-    let (reader, writer, resizer) =
-        client.open_shell_channel(project_path, cols, rows)?;
+    let (reader, writer, resizer) = client.open_shell_channel(project_path, cols, rows)?;
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer));
     build_terminal_session(cols, rows, reader, writer, Arc::from(resizer))
 }
@@ -113,9 +112,12 @@ fn spawn_shell_system(
     if ssh.ctrl_enabled.load(Ordering::Relaxed) {
         if let Some(ctrl) = control_path {
             cmd.args([
-                "-o", "ControlMaster=auto",
-                "-o", &format!("ControlPath={ctrl}"),
-                "-o", "ControlPersist=30",
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                &format!("ControlPath={ctrl}"),
+                "-o",
+                "ControlPersist=30",
             ]);
         }
     }
@@ -210,9 +212,7 @@ fn spawn_system(
     // PTY sessions are interactive: ssh prompts for the password via the
     // terminal directly. SSH_ASKPASS is for headless exec only — do not set it here.
     cmd.arg(format!("{}@{}", ssh.user, ssh.host));
-    cmd.arg(format!(
-        "tmux attach-session -t {tmux_session}"
-    ));
+    cmd.arg(format!("tmux attach-session -t {tmux_session}"));
 
     let _child = pair.slave.spawn_command(cmd)?;
 
@@ -273,7 +273,10 @@ fn build_terminal_session(
         &TermSize::new(cols as usize, rows as usize),
         listener,
     )));
-    let snapshot = Arc::new(FairMutex::new(GridSnapshot::blank(cols as usize, rows as usize)));
+    let snapshot = Arc::new(FairMutex::new(GridSnapshot::blank(
+        cols as usize,
+        rows as usize,
+    )));
     let connected = Arc::new(AtomicBool::new(true));
     let generation = Arc::new(AtomicU64::new(0));
     let error: Arc<FairMutex<Option<String>>> = Arc::new(FairMutex::new(None));

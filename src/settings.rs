@@ -167,8 +167,7 @@ pub fn load_settings() -> Result<ShogunDesktopSettings> {
     if !path.exists() {
         return Ok(ShogunDesktopSettings::default());
     }
-    let raw = fs::read_to_string(&path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let settings = toml::from_str(&raw).context("parse settings.toml")?;
     Ok(settings)
 }
