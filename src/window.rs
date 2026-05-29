@@ -890,19 +890,20 @@ impl ShogunWindow {
             .child(upload_status);
 
         if is_shogun {
-            root = root.on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                let images: Vec<std::path::PathBuf> = paths
-                    .paths()
-                    .iter()
-                    .filter(|p| image_upload::is_image(p))
-                    .cloned()
-                    .collect();
-                this.dragged_paths = None;
-                if !images.is_empty() {
-                    this.start_upload(images, cx);
-                }
-                cx.notify();
-            }));
+            root =
+                root.on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                    let images: Vec<std::path::PathBuf> = paths
+                        .paths()
+                        .iter()
+                        .filter(|p| image_upload::is_image(p))
+                        .cloned()
+                        .collect();
+                    this.dragged_paths = None;
+                    if !images.is_empty() {
+                        this.start_upload(images, cx);
+                    }
+                    cx.notify();
+                }));
         }
 
         root.child(
