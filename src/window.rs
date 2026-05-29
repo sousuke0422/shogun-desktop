@@ -43,12 +43,17 @@ const LINE_HEIGHT_MULT: f32 = 1.5;
 
 /// Measure cell dimensions from the active GPUI `TextSystem`.
 ///
-/// - **cw** = `ch_advance(font_id, font_size)` snapped to the nearest physical-pixel
-///   boundary (ceiling). The snap prevents sub-pixel accumulation: at 125% DPI,
-///   `6.825 logical px × 1.25 = 8.53 physical px` rounds up to `9 px → 7.2 logical px`.
+/// Both `cw` and `ch` are snapped to the nearest physical-pixel boundary (ceiling)
+/// to prevent sub-pixel accumulation across columns/rows.
+///
+/// - **cw** = `ch_advance(font_id, font_size)` snapped to physical-pixel ceiling.
+///   At 125% DPI: `6.825 × 1.25 = 8.53 physical px → ceil → 9 → /1.25 = 7.2 logical px`.
 ///   Without the snap, each glyph overflows its cell by ≈0.4 px, breaking table
 ///   column alignment after ~30 characters.
-/// - **ch** = `font_size × LINE_HEIGHT_MULT` — OS-independent line height.
+/// - **ch** = `font_size × LINE_HEIGHT_MULT` snapped to physical-pixel ceiling.
+///   At 125% DPI: `19.5 × 1.25 = 24.375 physical px → ceil → 25 → /1.25 = 20.0 logical px`.
+///   Without the snap, GPUI flex layout introduces per-row rounding drift, causing
+///   tmux horizontal pane-border characters (`─`) to misalign vertically after N rows.
 ///
 /// `scale_factor` is `window.scale_factor()` (device-pixel ratio, e.g. 1.25 on
 /// Windows 125 % DPI, 2.0 on macOS Retina).
@@ -82,11 +87,25 @@ pub fn measure_cell_metrics(
         cell_width_for_font(font_name)
     };
 
-    // Cell height: font_size × multiplier (OS-independent).
+    // Cell height: font_size × multiplier, snapped to physical-pixel ceiling.
     // CoreText omits line_gap from ascent+descent, so the previous `ascent + descent`
     // formula produced cramped rows on macOS. A fixed multiplier is identical across
     // DirectWrite / CoreText / FreeType.
-    let ch = f32::from(font_size) * LINE_HEIGHT_MULT;
+    //
+    // Without the snap, each row is 19.5 logical px, which at 125% DPI is
+    // 24.375 physical px — a non-integer.  GPUI rounds per-row in flex layout,
+    // so after N rows the accumulated pixel offset has subpixel drift, causing
+    // tmux pane-border characters (horizontal `─`) to misalign vertically.
+    //
+    // Snapped values:
+    //   100% DPI: ceil(19.5 × 1.0) / 1.0 = 20 / 1.0 = 20.0 px
+    //   125% DPI: ceil(19.5 × 1.25) / 1.25 = 25 / 1.25 = 20.0 px
+    //   200% DPI: ceil(19.5 × 2.0) / 2.0 = 39 / 2.0 = 19.5 px (no change)
+    let ch = {
+        let raw = f32::from(font_size) * LINE_HEIGHT_MULT;
+        let sf = scale_factor.max(1.0);
+        (raw * sf).ceil() / sf
+    };
 
     (cw, ch)
 }
