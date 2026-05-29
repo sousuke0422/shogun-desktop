@@ -1,15 +1,15 @@
 use crate::settings::ShogunDesktopSettings;
 use crate::terminal::PtyResizer;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use russh::client::{self, Handler};
-use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{PrivateKeyWithHashAlg, PublicKey, load_secret_key};
 use russh::{ChannelMsg, ChannelWriteHalf};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 /// Pure-Rust SSH client backed by russh (lazy connect, session reuse).
 #[derive(Clone)]
@@ -69,9 +69,7 @@ impl NativeSshClient {
         if user.is_empty() && ssh.proxy_command.is_empty() {
             bail!("SSHユーザー名が未設定です");
         }
-        let key_path = if !ssh.key_path.is_empty()
-            && std::path::Path::new(&ssh.key_path).exists()
-        {
+        let key_path = if !ssh.key_path.is_empty() && std::path::Path::new(&ssh.key_path).exists() {
             Some(ssh.key_path.clone())
         } else {
             None
@@ -116,13 +114,27 @@ impl NativeSshClient {
             .unwrap_or(false)
     }
 
+    /// Connection parameters for system `scp` (fields are private).
+    pub(crate) fn scp_params(&self) -> (&str, u16, &str, Option<&str>) {
+        (
+            self.host.as_str(),
+            self.port,
+            self.user.as_str(),
+            self.key_path.as_deref(),
+        )
+    }
+
     /// Open a plain interactive shell channel (no tmux), with CWD set to `project_path`.
     pub fn open_shell_channel(
         &self,
         project_path: &str,
         cols: u16,
         rows: u16,
-    ) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>, Box<dyn PtyResizer>)> {
+    ) -> Result<(
+        Box<dyn Read + Send>,
+        Box<dyn Write + Send>,
+        Box<dyn PtyResizer>,
+    )> {
         let cmd = format!("cd {project_path} && exec $SHELL -l");
         let (reader, writer, resizer) = self
             .rt
@@ -136,7 +148,11 @@ impl NativeSshClient {
         tmux_session: &str,
         cols: u16,
         rows: u16,
-    ) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>, Box<dyn PtyResizer>)> {
+    ) -> Result<(
+        Box<dyn Read + Send>,
+        Box<dyn Write + Send>,
+        Box<dyn PtyResizer>,
+    )> {
         let cmd = format!("tmux attach-session -t {tmux_session}");
         let (reader, writer, resizer) = self
             .rt
@@ -156,23 +172,13 @@ impl NativeSshClient {
             let handle = self.connect_async().await?;
             *guard = Some(handle);
         }
-        let session = guard
-            .as_mut()
-            .expect("session initialized above");
+        let session = guard.as_mut().expect("session initialized above");
         let channel = session
             .channel_open_session()
             .await
             .context("SSH セッションチャンネルのオープンに失敗しました")?;
         channel
-            .request_pty(
-                false,
-                "xterm-256color",
-                cols as u32,
-                rows as u32,
-                0,
-                0,
-                &[],
-            )
+            .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
             .await
             .context("SSH PTY 要求に失敗しました")?;
         channel
@@ -237,9 +243,7 @@ impl NativeSshClient {
             let handle = self.connect_async().await?;
             *guard = Some(handle);
         }
-        let session = guard
-            .as_mut()
-            .expect("session initialized above");
+        let session = guard.as_mut().expect("session initialized above");
         let mut channel = session
             .channel_open_session()
             .await
@@ -297,7 +301,10 @@ impl NativeSshClient {
 
             let mut child = child_result.context("ProxyCommand の起動に失敗しました")?;
             let stdin = child.stdin.take().context("ProxyCommand stdin 取得失敗")?;
-            let stdout = child.stdout.take().context("ProxyCommand stdout 取得失敗")?;
+            let stdout = child
+                .stdout
+                .take()
+                .context("ProxyCommand stdout 取得失敗")?;
             let stream = tokio::io::join(stdout, stdin);
 
             client::connect_stream(config, stream, handler)
@@ -462,9 +469,9 @@ fn line_matches_host(hosts_field: &str, aliases: &[String]) -> bool {
     if hosts_field.starts_with('|') {
         return false;
     }
-    hosts_field.split(',').any(|entry| {
-        aliases.iter().any(|alias| entry == alias)
-    })
+    hosts_field
+        .split(',')
+        .any(|entry| aliases.iter().any(|alias| entry == alias))
 }
 
 fn line_key_matches(line: &str, algo: &str, blob: &str) -> bool {
@@ -486,8 +493,7 @@ fn check_or_accept_server_key(
         .map_err(|e| russh::Error::InvalidConfig(e.to_string()))?;
 
     if path.exists() {
-        let content = std::fs::read_to_string(&path)
-            .map_err(russh::Error::IO)?;
+        let content = std::fs::read_to_string(&path).map_err(russh::Error::IO)?;
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -508,16 +514,9 @@ fn check_or_accept_server_key(
     Ok(true)
 }
 
-fn append_known_host(
-    path: &Path,
-    host: &str,
-    port: u16,
-    algo: &str,
-    blob: &str,
-) -> Result<()> {
+fn append_known_host(path: &Path, host: &str, port: u16, algo: &str, blob: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let host_field = if port == 22 {
         host.to_string()
@@ -558,7 +557,15 @@ mod tests {
     #[test]
     fn line_key_matches_compares_algo_and_blob() {
         let line = "myhost ssh-ed25519 AAAAB3NzaC1lZDI1NTE5AAAAI test";
-        assert!(line_key_matches(line, "ssh-ed25519", "AAAAB3NzaC1lZDI1NTE5AAAAI"));
-        assert!(!line_key_matches(line, "ssh-rsa", "AAAAB3NzaC1lZDI1NTE5AAAAI"));
+        assert!(line_key_matches(
+            line,
+            "ssh-ed25519",
+            "AAAAB3NzaC1lZDI1NTE5AAAAI"
+        ));
+        assert!(!line_key_matches(
+            line,
+            "ssh-rsa",
+            "AAAAB3NzaC1lZDI1NTE5AAAAI"
+        ));
     }
 }

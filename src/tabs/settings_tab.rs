@@ -1,8 +1,6 @@
 use crate::settings::{ConnectionBackend, ControlPathType, ShogunDesktopSettings};
 use crate::theme::Colors;
-use gpui::{
-    div, prelude::*, px, Entity, IntoElement, ParentElement, SharedString, Styled, Window,
-};
+use gpui::{Entity, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::*, px};
 use gpui_component::{
     h_flex,
     input::{Input, InputState},
@@ -37,18 +35,14 @@ impl SettingsTab {
     where
         E: 'static,
     {
-        let host = cx.new(|cx| {
-            InputState::new(window, cx).default_value(settings.ssh.host.clone())
-        });
-        let port = cx.new(|cx| {
-            InputState::new(window, cx).default_value(settings.ssh.port.to_string())
-        });
-        let user = cx.new(|cx| {
-            InputState::new(window, cx).default_value(settings.ssh.user.clone())
-        });
-        let key_path = cx.new(|cx| {
-            InputState::new(window, cx).default_value(settings.ssh.key_path.clone())
-        });
+        let host =
+            cx.new(|cx| InputState::new(window, cx).default_value(settings.ssh.host.clone()));
+        let port =
+            cx.new(|cx| InputState::new(window, cx).default_value(settings.ssh.port.to_string()));
+        let user =
+            cx.new(|cx| InputState::new(window, cx).default_value(settings.ssh.user.clone()));
+        let key_path =
+            cx.new(|cx| InputState::new(window, cx).default_value(settings.ssh.key_path.clone()));
         let password = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(settings.ssh.password.clone())
@@ -57,18 +51,15 @@ impl SettingsTab {
         let proxy_command = cx.new(|cx| {
             InputState::new(window, cx).default_value(settings.ssh.proxy_command.clone())
         });
-        let project_path = cx.new(|cx| {
-            InputState::new(window, cx).default_value(settings.project.path.clone())
-        });
-        let shogun_session = cx.new(|cx| {
-            InputState::new(window, cx).default_value(settings.sessions.shogun.clone())
-        });
+        let project_path =
+            cx.new(|cx| InputState::new(window, cx).default_value(settings.project.path.clone()));
+        let shogun_session = cx
+            .new(|cx| InputState::new(window, cx).default_value(settings.sessions.shogun.clone()));
         let multiagent_session = cx.new(|cx| {
             InputState::new(window, cx).default_value(settings.sessions.multiagent.clone())
         });
-        let terminal_font = cx.new(|cx| {
-            InputState::new(window, cx).default_value(settings.terminal.font.clone())
-        });
+        let terminal_font =
+            cx.new(|cx| InputState::new(window, cx).default_value(settings.terminal.font.clone()));
 
         Self {
             host,
@@ -131,7 +122,6 @@ impl SettingsTab {
             },
         }
     }
-
 }
 
 pub fn render_settings_tab(
@@ -189,7 +179,10 @@ pub fn render_settings_tab(
         .child(labeled_input("プロジェクトパス", &tab.project_path))
         .child(section_label("セッション設定"))
         .child(labeled_input("将軍セッション名", &tab.shogun_session))
-        .child(labeled_input("エージェントセッション名", &tab.multiagent_session))
+        .child(labeled_input(
+            "エージェントセッション名",
+            &tab.multiagent_session,
+        ))
         .child(
             div()
                 .min_h(px(24.))
@@ -207,10 +200,7 @@ pub fn render_settings_tab(
 }
 
 fn section_label(text: &'static str) -> impl IntoElement {
-    div()
-        .text_sm()
-        .text_color(Colors::kinpaku())
-        .child(text)
+    div().text_sm().text_color(Colors::kinpaku()).child(text)
 }
 
 fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {

@@ -4,10 +4,8 @@ use crate::ssh::SshClient;
 use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
 use crate::window::{AgentsState, ShogunWindow};
-use gpui::{
-    div, prelude::*, px, rgb, AlignItems, Context, IntoElement, ParentElement, Styled,
-};
-use gpui_component::{button::Button, scroll::ScrollableElement, v_flex, Sizable};
+use gpui::{AlignItems, Context, IntoElement, ParentElement, Styled, div, prelude::*, px, rgb};
+use gpui_component::{Sizable, button::Button, scroll::ScrollableElement, v_flex};
 use serde_yml::Value;
 
 const PLACEHOLDER: &str = "---";
@@ -47,7 +45,11 @@ pub fn fetch_agent_cards(
         .collect()
 }
 
-fn fetch_single_agent_card(ssh: &SshClient, project_path: &str, name: &str) -> Option<AgentCardData> {
+fn fetch_single_agent_card(
+    ssh: &SshClient,
+    project_path: &str,
+    name: &str,
+) -> Option<AgentCardData> {
     if name == "karo" {
         return fetch_karo_card(ssh, project_path);
     }
@@ -199,7 +201,14 @@ fn format_timestamp_hhmm(ts: &str) -> String {
     }
     // fallback: last 5 chars if looks like time
     if ts.len() >= 5 {
-        let tail: String = ts.chars().rev().take(8).collect::<String>().chars().rev().collect();
+        let tail: String = ts
+            .chars()
+            .rev()
+            .take(8)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
         if tail.contains(':') {
             return tail;
         }
@@ -352,10 +361,7 @@ fn render_card_grid(cards: &[AgentCardData]) -> impl IntoElement {
     }))
 }
 
-pub fn render_agents_tab(
-    state: &AgentsState,
-    cx: &mut Context<ShogunWindow>,
-) -> impl IntoElement {
+pub fn render_agents_tab(state: &AgentsState, cx: &mut Context<ShogunWindow>) -> impl IntoElement {
     let bg_color = if state.is_connected {
         Colors::matsuba()
     } else {
@@ -365,11 +371,7 @@ pub fn render_agents_tab(
     let status_text = if let Some(err) = &state.error_message {
         err.clone()
     } else if state.is_connected {
-        let secs = state
-            .last_refresh
-            .elapsed()
-            .unwrap_or_default()
-            .as_secs();
+        let secs = state.last_refresh.elapsed().unwrap_or_default().as_secs();
         format!("布陣一覧 — {}秒前に更新", secs)
     } else {
         "未接続".to_string()
