@@ -10,7 +10,7 @@ use crate::tabs::{
 use crate::terminal::TerminalSession;
 use crate::terminal::keys::key_to_bytes;
 use crate::terminal::pty_session;
-use crate::terminal::renderer::{CELL_H, cell_width_for_font};
+use crate::terminal::renderer::cell_width_for_font;
 use crate::theme::Colors;
 use gpui::{
     App, Bounds, ClickEvent, Context, ExternalPaths, IntoElement, KeyDownEvent, ParentElement,
@@ -28,15 +28,28 @@ use std::time::{Duration, SystemTime};
 
 const TAB_LABELS: [&str; 6] = ["将軍", "エージェント", "戦況", "設定", "──", "家老陣"];
 
+/// Line-height multiplier applied to `font_size` to compute the cell height.
+///
+/// Following Zed's terminal approach: `cell_height = font_size × LINE_HEIGHT_MULT`.
+///
+/// Rationale for 1.5:
+///   - OS-independent: avoids platform-specific differences between DirectWrite
+///     (ascent+descent ≈ 1.53×) and CoreText (leading not included in ascent+descent).
+///   - Empirically validated on Windows: 13pt × 1.5 = 19.5 ≈ 20.0 (CELL_H fallback).
+///   - macOS CoreText returns `ascent+descent` without `leading`, so the old formula
+///     produced cramped rows on Retina. A fixed multiplier removes the OS dependency.
+///   - Matches Alacritty / Windows Terminal's typical inter-line breathing room.
+const LINE_HEIGHT_MULT: f32 = 1.5;
+
 /// Measure cell dimensions from the active GPUI `TextSystem`.
 ///
-/// Follows Windows Terminal's approach (PR #16729 / #13549):
-///   - **cw** = `ch_advance(font_id, font_size)` — advance width of the '0' glyph
-///     (CSS `ch` unit, the canonical monospace cell width).
-///   - **ch** = `ascent(font_id, font_size) + descent(font_id, font_size)` — natural
-///     line height without extra line-gap, so box-drawing geometry fills cells exactly.
+/// - **cw** = `ch_advance(font_id, font_size)` — advance width of the '0' glyph
+///   (CSS `ch` unit, the canonical monospace cell width).
+/// - **ch** = `font_size × LINE_HEIGHT_MULT` — OS-independent line height, following
+///   Zed's terminal approach. Previously `ascent + descent` was used but CoreText
+///   omits `leading` (line_gap) from those values, causing cramped rows on macOS.
 ///
-/// Falls back to the static [`cell_width_for_font`] / [`CELL_H`] table on error
+/// Falls back to [`cell_width_for_font`] for `cw` on error
 /// so the terminal keeps working even if a font fails to resolve.
 pub fn measure_cell_metrics(ts: &std::sync::Arc<gpui::TextSystem>, font_name: &str) -> (f32, f32) {
     // `gpui::font` requires `Into<SharedString>` which expects 'static for &str.
@@ -59,13 +72,11 @@ pub fn measure_cell_metrics(ts: &std::sync::Arc<gpui::TextSystem>, font_name: &s
         cell_width_for_font(font_name)
     };
 
-    // ascent and descent are both positive in GPUI (absolute distances from baseline).
-    // Total natural line height = ascent + descent.
-    // Guard against zero/near-zero values (font not yet measured) with CELL_H fallback.
-    let ascent = f32::from(ts.ascent(font_id, font_size));
-    let descent = f32::from(ts.descent(font_id, font_size));
-    let natural_ch = ascent + descent;
-    let ch = if natural_ch > 1.0 { natural_ch } else { CELL_H };
+    // Cell height: font_size × multiplier (OS-independent).
+    // CoreText omits line_gap from ascent+descent, so the previous `ascent + descent`
+    // formula produced cramped rows on macOS. A fixed multiplier is identical across
+    // DirectWrite / CoreText / FreeType.
+    let ch = f32::from(font_size) * LINE_HEIGHT_MULT;
 
     (cw, ch)
 }
