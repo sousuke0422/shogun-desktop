@@ -21,10 +21,7 @@ pub fn is_image(path: &Path) -> bool {
 
 /// Build a timestamped remote filename for screenshot uploads.
 pub fn remote_filename(local: &Path, index: usize) -> String {
-    let ext = local
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("png");
+    let ext = local.extension().and_then(|e| e.to_str()).unwrap_or("png");
     let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
     format!("screenshot_{ts}_{index:02}.{ext}")
 }

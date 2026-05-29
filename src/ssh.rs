@@ -354,9 +354,7 @@ impl SshClient {
         project_path: &str,
     ) -> Result<()> {
         match self {
-            SshClient::System(c) => {
-                c.upload_image(local_path, remote_filename, project_path)
-            }
+            SshClient::System(c) => c.upload_image(local_path, remote_filename, project_path),
             SshClient::Native(c) => {
                 let (host, port, user, key_path) = c.scp_params();
                 run_scp(
