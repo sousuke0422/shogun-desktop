@@ -43,15 +43,22 @@ const LINE_HEIGHT_MULT: f32 = 1.5;
 
 /// Measure cell dimensions from the active GPUI `TextSystem`.
 ///
-/// - **cw** = `ch_advance(font_id, font_size)` — advance width of the '0' glyph
-///   (CSS `ch` unit, the canonical monospace cell width).
-/// - **ch** = `font_size × LINE_HEIGHT_MULT` — OS-independent line height, following
-///   Zed's terminal approach. Previously `ascent + descent` was used but CoreText
-///   omits `leading` (line_gap) from those values, causing cramped rows on macOS.
+/// - **cw** = `ch_advance(font_id, font_size)` snapped to the nearest physical-pixel
+///   boundary (ceiling). The snap prevents sub-pixel accumulation: at 125% DPI,
+///   `6.825 logical px × 1.25 = 8.53 physical px` rounds up to `9 px → 7.2 logical px`.
+///   Without the snap, each glyph overflows its cell by ≈0.4 px, breaking table
+///   column alignment after ~30 characters.
+/// - **ch** = `font_size × LINE_HEIGHT_MULT` — OS-independent line height.
 ///
-/// Falls back to [`cell_width_for_font`] for `cw` on error
-/// so the terminal keeps working even if a font fails to resolve.
-pub fn measure_cell_metrics(ts: &std::sync::Arc<gpui::TextSystem>, font_name: &str) -> (f32, f32) {
+/// `scale_factor` is `window.scale_factor()` (device-pixel ratio, e.g. 1.25 on
+/// Windows 125 % DPI, 2.0 on macOS Retina).
+///
+/// Falls back to [`cell_width_for_font`] for `cw` on error.
+pub fn measure_cell_metrics(
+    ts: &std::sync::Arc<gpui::TextSystem>,
+    font_name: &str,
+    scale_factor: f32,
+) -> (f32, f32) {
     // `gpui::font` requires `Into<SharedString>` which expects 'static for &str.
     // Convert to owned String first to satisfy the lifetime bound.
     let font_spec = gpui::font(font_name.to_string());
@@ -67,7 +74,10 @@ pub fn measure_cell_metrics(ts: &std::sync::Arc<gpui::TextSystem>, font_name: &s
         .map(f32::from)
         .unwrap_or(0.0);
     let cw = if measured_cw > 0.5 {
-        measured_cw
+        // Snap to physical-pixel ceiling to eliminate sub-pixel glyph overflow.
+        // e.g. 6.825 × 1.25 = 8.53 → ceil → 9 → /1.25 = 7.2 logical px.
+        let sf = scale_factor.max(1.0);
+        (measured_cw * sf).ceil() / sf
     } else {
         cell_width_for_font(font_name)
     };
@@ -975,7 +985,7 @@ impl Render for ShogunWindow {
         //
         // Cell dimensions are measured from the active font via TextSystem::ch_advance
         // (Windows Terminal–style; see measure_cell_metrics).
-        let (cw, ch) = measure_cell_metrics(&cx.text_system(), &self.terminal_font);
+        let (cw, ch) = measure_cell_metrics(&cx.text_system(), &self.terminal_font, window.scale_factor());
         {
             let vp = window.viewport_size();
             let content_w = vp.width / px(1.);

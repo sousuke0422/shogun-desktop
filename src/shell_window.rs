@@ -143,7 +143,7 @@ impl Render for ShellWindow {
         let _ = self.last_gen;
 
         // Resize: full viewport (no chrome except tiny status bar of 24px)
-        let (cw, ch) = measure_cell_metrics(&cx.text_system(), MONO_FONT);
+        let (cw, ch) = measure_cell_metrics(&cx.text_system(), MONO_FONT, window.scale_factor());
         {
             let vp = window.viewport_size();
             let new_cols = ((vp.width / px(1.)) / cw) as u16;
