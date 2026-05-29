@@ -11,14 +11,12 @@ use crate::theme::Colors;
 /// Moralerspace HW ASCII advance = 525/1000 × 13 = 6.825px; we use 7.8 for
 /// comfortable inter-char spacing that was empirically validated in cmd_185.
 pub const CELL_W: f32 = 7.8;
-/// Fixed cell height in pixels.
-pub const CELL_H: f32 = 20.0;
 
 /// Return the cell width (in logical pixels) appropriate for the selected font at
 /// `text_size = 13pt`.
 ///
 /// Used as a **static fallback** when `TextSystem` is not available (tests, bench).
-/// At runtime, [`measure_cell_metrics`] supersedes this via `TextSystem::ch_advance`.
+/// At runtime, [`crate::window::measure_cell_metrics`] supersedes this via `TextSystem::ch_advance`.
 ///
 /// Measured advances (HAdvanceWidth / UPM × 13):
 ///   Moralerspace Neon HW : ASCII 6.825 px  → use 7.8 (empirical, adds breathing room)
@@ -108,7 +106,7 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
 ///
 /// `ox`, `oy`  — top-left origin of this character's cell (raw f32 pixels).
 /// `cw`        — width of this character's display cell (1-cell-px × display_width).
-/// `ch`        — cell height (CELL_H).
+/// `ch`        — cell height (logical px, = font_size × 1.5 at runtime).
 ///
 /// Returns `false` for unhandled characters (caller may fall back to font).
 #[allow(clippy::too_many_arguments)]
@@ -636,9 +634,9 @@ fn paint_box_char(
 /// Render the terminal grid.
 ///
 /// `cw` and `ch` are the logical-pixel cell dimensions measured at runtime from
-/// the active font via [`crate::window::measure_cell_metrics`] (wt-style
-/// `ch_advance` + `ascent + descent`).  Fall back to [`CELL_W`]/[`CELL_H`] when
-/// `TextSystem` is unavailable (e.g. unit tests).
+/// the active font via [`crate::window::measure_cell_metrics`]
+/// (`cw` = `ch_advance`; `ch` = `font_size × 1.5`).
+/// Fall back to [`CELL_W`] / hardcoded `20.0` when `TextSystem` is unavailable.
 pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl IntoElement {
     let (cursor_row, cursor_col) = snap.cursor;
     v_flex()
