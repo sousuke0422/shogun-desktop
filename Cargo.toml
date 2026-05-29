@@ -20,9 +20,11 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "io-util",
 unicode-width = "0.2"
 parking_lot = "0.12"
 arboard = "3"
+rfd = "0.15"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [patch.crates-io]
 alacritty_terminal = { path = "crates/alacritty_terminal" }
 
-[build-dependencies]
+[target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

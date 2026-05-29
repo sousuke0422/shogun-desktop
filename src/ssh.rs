@@ -1,12 +1,12 @@
 use crate::native_ssh::NativeSshClient;
 use crate::settings::{ConnectionBackend, ControlPathType, ShogunDesktopSettings};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::hash::{Hash, Hasher};
 use std::io::Write as IoWrite;
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 /// SSH authentication method (legacy API; `from_settings` is preferred).
@@ -63,14 +63,16 @@ impl SystemSshClient {
         if ssh.user.is_empty() && ssh.proxy_command.is_empty() {
             bail!("SSHユーザー名が未設定です");
         }
-        let key_path = if !ssh.key_path.is_empty()
-            && std::path::Path::new(&ssh.key_path).exists()
-        {
+        let key_path = if !ssh.key_path.is_empty() && std::path::Path::new(&ssh.key_path).exists() {
             Some(ssh.key_path.clone())
         } else {
             None
         };
-        let password = if !ssh.password.is_empty() { Some(ssh.password.clone()) } else { None };
+        let password = if !ssh.password.is_empty() {
+            Some(ssh.password.clone())
+        } else {
+            None
+        };
         Ok(Self {
             host: ssh.host.clone(),
             port: ssh.port,
@@ -146,15 +148,16 @@ impl SystemSshClient {
 
         if let Some(ctrl_path) = ctrl {
             cmd.args([
-                "-o", "ControlMaster=auto",
-                "-o", &format!("ControlPath={ctrl_path}"),
-                "-o", "ControlPersist=30",
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                &format!("ControlPath={ctrl_path}"),
+                "-o",
+                "ControlPersist=30",
             ]);
         }
 
-        cmd.args([
-            "-o", "ConnectTimeout=10",
-        ]);
+        cmd.args(["-o", "ConnectTimeout=10"]);
 
         if !self.proxy_command.is_empty() {
             cmd.args(["-o", &format!("ProxyCommand={}", self.proxy_command)]);
@@ -340,6 +343,138 @@ impl SshClient {
             SshClient::System(c) => c.is_connected(),
             SshClient::Native(c) => c.is_connected(),
         }
+    }
+
+    /// Upload a local image to `{project_path}/queue/screenshots/` via `scp`.
+    /// Reuses ControlMaster when the system backend has an active socket.
+    pub fn upload_image(
+        &self,
+        local_path: &std::path::Path,
+        remote_filename: &str,
+        project_path: &str,
+    ) -> Result<()> {
+        match self {
+            SshClient::System(c) => {
+                c.upload_image(local_path, remote_filename, project_path)
+            }
+            SshClient::Native(c) => {
+                let (host, port, user, key_path) = c.scp_params();
+                run_scp(
+                    host,
+                    port,
+                    user,
+                    key_path,
+                    None,
+                    &[],
+                    false,
+                    local_path,
+                    remote_filename,
+                    project_path,
+                )
+            }
+        }
+    }
+}
+
+impl SystemSshClient {
+    pub fn upload_image(
+        &self,
+        local_path: &std::path::Path,
+        remote_filename: &str,
+        project_path: &str,
+    ) -> Result<()> {
+        let socket = if self.ctrl_enabled.load(Ordering::Relaxed) {
+            self.control_socket_path()
+                .filter(|ctrl| std::path::Path::new(ctrl).exists())
+        } else {
+            None
+        };
+        let mut extra_opts: Vec<String> = Vec::new();
+        if !self.proxy_command.is_empty() {
+            extra_opts.push(format!("ProxyCommand={}", self.proxy_command));
+        }
+        let extra_refs: Vec<&str> = extra_opts.iter().map(String::as_str).collect();
+        run_scp(
+            &self.host,
+            self.port,
+            &self.user,
+            self.key_path.as_deref(),
+            socket.as_deref(),
+            &extra_refs,
+            self.accept_all_host_keys,
+            local_path,
+            remote_filename,
+            project_path,
+        )
+    }
+}
+
+fn run_scp(
+    host: &str,
+    port: u16,
+    user: &str,
+    key_path: Option<&str>,
+    control_socket: Option<&str>,
+    extra_ssh_opts: &[&str],
+    accept_all_host_keys: bool,
+    local_path: &std::path::Path,
+    remote_filename: &str,
+    project_path: &str,
+) -> Result<()> {
+    let remote_dest = if user.is_empty() {
+        format!("{host}:{project_path}/queue/screenshots/{remote_filename}")
+    } else {
+        format!("{user}@{host}:{project_path}/queue/screenshots/{remote_filename}")
+    };
+
+    let mut cmd = Command::new("scp");
+    cmd.arg("-P").arg(port.to_string());
+    cmd.arg("-o").arg("ConnectTimeout=10");
+    cmd.arg("-o").arg("BatchMode=yes");
+
+    if let Some(sock) = control_socket {
+        cmd.arg("-o").arg("ControlMaster=auto");
+        cmd.arg("-o").arg(format!("ControlPath={sock}"));
+    }
+
+    if accept_all_host_keys {
+        cmd.arg("-o").arg("StrictHostKeyChecking=no");
+        #[cfg(windows)]
+        cmd.args(["-o", "UserKnownHostsFile=NUL"]);
+        #[cfg(not(windows))]
+        cmd.args(["-o", "UserKnownHostsFile=/dev/null"]);
+    } else {
+        cmd.arg("-o").arg("StrictHostKeyChecking=accept-new");
+    }
+
+    for opt in extra_ssh_opts {
+        cmd.arg("-o").arg(*opt);
+    }
+
+    if let Some(key) = key_path.filter(|k| !k.is_empty()) {
+        cmd.arg("-i").arg(key);
+    }
+
+    cmd.arg(local_path);
+    cmd.arg(&remote_dest);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!("scp 起動失敗: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "scp 失敗: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 

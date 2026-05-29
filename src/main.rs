@@ -1,5 +1,6 @@
 mod ansi;
 mod app;
+mod image_upload;
 pub mod native_ssh;
 mod settings;
 mod shell_window;
@@ -13,14 +14,19 @@ use app::open_shogun_window;
 use gpui::Application;
 use std::borrow::Cow;
 
-static MORALERSPACE_NEON: &[u8] =
-    include_bytes!("../assets/fonts/MoralerspaceHWNeon-Regular.ttf");
+static MORALERSPACE_NEON: &[u8] = include_bytes!("../assets/fonts/MoralerspaceHWNeon-Regular.ttf");
 
-/// Windows システムフォントディレクトリの候補（インストール先によって異なる）。
+#[cfg(target_os = "windows")]
 const SYSTEM_FONT_DIRS: &[&str] = &[
     r"C:\Windows\Fonts",
     r"C:\Users\Public\AppData\Local\Microsoft\Windows\Fonts",
 ];
+
+#[cfg(target_os = "macos")]
+const SYSTEM_FONT_DIRS: &[&str] = &["/Library/Fonts", "/System/Library/Fonts"];
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const SYSTEM_FONT_DIRS: &[&str] = &["/usr/share/fonts", "/usr/local/share/fonts"];
 
 /// フォントファミリー名からシステムフォントを検索してロードする。
 /// `.ttf` → `.ttc` → `.otc` の順で試みる。

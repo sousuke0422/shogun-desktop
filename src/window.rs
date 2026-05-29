@@ -1,28 +1,29 @@
-use crate::settings::{load_settings, save_settings, ConnectionBackend, ControlPathType};
+use crate::image_upload::{self, UploadState};
+use crate::settings::{ConnectionBackend, ControlPathType, load_settings, save_settings};
 use crate::ssh::SshClient;
-use crate::tabs::{
-    fetch_agent_cards, render_agents_tab, render_dashboard_tab, render_settings_tab,
-    render_terminal_tab, render_terminal_tab_disconnected, render_terminal_tab_empty,
-    render_terminal_tab_error, run_fetch_agents, run_fetch_dashboard, SettingsTab,
-};
 use crate::tabs::AgentCardData;
+use crate::tabs::{
+    SettingsTab, fetch_agent_cards, render_agents_tab, render_dashboard_tab, render_settings_tab,
+    render_terminal_tab, render_terminal_tab_disconnected, render_terminal_tab_empty,
+    render_terminal_tab_error, run_fetch_agents, run_fetch_dashboard,
+};
+use crate::terminal::TerminalSession;
 use crate::terminal::keys::key_to_bytes;
 use crate::terminal::pty_session;
-use crate::terminal::renderer::{cell_width_for_font, CELL_H};
-use crate::terminal::TerminalSession;
+use crate::terminal::renderer::{CELL_H, cell_width_for_font};
 use crate::theme::Colors;
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, ClickEvent, Context, IntoElement, KeyDownEvent,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    Window, WindowBounds, WindowOptions,
+    App, Bounds, ClickEvent, Context, ExternalPaths, IntoElement, KeyDownEvent, ParentElement,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
+    Disableable, Root, Sizable,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex, Root,
-    Sizable,
+    h_flex, v_flex,
 };
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 
 const TAB_LABELS: [&str; 6] = ["将軍", "エージェント", "戦況", "設定", "──", "家老陣"];
@@ -37,10 +38,7 @@ const TAB_LABELS: [&str; 6] = ["将軍", "エージェント", "戦況", "設定
 ///
 /// Falls back to the static [`cell_width_for_font`] / [`CELL_H`] table on error
 /// so the terminal keeps working even if a font fails to resolve.
-pub fn measure_cell_metrics(
-    ts: &std::sync::Arc<gpui::TextSystem>,
-    font_name: &str,
-) -> (f32, f32) {
+pub fn measure_cell_metrics(ts: &std::sync::Arc<gpui::TextSystem>, font_name: &str) -> (f32, f32) {
     // `gpui::font` requires `Into<SharedString>` which expects 'static for &str.
     // Convert to owned String first to satisfy the lifetime bound.
     let font_spec = gpui::font(font_name.to_string());
@@ -148,6 +146,8 @@ pub struct ShogunWindow {
     terminal_cols: u16,
     terminal_rows: u16,
     terminal_font: String,
+    upload_state: UploadState,
+    dragged_paths: Option<Vec<std::path::PathBuf>>,
 }
 
 impl ShogunWindow {
@@ -176,6 +176,144 @@ impl ShogunWindow {
             terminal_cols: 0,
             terminal_rows: 0,
             terminal_font,
+            upload_state: UploadState::Idle,
+            dragged_paths: None,
+        }
+    }
+
+    fn get_ssh_client(&self) -> Option<SshClient> {
+        if !self
+            .shogun_session
+            .as_ref()
+            .map(|s| s.is_connected())
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let settings = load_settings().ok()?;
+        if settings.ssh.host.is_empty() || settings.project.path.is_empty() {
+            return None;
+        }
+        SshClient::from_settings(&settings).ok()
+    }
+
+    fn start_upload(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        let settings = load_settings().unwrap_or_default();
+        let project_path = settings.project.path.clone();
+        if project_path.is_empty() {
+            self.upload_state = UploadState::Error("プロジェクトパスが未設定".to_string());
+            cx.notify();
+            return;
+        }
+        let ssh_client = match self.get_ssh_client() {
+            Some(c) => c,
+            None => {
+                self.upload_state = UploadState::Error("SSH未接続".to_string());
+                cx.notify();
+                return;
+            }
+        };
+
+        let total = paths.len();
+        self.upload_state = UploadState::InProgress { done: 0, total };
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let mut success_names: Vec<String> = vec![];
+            let mut failed = 0usize;
+
+            for (i, path) in paths.iter().enumerate() {
+                let fname = image_upload::remote_filename(path, i);
+                match ssh_client.upload_image(path, &fname, &project_path) {
+                    Ok(()) => success_names.push(fname),
+                    Err(_) => failed += 1,
+                }
+                let done = i + 1;
+                let _ = this.update(cx, |this, cx| {
+                    this.upload_state = UploadState::InProgress { done, total };
+                    cx.notify();
+                });
+            }
+
+            if !success_names.is_empty() {
+                let names = success_names.join(", ");
+                let msg = format!(
+                    "Desktop から画像{}枚を受信: {}\nqueue/screenshots/ に保存済み。",
+                    success_names.len(),
+                    names
+                );
+                let escaped = msg.replace('\'', "'\\''");
+                let notify_cmd = format!(
+                    "bash {project_path}/scripts/inbox_write.sh shogun '{escaped}' screenshot desktop"
+                );
+                let _ = ssh_client.exec(&notify_cmd);
+            }
+
+            let s = success_names.len();
+            let _ = this.update(cx, |this, cx| {
+                this.upload_state = UploadState::Done {
+                    success: s,
+                    failed,
+                };
+                cx.notify();
+            });
+
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(3))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.upload_state = UploadState::Idle;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn pick_and_upload_images(&mut self, cx: &mut Context<Self>) {
+        let task = cx.background_executor().spawn(async move {
+            rfd::FileDialog::new()
+                .add_filter("画像", &["png", "jpg", "jpeg", "gif", "webp", "bmp"])
+                .set_title("転送する画像を選択")
+                .pick_files()
+        });
+        cx.spawn(async move |this, cx| {
+            if let Some(paths) = task.await {
+                let images: Vec<std::path::PathBuf> = paths
+                    .into_iter()
+                    .filter(|p| image_upload::is_image(p))
+                    .collect();
+                if !images.is_empty() {
+                    let _ = this.update(cx, |this, cx| {
+                        this.start_upload(images, cx);
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn render_upload_status(&self) -> gpui::AnyElement {
+        match &self.upload_state {
+            UploadState::InProgress { done, total } => div()
+                .px_2()
+                .py_1()
+                .child(format!("転送中… {done}/{total}枚"))
+                .into_any_element(),
+            UploadState::Done { success, failed } => {
+                let msg = if *failed == 0 {
+                    format!("✅ {success}枚 転送完了")
+                } else {
+                    format!("✅ {success}枚 完了 / ❌ {failed}枚 失敗")
+                };
+                div().px_2().py_1().child(msg).into_any_element()
+            }
+            UploadState::Error(e) => div()
+                .px_2()
+                .py_1()
+                .text_color(gpui::rgb(0xcc2200))
+                .child(format!("❌ {e}"))
+                .into_any_element(),
+            UploadState::Idle => div().into_any_element(),
         }
     }
 
@@ -217,7 +355,9 @@ impl ShogunWindow {
             let control_path = ssh.control_socket_path();
             let spawn_result = cx
                 .background_executor()
-                .spawn(async move { pty_session::spawn(&ssh, &tmux_session, 220, 50, control_path) })
+                .spawn(
+                    async move { pty_session::spawn(&ssh, &tmux_session, 220, 50, control_path) },
+                )
                 .await;
 
             let _ = this.update(cx, |view, cx| {
@@ -265,7 +405,9 @@ impl ShogunWindow {
             let control_path = ssh.control_socket_path();
             let spawn_result = cx
                 .background_executor()
-                .spawn(async move { pty_session::spawn(&ssh, &tmux_session, 220, 50, control_path) })
+                .spawn(
+                    async move { pty_session::spawn(&ssh, &tmux_session, 220, 50, control_path) },
+                )
                 .await;
 
             let _ = this.update(cx, |view, cx| {
@@ -394,19 +536,31 @@ impl ShogunWindow {
         if let Some(session) = session {
             if session.is_connected() {
                 let snap = session.snapshot.lock().clone();
-                render_terminal_tab(&snap, scroll_handle, is_shogun, &self.terminal_font, cw, ch, cx)
-                    .into_any_element()
+                render_terminal_tab(
+                    &snap,
+                    scroll_handle,
+                    is_shogun,
+                    &self.terminal_font,
+                    cw,
+                    ch,
+                    cx,
+                )
+                .into_any_element()
             } else {
-                let btn_id = if is_shogun { "reconnect-shogun" } else { "reconnect-multiagent" };
-                let reconnect_btn = Button::new(btn_id)
-                    .label("再接続")
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                let btn_id = if is_shogun {
+                    "reconnect-shogun"
+                } else {
+                    "reconnect-multiagent"
+                };
+                let reconnect_btn = Button::new(btn_id).label("再接続").on_click(cx.listener(
+                    move |this, _, _, cx| {
                         if is_shogun {
                             this.start_shogun_session(cx);
                         } else {
                             this.start_multiagent_session(cx);
                         }
-                    }));
+                    },
+                ));
                 render_terminal_tab_disconnected(reconnect_btn, cx).into_any_element()
             }
         } else {
@@ -416,35 +570,36 @@ impl ShogunWindow {
 
     /// Start the agents status auto-refresh loop (10 s interval).
     pub fn start_agents_background(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| loop {
-            let settings = load_settings().unwrap_or_default();
-            let result = cx
-                .background_executor()
-                .spawn(async move { fetch_agents_bundle(settings) })
-                .await;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let settings = load_settings().unwrap_or_default();
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { fetch_agents_bundle(settings) })
+                    .await;
 
-            let now = SystemTime::now();
-            let _ = this.update(cx, |view, cx| {
-                match result {
-                    Ok((content, cards)) => {
-                        view.agents_state.content = content;
-                        view.agents_state.cards = cards;
-                        view.agents_state.is_connected = true;
-                        view.agents_state.error_message = None;
-                        view.agents_state.last_refresh = now;
+                let now = SystemTime::now();
+                let _ = this.update(cx, |view, cx| {
+                    match result {
+                        Ok((content, cards)) => {
+                            view.agents_state.content = content;
+                            view.agents_state.cards = cards;
+                            view.agents_state.is_connected = true;
+                            view.agents_state.error_message = None;
+                            view.agents_state.last_refresh = now;
+                        }
+                        Err(err) => {
+                            view.agents_state.is_connected = false;
+                            view.agents_state.error_message = Some(format!("SSH接続失敗: {err}"));
+                        }
                     }
-                    Err(err) => {
-                        view.agents_state.is_connected = false;
-                        view.agents_state.error_message =
-                            Some(format!("SSH接続失敗: {err}"));
-                    }
-                }
-                cx.notify();
-            });
+                    cx.notify();
+                });
 
-            cx.background_executor()
-                .timer(Duration::from_secs(10))
-                .await;
+                cx.background_executor()
+                    .timer(Duration::from_secs(10))
+                    .await;
+            }
         })
         .detach();
     }
@@ -470,8 +625,7 @@ impl ShogunWindow {
                     }
                     Err(err) => {
                         view.agents_state.is_connected = false;
-                        view.agents_state.error_message =
-                            Some(format!("SSH接続失敗: {err}"));
+                        view.agents_state.error_message = Some(format!("SSH接続失敗: {err}"));
                     }
                 }
                 cx.notify();
@@ -482,34 +636,36 @@ impl ShogunWindow {
 
     /// Start the dashboard auto-refresh loop (30 s interval).
     pub fn start_dashboard_background(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| loop {
-            let settings = load_settings().unwrap_or_default();
-            let result = cx
-                .background_executor()
-                .spawn(async move { run_fetch_dashboard(settings) })
-                .await;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let settings = load_settings().unwrap_or_default();
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { run_fetch_dashboard(settings) })
+                    .await;
 
-            let now = SystemTime::now();
-            let _ = this.update(cx, |view, cx| {
-                match result {
-                    Ok(content) => {
-                        view.dashboard_state.content = content;
-                        view.dashboard_state.is_connected = true;
-                        view.dashboard_state.error_message = None;
-                        view.dashboard_state.last_refresh = now;
+                let now = SystemTime::now();
+                let _ = this.update(cx, |view, cx| {
+                    match result {
+                        Ok(content) => {
+                            view.dashboard_state.content = content;
+                            view.dashboard_state.is_connected = true;
+                            view.dashboard_state.error_message = None;
+                            view.dashboard_state.last_refresh = now;
+                        }
+                        Err(err) => {
+                            view.dashboard_state.is_connected = false;
+                            view.dashboard_state.error_message =
+                                Some(format!("SSH接続失敗: {err}"));
+                        }
                     }
-                    Err(err) => {
-                        view.dashboard_state.is_connected = false;
-                        view.dashboard_state.error_message =
-                            Some(format!("SSH接続失敗: {err}"));
-                    }
-                }
-                cx.notify();
-            });
+                    cx.notify();
+                });
 
-            cx.background_executor()
-                .timer(Duration::from_secs(30))
-                .await;
+                cx.background_executor()
+                    .timer(Duration::from_secs(30))
+                    .await;
+            }
         })
         .detach();
     }
@@ -534,8 +690,7 @@ impl ShogunWindow {
                     }
                     Err(err) => {
                         view.dashboard_state.is_connected = false;
-                        view.dashboard_state.error_message =
-                            Some(format!("SSH接続失敗: {err}"));
+                        view.dashboard_state.error_message = Some(format!("SSH接続失敗: {err}"));
                     }
                 }
                 cx.notify();
@@ -565,7 +720,12 @@ impl ShogunWindow {
         cx.notify();
     }
 
-    fn toggle_accept_all_host_keys(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_accept_all_host_keys(
+        &mut self,
+        _: &ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.settings_tab.accept_all_host_keys = !self.settings_tab.accept_all_host_keys;
         cx.notify();
     }
@@ -586,8 +746,7 @@ impl ShogunWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.settings_tab
-            .set_terminal_font_preset(font, window, cx);
+        self.settings_tab.set_terminal_font_preset(font, window, cx);
         cx.notify();
     }
 
@@ -647,16 +806,30 @@ impl ShogunWindow {
             ("C-d", "\x04"),
         ];
 
-        let is_connected = session_opt.as_ref().map(|s| s.is_connected()).unwrap_or(false);
-        let jinmaku_bg = if is_connected { Colors::matsuba() } else { Colors::kurenai() };
+        let is_connected = session_opt
+            .as_ref()
+            .map(|s| s.is_connected())
+            .unwrap_or(false);
+        let jinmaku_bg = if is_connected {
+            Colors::matsuba()
+        } else {
+            Colors::kurenai()
+        };
         let jinmaku_text: SharedString = if is_connected {
             format!("接続中 — {}:main", session_name).into()
         } else {
             "未接続".into()
         };
 
-        let terminal_content =
-            self.render_terminal_for_session(session_opt, error_opt, scroll_handle, is_shogun, cw, ch, cx);
+        let terminal_content = self.render_terminal_for_session(
+            session_opt,
+            error_opt,
+            scroll_handle,
+            is_shogun,
+            cw,
+            ch,
+            cx,
+        );
 
         let key_buttons = SPECIAL_KEYS.iter().enumerate().map(|(i, (label, seq))| {
             let seq: &'static str = seq;
@@ -666,15 +839,38 @@ impl ShogunWindow {
                 .label(label)
                 .small()
                 .on_click(cx.listener(move |this, _, _, _cx| {
-                    let session =
-                        if is_shogun { &this.shogun_session } else { &this.multiagent_session };
+                    let session = if is_shogun {
+                        &this.shogun_session
+                    } else {
+                        &this.multiagent_session
+                    };
                     if let Some(s) = session {
                         s.send_bytes(seq.as_bytes());
                     }
                 }))
         });
 
-        v_flex()
+        let upload_btn = if is_shogun {
+            Some(
+                Button::new("upload-image")
+                    .label("📎")
+                    .tooltip("画像をサーバーへ転送")
+                    .disabled(!is_connected)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.pick_and_upload_images(cx);
+                    })),
+            )
+        } else {
+            None
+        };
+
+        let upload_status = if is_shogun {
+            self.render_upload_status()
+        } else {
+            div().into_any_element()
+        };
+
+        let mut root = v_flex()
             .flex_1()
             .size_full()
             .bg(Colors::shikkoku())
@@ -691,17 +887,36 @@ impl ShogunWindow {
                     .child(jinmaku_text),
             )
             .child(div().flex_1().overflow_hidden().child(terminal_content))
-            .child(
-                h_flex()
-                    .w_full()
-                    .h(px(32.))
-                    .bg(Colors::sumi())
-                    .items_center()
-                    .gap_1()
-                    .px_1()
-                    .children(key_buttons),
-            )
-            .into_any_element()
+            .child(upload_status);
+
+        if is_shogun {
+            root = root.on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                let images: Vec<std::path::PathBuf> = paths
+                    .paths()
+                    .iter()
+                    .filter(|p| image_upload::is_image(p))
+                    .cloned()
+                    .collect();
+                this.dragged_paths = None;
+                if !images.is_empty() {
+                    this.start_upload(images, cx);
+                }
+                cx.notify();
+            }));
+        }
+
+        root.child(
+            h_flex()
+                .w_full()
+                .h(px(32.))
+                .bg(Colors::sumi())
+                .items_center()
+                .gap_1()
+                .px_1()
+                .children(key_buttons)
+                .children(upload_btn.into_iter()),
+        )
+        .into_any_element()
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -808,11 +1023,12 @@ impl Render for ShogunWindow {
                 let test_btn = Button::new("test-ssh")
                     .label("SSH接続テスト")
                     .on_click(cx.listener(Self::test_ssh));
-                let shell_btn = Button::new("open-shell")
-                    .label("シェルを開く")
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        crate::shell_window::open_shell_window(cx);
-                    }));
+                let shell_btn =
+                    Button::new("open-shell")
+                        .label("シェルを開く")
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            crate::shell_window::open_shell_window(cx);
+                        }));
                 let backend = self.settings_tab.connection_backend.clone();
                 let connection_backend_selector = h_flex()
                     .gap_2()
