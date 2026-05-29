@@ -41,8 +41,8 @@ jobs:
       - name: Test
         run: cargo test
 
-      - name: Install librsvg
-        run: brew install librsvg
+      - name: Install ImageMagick
+        run: brew install imagemagick
 
       - name: Generate .icns
         run: bash scripts/generate_icns.sh
