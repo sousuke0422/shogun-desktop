@@ -3,8 +3,9 @@ use crate::terminal::renderer::render_grid;
 use crate::theme::Colors;
 use crate::window::ShogunWindow;
 use gpui::{
-    Context, IntoElement, KeyDownEvent, ParentElement, ScrollDelta, ScrollHandle, ScrollWheelEvent,
-    StatefulInteractiveElement, Styled, div, prelude::*, px,
+    App, Context, ElementInputHandler, FocusHandle, IntoElement, KeyDownEvent, ParentElement,
+    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, canvas, div,
+    prelude::*, px,
 };
 use gpui_component::v_flex;
 
@@ -20,6 +21,7 @@ fn scroll_delta_y(event: &ScrollWheelEvent) -> f32 {
 pub fn render_terminal_tab(
     snap: &GridSnapshot,
     scroll_handle: &ScrollHandle,
+    focus_handle: &FocusHandle,
     is_shogun: bool,
     font: &str,
     // Cell width in logical pixels — measured via `TextSystem::ch_advance`.
@@ -29,6 +31,8 @@ pub fn render_terminal_tab(
     cx: &mut Context<ShogunWindow>,
 ) -> impl IntoElement {
     let scroll_handle = scroll_handle.clone();
+    let focus_handle = focus_handle.clone();
+    let view = cx.entity();
     v_flex().flex_1().size_full().bg(Colors::shikkoku()).child(
         div()
             .id(if is_shogun {
@@ -51,7 +55,11 @@ pub fn render_terminal_tab(
             // dispatch), so GPUI built-in actions (Enter, arrows, Tab, Escape…) would
             // consume the event first. A terminal emulator must intercept ALL keys
             // before GPUI's action system — capture phase is the correct hook.
-            .focusable()
+            //
+            // track_focus binds OUR FocusHandle (instead of the anonymous one
+            // focusable() creates) so the IME input handler below can be
+            // registered against the same handle.
+            .track_focus(&focus_handle)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_terminal_key(event, cx);
             }))
@@ -83,6 +91,24 @@ pub fn render_terminal_tab(
                 }),
             )
             .p_1()
+            // Invisible overlay whose only job is to register the IME input
+            // handler for the terminal viewport each paint. Without this,
+            // WM_CHAR / IME composition events are dropped and Japanese input
+            // never reaches the PTY.
+            .child(
+                canvas(
+                    |_bounds, _window, _cx| (),
+                    move |bounds, (), window, cx: &mut App| {
+                        window.handle_input(
+                            &focus_handle,
+                            ElementInputHandler::new(bounds, view.clone()),
+                            cx,
+                        );
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
             .child(render_grid(snap, font, cw, ch)),
     )
 }
