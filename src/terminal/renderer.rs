@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, App, Bounds, FontWeight, IntoElement, ParentElement, Rgba, Styled, Window, canvas,
-    div, fill, point, px, rgba, size,
+    App, Bounds, FontWeight, IntoElement, ParentElement, Rgba, Styled, Window, canvas, fill, point,
+    px, rgba, size,
 };
 use gpui_component::v_flex;
 
@@ -640,144 +640,126 @@ fn paint_box_char(
 /// Fall back to [`CELL_W`] / hardcoded `20.0` when `TextSystem` is unavailable.
 pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl IntoElement {
     let (cursor_row, cursor_col) = snap.cursor;
+    let font_name = font.to_string();
     v_flex()
         .font_family(font.to_string())
         .text_size(px(13.))
-        .children(snap.cells.iter().enumerate().map(|(row_idx, row)| {
+        .children(snap.cells.iter().enumerate().map(move |(row_idx, row)| {
             let cur_col = if row_idx == cursor_row {
                 Some(cursor_col)
             } else {
                 None
             };
-            div()
-                .flex()
-                .flex_row()
-                .h(px(ch))
-                .children(coalesce_runs(row, cur_col).map(move |run| -> AnyElement {
-                    let (fg_rgba, bg_opt) = resolve_run_colors(&run);
-                    let total_w = px(cw * run.width as f32);
+            // One canvas per row: every run is painted at its exact column offset
+            // `col × cw` from the row origin. Laying runs out as separate flex
+            // children lets GPUI quantize each child width to device pixels, and
+            // the rounding error accumulates left-to-right (measured +4 px by
+            // column 114 at 150% DPI), so vertical borders in adjacent rows no
+            // longer line up. Absolute per-run placement inside a single canvas
+            // has no such accumulation.
+            let runs: Vec<Run> = coalesce_runs(row, cur_col).collect();
+            let total_cols: usize = runs.iter().map(|r| r.width).sum();
+            let font_name = font_name.clone();
 
-                    if run.use_geom {
-                        // ── Geometry canvas for box drawing / block elements ───
-                        let chars: Vec<(char, u8)> = run
-                            .text
-                            .chars()
-                            .zip(run.char_widths.iter().copied())
-                            .map(|(c, w)| (c, w))
-                            .collect();
-                        let fg_cap = fg_rgba;
-                        let bg_cap = bg_opt;
-                        let cw_cap = cw;
+            canvas(
+                |_bounds, _window, _cx| (),
+                move |bounds, (), window, cx: &mut App| {
+                    let ox = f32::from(bounds.origin.x);
+                    let oy = f32::from(bounds.origin.y);
+                    let font_size = px(13.);
+                    let line_height = px(ch);
+                    let mut col = 0usize;
 
-                        return canvas(
-                            |_bounds, _window, _cx| (),
-                            move |bounds, (), window, _cx: &mut App| {
-                                if let Some(bg) = bg_cap {
-                                    window.paint_quad(fill(bounds, bg));
-                                }
-                                let mut x_off = f32::from(bounds.origin.x);
-                                let y_off = f32::from(bounds.origin.y);
-                                // Use actual painted cell height from canvas bounds
-                                // so geometry always fills the row regardless of font size.
-                                let cell_h = f32::from(bounds.size.height);
-                                for &(c, dw) in &chars {
-                                    let char_cw = cw_cap * dw as f32;
-                                    paint_box_char(
-                                        c, x_off, y_off, char_cw, cell_h, fg_cap, window,
-                                    );
-                                    x_off += char_cw;
-                                }
-                            },
-                        )
-                        .w(total_w)
-                        .h(px(ch))
-                        .into_any_element();
-                    }
+                    for run in runs {
+                        let x = ox + col as f32 * cw;
+                        col += run.width;
+                        let (fg_rgba, bg_opt) = resolve_run_colors(&run);
 
-                    // ── Font-rendered text: grid-exact glyph placement ─────────
-                    //
-                    // A plain `div().child(text)` lets GPUI's shaper advance each
-                    // glyph by its natural font advance, while the container is
-                    // `cw × columns`. Any difference (cw is snapped to the physical
-                    // pixel ceiling; fallback fonts have different advances)
-                    // accumulates *inside* the run, drifting glyphs off the grid.
-                    // Instead, paint via shape_line:
-                    //   - all-narrow runs: one shape with force_width = cw, which
-                    //     re-pins every glyph to `n × cw`.
-                    //   - runs with wide (2-cell) chars: shape each char separately
-                    //     and paint it at its exact column offset Σ(width × cw).
-                    let text = run.text;
-                    let char_widths = run.char_widths;
-                    let all_narrow = char_widths.iter().all(|&w| w == 1);
-                    let bold = run.bold;
-                    let underline = run.underline;
-                    let font_name = font.to_string();
-                    let cw_cap = cw;
-                    let ch_cap = ch;
+                        if let Some(bg) = bg_opt {
+                            window.paint_quad(fill(
+                                Bounds {
+                                    origin: point(px(x), px(oy)),
+                                    size: size(px(cw * run.width as f32), px(ch)),
+                                },
+                                bg,
+                            ));
+                        }
 
-                    return canvas(
-                        |_bounds, _window, _cx| (),
-                        move |bounds, (), window, cx: &mut App| {
-                            if let Some(bg) = bg_opt {
-                                window.paint_quad(fill(bounds, bg));
+                        if run.use_geom {
+                            // ── Box drawing / block elements as filled quads ───
+                            let mut x_off = x;
+                            for (c, dw) in run.text.chars().zip(run.char_widths.iter().copied()) {
+                                let char_cw = cw * dw as f32;
+                                paint_box_char(c, x_off, oy, char_cw, ch, fg_rgba, window);
+                                x_off += char_cw;
                             }
-                            let mut run_font = gpui::font(font_name);
-                            if bold {
-                                run_font.weight = FontWeight::BOLD;
-                            }
-                            let fg_hsla: gpui::Hsla = fg_rgba.into();
-                            let underline_style = underline.then_some(gpui::UnderlineStyle {
-                                color: Some(fg_hsla),
-                                thickness: px(1.),
-                                wavy: false,
-                            });
-                            let font_size = px(13.);
-                            let line_height = px(ch_cap);
+                            continue;
+                        }
 
-                            if all_narrow {
+                        // ── Font-rendered text: grid-exact glyph placement ─────
+                        //
+                        // Flowing text through a div lets the shaper advance each
+                        // glyph by its natural font advance, which drifts off the
+                        // `cw`-snapped grid. Instead, paint via shape_line:
+                        //   - all-narrow runs: one shape with force_width = cw,
+                        //     which re-pins every glyph to `n × cw`.
+                        //   - runs with wide (2-cell) chars: shape each char
+                        //     separately and paint it at Σ(display_width × cw).
+                        let mut run_font = gpui::font(font_name.clone());
+                        if run.bold {
+                            run_font.weight = FontWeight::BOLD;
+                        }
+                        let fg_hsla: gpui::Hsla = fg_rgba.into();
+                        let underline_style = run.underline.then_some(gpui::UnderlineStyle {
+                            color: Some(fg_hsla),
+                            thickness: px(1.),
+                            wavy: false,
+                        });
+
+                        let all_narrow = run.char_widths.iter().all(|&w| w == 1);
+                        if all_narrow {
+                            let text_run = gpui::TextRun {
+                                len: run.text.len(),
+                                font: run_font,
+                                color: fg_hsla,
+                                background_color: None,
+                                underline: underline_style,
+                                strikethrough: None,
+                            };
+                            let line = window.text_system().shape_line(
+                                run.text.into(),
+                                font_size,
+                                &[text_run],
+                                Some(px(cw)),
+                            );
+                            let _ = line.paint(point(px(x), px(oy)), line_height, window, cx);
+                        } else {
+                            let mut x_off = x;
+                            for (c, w) in run.text.chars().zip(run.char_widths.iter().copied()) {
                                 let text_run = gpui::TextRun {
-                                    len: text.len(),
-                                    font: run_font,
+                                    len: c.len_utf8(),
+                                    font: run_font.clone(),
                                     color: fg_hsla,
                                     background_color: None,
                                     underline: underline_style,
                                     strikethrough: None,
                                 };
                                 let line = window.text_system().shape_line(
-                                    text.into(),
+                                    c.to_string().into(),
                                     font_size,
                                     &[text_run],
-                                    Some(px(cw_cap)),
+                                    None,
                                 );
-                                let _ = line.paint(bounds.origin, line_height, window, cx);
-                            } else {
-                                let mut x = f32::from(bounds.origin.x);
-                                let y = bounds.origin.y;
-                                for (c, w) in text.chars().zip(char_widths.iter().copied()) {
-                                    let text_run = gpui::TextRun {
-                                        len: c.len_utf8(),
-                                        font: run_font.clone(),
-                                        color: fg_hsla,
-                                        background_color: None,
-                                        underline: underline_style,
-                                        strikethrough: None,
-                                    };
-                                    let line = window.text_system().shape_line(
-                                        c.to_string().into(),
-                                        font_size,
-                                        &[text_run],
-                                        None,
-                                    );
-                                    let _ = line.paint(point(px(x), y), line_height, window, cx);
-                                    x += cw_cap * w as f32;
-                                }
+                                let _ =
+                                    line.paint(point(px(x_off), px(oy)), line_height, window, cx);
+                                x_off += cw * w as f32;
                             }
-                        },
-                    )
-                    .w(total_w)
-                    .h(px(ch))
-                    .into_any_element();
-                }))
+                        }
+                    }
+                },
+            )
+            .w(px(cw * total_cols.max(1) as f32))
+            .h(px(ch))
         }))
 }
 
