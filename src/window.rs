@@ -28,6 +28,13 @@ use std::time::{Duration, SystemTime};
 
 const TAB_LABELS: [&str; 6] = ["将軍", "エージェント", "戦況", "設定", "──", "家老陣"];
 
+/// Key context for the terminal panes. Bindings scoped to this context are
+/// matched deeper than gpui_component Root's, letting the terminal reclaim
+/// keys Root binds globally (tab / shift-tab focus cycling).
+pub const TERMINAL_KEY_CONTEXT: &str = "ShogunTerminal";
+
+gpui::actions!(shogun_terminal, [TerminalSendTab, TerminalSendBacktab]);
+
 /// Line-height multiplier applied to `font_size` to compute the cell height.
 ///
 /// Following Zed's terminal approach: `cell_height = font_size × LINE_HEIGHT_MULT`.
@@ -237,6 +244,13 @@ impl ShogunWindow {
             0 => self.shogun_session.as_ref(),
             5 => self.multiagent_session.as_ref(),
             _ => None,
+        }
+    }
+
+    /// Send raw bytes to the active tab's PTY, if connected.
+    pub(crate) fn send_bytes_to_active(&self, bytes: &[u8]) {
+        if let Some(session) = self.active_session() {
+            session.send_bytes(bytes);
         }
     }
 

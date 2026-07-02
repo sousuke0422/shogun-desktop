@@ -70,6 +70,24 @@ fn main() {
             .add_fonts(fonts)
             .expect("Failed to load fonts");
         gpui_component::init(cx);
+        // Reclaim tab / shift-tab for the terminal. gpui dispatches action
+        // bindings BEFORE key listeners, so gpui_component's Root bindings
+        // (tab → focus_next) would otherwise consume Tab and the terminal's
+        // capture_key_down would never see it. These bindings target the
+        // deeper "ShogunTerminal" key context, so they win while the terminal
+        // is focused and Root's focus-cycling still works elsewhere.
+        cx.bind_keys([
+            gpui::KeyBinding::new(
+                "tab",
+                window::TerminalSendTab,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+            gpui::KeyBinding::new(
+                "shift-tab",
+                window::TerminalSendBacktab,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+        ]);
         open_shogun_window(cx);
     });
 }

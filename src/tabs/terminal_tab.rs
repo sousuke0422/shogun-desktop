@@ -1,7 +1,7 @@
 use crate::terminal::GridSnapshot;
 use crate::terminal::renderer::render_grid;
 use crate::theme::Colors;
-use crate::window::ShogunWindow;
+use crate::window::{ShogunWindow, TERMINAL_KEY_CONTEXT, TerminalSendBacktab, TerminalSendTab};
 use gpui::{
     App, Context, ElementInputHandler, FocusHandle, IntoElement, KeyDownEvent, ParentElement,
     ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, TextRun,
@@ -65,6 +65,17 @@ pub fn render_terminal_tab(
             // focusable() creates) so the IME input handler below can be
             // registered against the same handle.
             .track_focus(&focus_handle)
+            // gpui dispatches action bindings BEFORE key listeners, so Root's
+            // global tab/shift-tab (focus cycling) would eat Tab before
+            // capture_key_down ever ran. This deeper key context carries our
+            // own tab bindings (see main.rs), routed straight to the PTY.
+            .key_context(TERMINAL_KEY_CONTEXT)
+            .on_action(cx.listener(|this, _: &TerminalSendTab, _window, _cx| {
+                this.send_bytes_to_active(b"\t");
+            }))
+            .on_action(cx.listener(|this, _: &TerminalSendBacktab, _window, _cx| {
+                this.send_bytes_to_active(b"\x1b[Z");
+            }))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 // Stop propagation for consumed keys so GPUI's own actions
                 // (tab focus-cycling etc.) never steal them. Keys left to the
