@@ -1,0 +1,299 @@
+//! Shared mouse-selection state, hit-testing and clipboard copy for terminal
+//! windows.
+//!
+//! The pieces live in different layers but are all defined here so every
+//! terminal window behaves identically:
+//! - [`SelectionState`] — anchor/head drag state, owned by the host window.
+//! - [`register_mouse_selection`] — window-level mouse listeners registered
+//!   from the pane's overlay canvas each paint (pointer → grid cell).
+//! - [`copy_to_clipboard`] / [`selection_text`] — extraction of the selected
+//!   rows for ctrl-shift-c / cmd-c.
+//!
+//! The highlight itself is painted by `render_grid` (paint calls from the
+//! overlay canvas never reach the screen — see `render_terminal_tab`).
+
+use crate::terminal::{GridSnapshot, TerminalSession};
+use gpui::{
+    App, Bounds, ClipboardItem, DispatchPhase, Entity, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, ScrollHandle, Window,
+};
+
+/// What a window must provide for the shared mouse-selection listeners.
+pub trait SelectionHost: 'static {
+    fn selection_state(&mut self) -> &mut SelectionState;
+}
+
+/// A mouse-driven cell selection over one terminal pane's grid.
+///
+/// `anchor` is the cell where the drag started; `head` follows the pointer.
+/// Both are `(row, col)` grid coordinates. The selection is linear (reading
+/// order): rows strictly between anchor and head are selected full-width.
+struct TerminalSelection {
+    /// Which pane of the host window owns the selection (windows with a
+    /// single pane always use 0).
+    pane: usize,
+    anchor: (usize, usize),
+    head: (usize, usize),
+    dragging: bool,
+}
+
+impl TerminalSelection {
+    /// Inclusive `(start, end)` cell range in reading order.
+    fn normalized(&self) -> ((usize, usize), (usize, usize)) {
+        if self.head < self.anchor {
+            (self.head, self.anchor)
+        } else {
+            (self.anchor, self.head)
+        }
+    }
+}
+
+/// Drag state owned by a host window. All mutation goes through
+/// [`register_mouse_selection`]'s listeners.
+#[derive(Default)]
+pub struct SelectionState {
+    sel: Option<TerminalSelection>,
+}
+
+impl SelectionState {
+    fn begin(&mut self, pane: usize, row: usize, col: usize) {
+        self.sel = Some(TerminalSelection {
+            pane,
+            anchor: (row, col),
+            head: (row, col),
+            dragging: true,
+        });
+    }
+
+    /// Move the selection head while dragging. Returns `true` when it moved.
+    fn update_head(&mut self, row: usize, col: usize) -> bool {
+        match self.sel.as_mut() {
+            Some(sel) if sel.dragging && sel.head != (row, col) => {
+                sel.head = (row, col);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Finish a drag. A click without movement clears the selection.
+    /// Returns `true` when the visual state changed.
+    fn end_drag(&mut self) -> bool {
+        match self.sel.as_mut() {
+            Some(sel) if sel.dragging => {
+                sel.dragging = false;
+                if sel.anchor == sel.head {
+                    self.sel = None;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The owning pane and normalized range of the current selection.
+    pub fn selected(&self) -> Option<(usize, (usize, usize), (usize, usize))> {
+        let sel = self.sel.as_ref()?;
+        let (start, end) = sel.normalized();
+        Some((sel.pane, start, end))
+    }
+
+    /// The normalized range when the selection belongs to `pane` — the shape
+    /// `render_grid` takes for the highlight.
+    pub fn range_for(&self, pane: usize) -> Option<((usize, usize), (usize, usize))> {
+        let (sel_pane, start, end) = self.selected()?;
+        (sel_pane == pane).then_some((start, end))
+    }
+}
+
+/// Register the three window-level mouse listeners for one terminal pane.
+///
+/// Call from the pane's overlay-canvas paint closure each frame (listeners
+/// are cleared per frame). `bounds` is the overlay bounds; the pointer is
+/// mapped to a grid cell with the pane's scroll offset read at event time
+/// (the pane keeps auto-scrolling). Cells are clamped to the grid, so
+/// dragging past the edges selects the border cells.
+#[allow(clippy::too_many_arguments)]
+pub fn register_mouse_selection<V: SelectionHost>(
+    window: &mut Window,
+    view: Entity<V>,
+    scroll: ScrollHandle,
+    bounds: Bounds<Pixels>,
+    pane: usize,
+    cw: f32,
+    ch: f32,
+    grid_rows: usize,
+    grid_cols: usize,
+) {
+    let cell_at = move |scroll: &ScrollHandle, pos: Point<Pixels>| {
+        let off = scroll.offset();
+        let gx = f32::from(pos.x - bounds.origin.x) - f32::from(off.x);
+        let gy = f32::from(pos.y - bounds.origin.y) - f32::from(off.y);
+        let col = ((gx / cw).floor().max(0.0) as usize).min(grid_cols.saturating_sub(1));
+        let row = ((gy / ch).floor().max(0.0) as usize).min(grid_rows.saturating_sub(1));
+        (row, col)
+    };
+    window.on_mouse_event({
+        let view = view.clone();
+        let scroll = scroll.clone();
+        move |ev: &MouseDownEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Bubble
+                || ev.button != MouseButton::Left
+                || !bounds.contains(&ev.position)
+            {
+                return;
+            }
+            let (row, col) = cell_at(&scroll, ev.position);
+            view.update(cx, |this, cx| {
+                this.selection_state().begin(pane, row, col);
+                cx.notify();
+            });
+        }
+    });
+    window.on_mouse_event({
+        let view = view.clone();
+        let scroll = scroll.clone();
+        move |ev: &MouseMoveEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Bubble || ev.pressed_button != Some(MouseButton::Left) {
+                return;
+            }
+            let (row, col) = cell_at(&scroll, ev.position);
+            view.update(cx, |this, cx| {
+                if this.selection_state().update_head(row, col) {
+                    cx.notify();
+                }
+            });
+        }
+    });
+    window.on_mouse_event(move |ev: &MouseUpEvent, phase, _window, cx| {
+        if phase != DispatchPhase::Bubble || ev.button != MouseButton::Left {
+            return;
+        }
+        view.update(cx, |this, cx| {
+            if this.selection_state().end_drag() {
+                cx.notify();
+            }
+        });
+    });
+}
+
+/// Copy the current selection to the OS clipboard. The host resolves which
+/// session the selection's pane maps to.
+pub fn copy_to_clipboard(state: &SelectionState, session: Option<&TerminalSession>, cx: &mut App) {
+    let Some((_pane, start, end)) = state.selected() else {
+        return;
+    };
+    let Some(session) = session else { return };
+    let text = selection_text(&session.snapshot.lock(), start, end);
+    if !text.is_empty() {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+}
+
+/// Extract the text covered by an inclusive `(start, end)` cell range.
+///
+/// Rows strictly between start and end are taken full-width. Trailing spaces
+/// are trimmed per line. Wide-char spacer cells (`display_width == 0`) are
+/// skipped so double-width characters appear exactly once.
+fn selection_text(snap: &GridSnapshot, start: (usize, usize), end: (usize, usize)) -> String {
+    let mut lines = Vec::new();
+    for (row, cells) in snap.cells.iter().enumerate() {
+        if row < start.0 || row > end.0 {
+            continue;
+        }
+        let c0 = if row == start.0 { start.1 } else { 0 };
+        let c1 = if row == end.0 { end.1 + 1 } else { cells.len() };
+        let mut line = String::new();
+        for (col, cell) in cells.iter().enumerate() {
+            if col < c0 || col >= c1 || cell.display_width == 0 {
+                continue;
+            }
+            line.push(cell.c);
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal::SnapshotCell;
+
+    fn snap_from_lines(lines: &[&str]) -> GridSnapshot {
+        let cols = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        let mut snap = GridSnapshot::blank(cols, lines.len());
+        for (row, line) in lines.iter().enumerate() {
+            for (col, c) in line.chars().enumerate() {
+                snap.cells[row][col].c = c;
+            }
+        }
+        snap
+    }
+
+    #[test]
+    fn selection_text_single_row_range() {
+        let snap = snap_from_lines(&["hello world"]);
+        assert_eq!(selection_text(&snap, (0, 6), (0, 10)), "world");
+    }
+
+    #[test]
+    fn selection_text_multi_row_takes_middle_rows_full_width() {
+        let snap = snap_from_lines(&["abcde", "fghij", "klmno"]);
+        assert_eq!(selection_text(&snap, (0, 3), (2, 1)), "de\nfghij\nkl");
+    }
+
+    #[test]
+    fn selection_text_trims_trailing_spaces_per_line() {
+        let snap = snap_from_lines(&["ab   ", "cd   "]);
+        assert_eq!(selection_text(&snap, (0, 0), (1, 4)), "ab\ncd");
+    }
+
+    #[test]
+    fn selection_text_skips_wide_char_spacers() {
+        let mut snap = GridSnapshot::blank(4, 1);
+        snap.cells[0][0] = SnapshotCell {
+            c: 'あ',
+            display_width: 2,
+            ..SnapshotCell::blank()
+        };
+        snap.cells[0][1] = SnapshotCell {
+            c: ' ',
+            display_width: 0,
+            ..SnapshotCell::blank()
+        };
+        snap.cells[0][2].c = 'x';
+        assert_eq!(selection_text(&snap, (0, 0), (0, 2)), "あx");
+    }
+
+    #[test]
+    fn selection_normalized_orders_reading_direction() {
+        let sel = TerminalSelection {
+            pane: 0,
+            anchor: (5, 2),
+            head: (3, 7),
+            dragging: true,
+        };
+        assert_eq!(sel.normalized(), ((3, 7), (5, 2)));
+    }
+
+    #[test]
+    fn selection_state_drag_lifecycle() {
+        let mut state = SelectionState::default();
+        state.begin(1, 2, 3);
+        assert!(state.update_head(4, 5));
+        assert!(!state.update_head(4, 5)); // unchanged head → no repaint
+        assert!(state.end_drag());
+        assert_eq!(state.selected(), Some((1, (2, 3), (4, 5))));
+        assert_eq!(state.range_for(1), Some(((2, 3), (4, 5))));
+        assert_eq!(state.range_for(0), None);
+    }
+
+    #[test]
+    fn selection_state_click_without_drag_clears() {
+        let mut state = SelectionState::default();
+        state.begin(0, 2, 3);
+        assert!(state.end_drag());
+        assert_eq!(state.selected(), None);
+    }
+}

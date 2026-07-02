@@ -5,10 +5,11 @@ use crate::terminal::ime::{ImeHost, TerminalIme};
 use crate::terminal::keys::key_to_pty_bytes;
 use crate::terminal::pty_session;
 use crate::terminal::renderer::render_grid;
+use crate::terminal::selection::{self, SelectionHost, SelectionState};
 use crate::terminal::{GridSnapshot, TerminalSession};
 use crate::theme::Colors;
 use crate::window::{
-    TERMINAL_KEY_CONTEXT, TerminalSendBacktab, TerminalSendTab, measure_cell_metrics,
+    TERMINAL_KEY_CONTEXT, TerminalCopy, TerminalSendBacktab, TerminalSendTab, measure_cell_metrics,
 };
 use gpui::{
     App, Bounds, Context, ElementInputHandler, Entity, FocusHandle, IntoElement, KeyDownEvent,
@@ -34,6 +35,14 @@ pub struct ShellWindow {
     terminal_focus: FocusHandle,
     /// Shared IME text-input handler (see `terminal::ime`).
     ime: Entity<TerminalIme<Self>>,
+    /// Shared mouse-selection state (see `terminal::selection`).
+    selection: SelectionState,
+}
+
+impl SelectionHost for ShellWindow {
+    fn selection_state(&mut self) -> &mut SelectionState {
+        &mut self.selection
+    }
 }
 
 impl ImeHost for ShellWindow {
@@ -62,6 +71,7 @@ impl ShellWindow {
             terminal_rows: 0,
             terminal_focus: cx.focus_handle(),
             ime,
+            selection: SelectionState::default(),
         };
         win.connect(cx);
         win
@@ -219,6 +229,10 @@ impl Render for ShellWindow {
             let focus_handle = self.terminal_focus.clone();
             let ime = self.ime.clone();
             let ime_preedit = self.ime.read(cx).marked.clone();
+            let view = cx.entity();
+            let scroll_for_overlay = self.scroll_handle.clone();
+            let grid_rows = snap.rows;
+            let grid_cols = snap.cols;
             div()
                 .id("shell-pane")
                 .flex_1()
@@ -238,6 +252,9 @@ impl Render for ShellWindow {
                 .on_action(cx.listener(|this, _: &TerminalSendBacktab, _window, _cx| {
                     this.send_bytes(b"\x1b[Z");
                 }))
+                .on_action(cx.listener(|this, _: &TerminalCopy, _window, cx| {
+                    selection::copy_to_clipboard(&this.selection, this.session.as_ref(), cx);
+                }))
                 // Stop propagation for consumed keys; printable unmodified keys
                 // must keep propagating so the platform generates WM_CHAR for
                 // the input handler (otherwise every char would double).
@@ -249,10 +266,11 @@ impl Render for ShellWindow {
                 }))
                 .p_1()
                 // Overlay: registers the IME input handler (GPUI only routes
-                // WM_CHAR / IME composition to a registered handler). Nothing
-                // may be *drawn* from this canvas — paint calls issued here
-                // never reach the screen (verified 2026-07-03); the preedit is
-                // painted by render_grid at the cursor row.
+                // WM_CHAR / IME composition to a registered handler) and the
+                // shared mouse-selection listeners. Nothing may be *drawn*
+                // from this canvas — paint calls issued here never reach the
+                // screen (verified 2026-07-03); the preedit and selection
+                // highlight are painted by render_grid.
                 .child(
                     canvas(
                         |_bounds, _window, _cx| (),
@@ -262,12 +280,30 @@ impl Render for ShellWindow {
                                 ElementInputHandler::new(bounds, ime.clone()),
                                 cx,
                             );
+                            selection::register_mouse_selection(
+                                window,
+                                view.clone(),
+                                scroll_for_overlay.clone(),
+                                bounds,
+                                0,
+                                cw,
+                                ch,
+                                grid_rows,
+                                grid_cols,
+                            );
                         },
                     )
                     .absolute()
                     .size_full(),
                 )
-                .child(render_grid(&snap, MONO_FONT, cw, ch, None, ime_preedit))
+                .child(render_grid(
+                    &snap,
+                    MONO_FONT,
+                    cw,
+                    ch,
+                    self.selection.range_for(0),
+                    ime_preedit,
+                ))
                 .into_any_element()
         } else {
             div()

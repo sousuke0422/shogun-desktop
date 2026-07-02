@@ -1,15 +1,16 @@
 use crate::terminal::GridSnapshot;
 use crate::terminal::ime::TerminalIme;
 use crate::terminal::renderer::render_grid;
+use crate::terminal::selection;
 use crate::theme::Colors;
 use crate::window::{
     ShogunWindow, TERMINAL_KEY_CONTEXT, TerminalCopy, TerminalSendBacktab, TerminalSendTab,
+    selection_pane,
 };
 use gpui::{
-    App, Context, DispatchPhase, ElementInputHandler, Entity, FocusHandle, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
-    Point, ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, canvas,
-    div, prelude::*, px,
+    App, Context, ElementInputHandler, Entity, FocusHandle, IntoElement, KeyDownEvent,
+    ParentElement, ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled,
+    canvas, div, prelude::*, px,
 };
 use gpui_component::v_flex;
 
@@ -143,71 +144,21 @@ pub fn render_terminal_tab(
                         );
 
                         // ── Mouse selection hit-testing ────────────────────
-                        // Maps pointer position → grid cell. The highlight
-                        // itself is painted by render_grid inside each row
-                        // canvas (paint calls from this overlay canvas do not
-                        // reach the screen), and the row canvas already lives
-                        // in grid coordinates anyway.
-                        // The scroll offset is read at event time (not
-                        // captured) because the pane keeps auto-scrolling.
-                        let cell_at = move |scroll: &ScrollHandle, pos: Point<Pixels>| {
-                            let off = scroll.offset();
-                            let gx = f32::from(pos.x - bounds.origin.x) - f32::from(off.x);
-                            let gy = f32::from(pos.y - bounds.origin.y) - f32::from(off.y);
-                            let col = ((gx / cw).floor().max(0.0) as usize)
-                                .min(grid_cols.saturating_sub(1));
-                            let row = ((gy / ch).floor().max(0.0) as usize)
-                                .min(grid_rows.saturating_sub(1));
-                            (row, col)
-                        };
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            let scroll = scroll_for_overlay.clone();
-                            move |ev: &MouseDownEvent, phase, _window, cx| {
-                                if phase != DispatchPhase::Bubble
-                                    || ev.button != MouseButton::Left
-                                    || !bounds.contains(&ev.position)
-                                {
-                                    return;
-                                }
-                                let (row, col) = cell_at(&scroll, ev.position);
-                                view.update(cx, |this, cx| {
-                                    this.begin_selection(is_shogun, row, col);
-                                    cx.notify();
-                                });
-                            }
-                        });
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            let scroll = scroll_for_overlay.clone();
-                            move |ev: &MouseMoveEvent, phase, _window, cx| {
-                                if phase != DispatchPhase::Bubble
-                                    || ev.pressed_button != Some(MouseButton::Left)
-                                {
-                                    return;
-                                }
-                                let (row, col) = cell_at(&scroll, ev.position);
-                                view.update(cx, |this, cx| {
-                                    if this.update_selection(row, col) {
-                                        cx.notify();
-                                    }
-                                });
-                            }
-                        });
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            move |ev: &MouseUpEvent, phase, _window, cx| {
-                                if phase != DispatchPhase::Bubble || ev.button != MouseButton::Left
-                                {
-                                    return;
-                                }
-                                view.update(cx, |this, cx| {
-                                    if this.end_selection() {
-                                        cx.notify();
-                                    }
-                                });
-                            }
-                        });
+                        // Shared listeners (terminal::selection) map pointer →
+                        // grid cell. The highlight itself is painted by
+                        // render_grid inside each row canvas (paint calls from
+                        // this overlay canvas do not reach the screen).
+                        selection::register_mouse_selection(
+                            window,
+                            view.clone(),
+                            scroll_for_overlay.clone(),
+                            bounds,
+                            selection_pane(is_shogun),
+                            cw,
+                            ch,
+                            grid_rows,
+                            grid_cols,
+                        );
                     },
                 )
                 .absolute()
