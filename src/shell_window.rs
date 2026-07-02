@@ -11,9 +11,8 @@ use crate::window::{
 };
 use gpui::{
     App, Bounds, Context, ElementInputHandler, FocusHandle, IntoElement, KeyDownEvent,
-    ParentElement, Pixels, Render, ScrollHandle, StatefulInteractiveElement, Styled, TextRun,
-    UTF16Selection, UnderlineStyle, Window, WindowBounds, WindowOptions, canvas, div, point,
-    prelude::*, px, rgba, size,
+    ParentElement, Pixels, Render, ScrollHandle, StatefulInteractiveElement, Styled,
+    UTF16Selection, Window, WindowBounds, WindowOptions, canvas, div, point, prelude::*, px, size,
 };
 use gpui_component::{Root, v_flex};
 use std::sync::atomic::Ordering;
@@ -231,8 +230,6 @@ impl Render for ShellWindow {
             let focus_handle = self.terminal_focus.clone();
             let view = cx.entity();
             let ime_preedit = self.ime_marked.clone();
-            let (cursor_row, cursor_col) = snap.cursor;
-            let grid_rows = snap.rows;
             div()
                 .id("shell-pane")
                 .flex_1()
@@ -261,10 +258,11 @@ impl Render for ShellWindow {
                     }
                 }))
                 .p_1()
-                // Overlay: registers the IME input handler and draws the
-                // preedit inline at the cursor (GPUI consumes
-                // WM_IME_COMPOSITION, so the OS never shows its own window).
-                // Same mechanism as render_terminal_tab.
+                // Overlay: registers the IME input handler (GPUI only routes
+                // WM_CHAR / IME composition to a registered handler). Nothing
+                // may be *drawn* from this canvas — paint calls issued here
+                // never reach the screen (verified 2026-07-03); the preedit is
+                // painted by render_grid at the cursor row.
                 .child(
                     canvas(
                         |_bounds, _window, _cx| (),
@@ -274,44 +272,12 @@ impl Render for ShellWindow {
                                 ElementInputHandler::new(bounds, view.clone()),
                                 cx,
                             );
-
-                            let Some(pre) = ime_preedit.as_ref().filter(|s| !s.is_empty()) else {
-                                return;
-                            };
-                            let grid_h = grid_rows as f32 * ch;
-                            let vp_h = f32::from(bounds.size.height);
-                            let overflow = (grid_h - vp_h).max(0.0);
-                            let x = f32::from(bounds.origin.x) + cursor_col as f32 * cw;
-                            let y = f32::from(bounds.origin.y) + cursor_row as f32 * ch - overflow;
-
-                            let fg: gpui::Hsla = rgba(0xffffffff).into();
-                            let text_run = TextRun {
-                                len: pre.len(),
-                                font: gpui::font(MONO_FONT),
-                                color: fg,
-                                background_color: Some(rgba(0x1e3a5fff).into()),
-                                underline: Some(UnderlineStyle {
-                                    color: Some(fg),
-                                    thickness: px(1.),
-                                    wavy: false,
-                                }),
-                                strikethrough: None,
-                            };
-                            let line = window.text_system().shape_line(
-                                pre.clone().into(),
-                                px(13.),
-                                &[text_run],
-                                None,
-                            );
-                            let origin = point(px(x), px(y));
-                            let _ = line.paint_background(origin, px(ch), window, cx);
-                            let _ = line.paint(origin, px(ch), window, cx);
                         },
                     )
                     .absolute()
                     .size_full(),
                 )
-                .child(render_grid(&snap, MONO_FONT, cw, ch, None))
+                .child(render_grid(&snap, MONO_FONT, cw, ch, None, ime_preedit))
                 .into_any_element()
         } else {
             div()

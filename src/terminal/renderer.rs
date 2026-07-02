@@ -670,6 +670,11 @@ pub fn render_grid(
     ch: f32,
     // Normalized inclusive (start, end) cell range of the mouse selection.
     selection: Option<((usize, usize), (usize, usize))>,
+    // IME composition (preedit) text, drawn inline at the terminal cursor.
+    // Painted here — in the cursor row's canvas — because paint calls issued
+    // from the absolute viewport-overlay canvas never reach the screen
+    // (empirically verified 2026-07-03).
+    ime_preedit: Option<String>,
 ) -> impl IntoElement {
     let (cursor_row, cursor_col) = snap.cursor;
     let grid_cols = snap.cols;
@@ -693,6 +698,11 @@ pub fn render_grid(
             let runs: Vec<Run> = coalesce_runs(row, cur_col).collect();
             let total_cols: usize = runs.iter().map(|r| r.width).sum();
             let sel_cols = selection_cols_for_row(selection, row_idx, grid_cols);
+            let preedit = if row_idx == cursor_row {
+                ime_preedit.clone().filter(|s| !s.is_empty())
+            } else {
+                None
+            };
             let font_name = font_name.clone();
 
             canvas(
@@ -835,6 +845,34 @@ pub fn render_grid(
                             },
                             rgba(SELECTION_RGBA),
                         ));
+                    }
+
+                    // IME preedit: drawn over the cursor row starting at the
+                    // cursor column (dark-blue background + underline), so
+                    // composition text is visible before it is committed.
+                    if let Some(pre) = &preedit {
+                        let fg: gpui::Hsla = rgba(0xffffffff).into();
+                        let text_run = gpui::TextRun {
+                            len: pre.len(),
+                            font: gpui::font(font_name.clone()),
+                            color: fg,
+                            background_color: Some(rgba(0x1e3a5fff).into()),
+                            underline: Some(gpui::UnderlineStyle {
+                                color: Some(fg),
+                                thickness: px(1.),
+                                wavy: false,
+                            }),
+                            strikethrough: None,
+                        };
+                        let line = window.text_system().shape_line(
+                            pre.clone().into(),
+                            font_size,
+                            &[text_run],
+                            None,
+                        );
+                        let origin = point(px(ox + cursor_col as f32 * cw), px(oy));
+                        let _ = line.paint_background(origin, line_height, window, cx);
+                        let _ = line.paint(origin, line_height, window, cx);
                     }
                 },
             )

@@ -7,8 +7,8 @@ use crate::window::{
 use gpui::{
     App, Context, DispatchPhase, ElementInputHandler, FocusHandle, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
-    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, TextRun,
-    UnderlineStyle, canvas, div, point, prelude::*, px, rgba,
+    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, canvas, div,
+    prelude::*, px,
 };
 use gpui_component::v_flex;
 
@@ -41,10 +41,8 @@ pub fn render_terminal_tab(
     let scroll_for_overlay = scroll_handle.clone();
     let focus_handle = focus_handle.clone();
     let view = cx.entity();
-    let (cursor_row, cursor_col) = snap.cursor;
     let grid_rows = snap.rows;
     let grid_cols = snap.cols;
-    let font_name = font.to_string();
     v_flex().flex_1().size_full().bg(Colors::shikkoku()).child(
         div()
             .id(if is_shogun {
@@ -127,10 +125,10 @@ pub fn render_terminal_tab(
             // 1. Register the IME input handler for the terminal viewport.
             //    Without this, WM_CHAR / IME composition events are dropped
             //    and Japanese input never reaches the PTY.
-            // 2. Draw the IME preedit inline at the terminal cursor. GPUI
-            //    consumes WM_IME_COMPOSITION, so the OS composition window
-            //    never appears — if we don't draw the marked text, nothing
-            //    is visible until the composition is committed.
+            // 2. Mouse-selection hit-testing (window-level listeners).
+            // NOTE: nothing may be *drawn* from this canvas — paint calls
+            // issued here never reach the screen (verified 2026-07-03). The
+            // preedit and selection highlight are painted by render_grid.
             .child(
                 canvas(
                     |_bounds, _window, _cx| (),
@@ -144,11 +142,9 @@ pub fn render_terminal_tab(
                         // ── Mouse selection hit-testing ────────────────────
                         // Maps pointer position → grid cell. The highlight
                         // itself is painted by render_grid inside each row
-                        // canvas: quads painted from THIS overlay canvas are
-                        // not composited to the screen (empirically verified
-                        // 2026-07-03 — handle_input and ShapedLine::paint work
-                        // here, but paint_quad does not), and the row canvas
-                        // already lives in grid coordinates anyway.
+                        // canvas (paint calls from this overlay canvas do not
+                        // reach the screen), and the row canvas already lives
+                        // in grid coordinates anyway.
                         // The scroll offset is read at event time (not
                         // captured) because the pane keeps auto-scrolling.
                         let cell_at = move |scroll: &ScrollHandle, pos: Point<Pixels>| {
@@ -209,46 +205,12 @@ pub fn render_terminal_tab(
                                 });
                             }
                         });
-
-                        let Some(pre) = ime_preedit.as_ref().filter(|s| !s.is_empty()) else {
-                            return;
-                        };
-                        // Cursor cell position; the grid is bottom-anchored in
-                        // the viewport when taller than it (auto-scroll).
-                        let grid_h = grid_rows as f32 * ch;
-                        let vp_h = f32::from(bounds.size.height);
-                        let overflow = (grid_h - vp_h).max(0.0);
-                        let x = f32::from(bounds.origin.x) + cursor_col as f32 * cw;
-                        let y = f32::from(bounds.origin.y) + cursor_row as f32 * ch - overflow;
-
-                        let fg: gpui::Hsla = rgba(0xffffffff).into();
-                        let text_run = TextRun {
-                            len: pre.len(),
-                            font: gpui::font(font_name.clone()),
-                            color: fg,
-                            background_color: Some(rgba(0x1e3a5fff).into()),
-                            underline: Some(UnderlineStyle {
-                                color: Some(fg),
-                                thickness: px(1.),
-                                wavy: false,
-                            }),
-                            strikethrough: None,
-                        };
-                        let line = window.text_system().shape_line(
-                            pre.clone().into(),
-                            px(13.),
-                            &[text_run],
-                            None,
-                        );
-                        let origin = point(px(x), px(y));
-                        let _ = line.paint_background(origin, px(ch), window, cx);
-                        let _ = line.paint(origin, px(ch), window, cx);
                     },
                 )
                 .absolute()
                 .size_full(),
             )
-            .child(render_grid(snap, font, cw, ch, selection)),
+            .child(render_grid(snap, font, cw, ch, selection, ime_preedit)),
     )
 }
 
