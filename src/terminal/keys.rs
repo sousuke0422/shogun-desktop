@@ -5,6 +5,9 @@ pub fn key_to_bytes(keystroke: &gpui::Keystroke) -> Vec<u8> {
         "escape" => b"\x1b".to_vec(),
         "backspace" => b"\x7f".to_vec(),
         "tab" => b"\t".to_vec(),
+        "space" => b" ".to_vec(),
+        "delete" => b"\x1b[3~".to_vec(),
+        "home" => b"\x1b[H".to_vec(),
         "up" => b"\x1b[A".to_vec(),
         "down" => b"\x1b[B".to_vec(),
         "right" => b"\x1b[C".to_vec(),
@@ -20,7 +23,16 @@ pub fn key_to_bytes(keystroke: &gpui::Keystroke) -> Vec<u8> {
                 k.as_bytes().to_vec()
             }
         }
-        k => k.as_bytes().to_vec(),
+        // Single printable char: send as-is.
+        k if k.chars().count() == 1 => k.as_bytes().to_vec(),
+        // Multi-char key NAMES ("f1", "insert", "capslock", …) must never be
+        // sent as literal text (pressing space used to type "space"). Fall back
+        // to the text the key would insert, if any; otherwise swallow the key.
+        _ => keystroke
+            .key_char
+            .as_ref()
+            .map(|s| s.as_bytes().to_vec())
+            .unwrap_or_default(),
     }
 }
 
@@ -97,5 +109,33 @@ mod tests {
     #[test]
     fn plain_char_passes_through() {
         assert_eq!(key_to_bytes(&ks("x")), b"x");
+    }
+
+    #[test]
+    fn space_maps_to_space_char() {
+        assert_eq!(key_to_bytes(&ks("space")), b" ");
+    }
+
+    #[test]
+    fn delete_and_home_map_to_ansi_sequences() {
+        assert_eq!(key_to_bytes(&ks("delete")), b"\x1b[3~");
+        assert_eq!(key_to_bytes(&ks("home")), b"\x1b[H");
+    }
+
+    #[test]
+    fn unknown_named_key_is_swallowed() {
+        // Named keys with no insert-text must not be sent as literal text.
+        assert_eq!(key_to_bytes(&ks("capslock")), b"");
+        assert_eq!(key_to_bytes(&ks("f1")), b"");
+    }
+
+    #[test]
+    fn unknown_named_key_falls_back_to_key_char() {
+        let keystroke = Keystroke {
+            key: "somekey".to_string(),
+            modifiers: Modifiers::default(),
+            key_char: Some("@".to_string()),
+        };
+        assert_eq!(key_to_bytes(&keystroke), b"@");
     }
 }
