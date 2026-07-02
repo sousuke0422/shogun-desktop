@@ -4,8 +4,8 @@ use crate::theme::Colors;
 use crate::window::ShogunWindow;
 use gpui::{
     App, Context, ElementInputHandler, FocusHandle, IntoElement, KeyDownEvent, ParentElement,
-    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, canvas, div,
-    prelude::*, px,
+    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, TextRun,
+    UnderlineStyle, canvas, div, point, prelude::*, px, rgba,
 };
 use gpui_component::v_flex;
 
@@ -22,6 +22,8 @@ pub fn render_terminal_tab(
     snap: &GridSnapshot,
     scroll_handle: &ScrollHandle,
     focus_handle: &FocusHandle,
+    // IME composition (preedit) text, drawn inline at the terminal cursor.
+    ime_preedit: Option<String>,
     is_shogun: bool,
     font: &str,
     // Cell width in logical pixels — measured via `TextSystem::ch_advance`.
@@ -33,6 +35,9 @@ pub fn render_terminal_tab(
     let scroll_handle = scroll_handle.clone();
     let focus_handle = focus_handle.clone();
     let view = cx.entity();
+    let (cursor_row, cursor_col) = snap.cursor;
+    let grid_rows = snap.rows;
+    let font_name = font.to_string();
     v_flex().flex_1().size_full().bg(Colors::shikkoku()).child(
         div()
             .id(if is_shogun {
@@ -61,7 +66,13 @@ pub fn render_terminal_tab(
             // registered against the same handle.
             .track_focus(&focus_handle)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                this.handle_terminal_key(event, cx);
+                // Stop propagation for consumed keys so GPUI's own actions
+                // (tab focus-cycling etc.) never steal them. Keys left to the
+                // text-input path must keep propagating, or the platform never
+                // generates the corresponding WM_CHAR.
+                if this.handle_terminal_key(event, cx) {
+                    cx.stop_propagation();
+                }
             }))
             .on_scroll_wheel(
                 cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
@@ -91,10 +102,14 @@ pub fn render_terminal_tab(
                 }),
             )
             .p_1()
-            // Invisible overlay whose only job is to register the IME input
-            // handler for the terminal viewport each paint. Without this,
-            // WM_CHAR / IME composition events are dropped and Japanese input
-            // never reaches the PTY.
+            // Overlay with two jobs, both requiring paint-phase access:
+            // 1. Register the IME input handler for the terminal viewport.
+            //    Without this, WM_CHAR / IME composition events are dropped
+            //    and Japanese input never reaches the PTY.
+            // 2. Draw the IME preedit inline at the terminal cursor. GPUI
+            //    consumes WM_IME_COMPOSITION, so the OS composition window
+            //    never appears — if we don't draw the marked text, nothing
+            //    is visible until the composition is committed.
             .child(
                 canvas(
                     |_bounds, _window, _cx| (),
@@ -104,6 +119,40 @@ pub fn render_terminal_tab(
                             ElementInputHandler::new(bounds, view.clone()),
                             cx,
                         );
+
+                        let Some(pre) = ime_preedit.as_ref().filter(|s| !s.is_empty()) else {
+                            return;
+                        };
+                        // Cursor cell position; the grid is bottom-anchored in
+                        // the viewport when taller than it (auto-scroll).
+                        let grid_h = grid_rows as f32 * ch;
+                        let vp_h = f32::from(bounds.size.height);
+                        let overflow = (grid_h - vp_h).max(0.0);
+                        let x = f32::from(bounds.origin.x) + cursor_col as f32 * cw;
+                        let y = f32::from(bounds.origin.y) + cursor_row as f32 * ch - overflow;
+
+                        let fg: gpui::Hsla = rgba(0xffffffff).into();
+                        let text_run = TextRun {
+                            len: pre.len(),
+                            font: gpui::font(font_name.clone()),
+                            color: fg,
+                            background_color: Some(rgba(0x1e3a5fff).into()),
+                            underline: Some(UnderlineStyle {
+                                color: Some(fg),
+                                thickness: px(1.),
+                                wavy: false,
+                            }),
+                            strikethrough: None,
+                        };
+                        let line = window.text_system().shape_line(
+                            pre.clone().into(),
+                            px(13.),
+                            &[text_run],
+                            None,
+                        );
+                        let origin = point(px(x), px(y));
+                        let _ = line.paint_background(origin, px(ch), window, cx);
+                        let _ = line.paint(origin, px(ch), window, cx);
                     },
                 )
                 .absolute()

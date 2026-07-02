@@ -543,7 +543,15 @@ impl ShogunWindow {
         .detach();
     }
 
-    pub(crate) fn handle_terminal_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    /// Handle a key-down aimed at the terminal. Returns `true` when the key
+    /// was consumed here (the caller should stop propagation so GPUI actions
+    /// like tab focus-cycling never see it); `false` when the key is left for
+    /// the platform text-input path (WM_CHAR / IME → EntityInputHandler).
+    pub(crate) fn handle_terminal_key(
+        &mut self,
+        event: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if event.keystroke.key.as_str() == "end" {
             match self.selected_tab {
                 0 => {
@@ -557,7 +565,7 @@ impl ShogunWindow {
                 _ => {}
             }
             cx.notify();
-            return;
+            return true;
         }
 
         // Printable keys (no ctrl/alt/cmd) also arrive through the platform's
@@ -574,16 +582,17 @@ impl ShogunWindow {
                 .as_ref()
                 .is_some_and(|s| !s.is_empty() && !s.chars().any(char::is_control))
         {
-            return;
+            return false;
         }
 
         let bytes = key_to_bytes(&event.keystroke);
         if bytes.is_empty() {
-            return;
+            return false;
         }
         if let Some(session) = self.active_session() {
             session.send_bytes(&bytes);
         }
+        true
     }
 
     fn render_terminal_for_session(
@@ -606,6 +615,7 @@ impl ShogunWindow {
                     &snap,
                     scroll_handle,
                     &self.terminal_focus,
+                    self.ime_marked.clone(),
                     is_shogun,
                     &self.terminal_font,
                     cw,
@@ -1064,8 +1074,9 @@ impl gpui::EntityInputHandler for ShogunWindow {
             .map(|s| 0..s.encode_utf16().count())
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.ime_marked = None;
+        cx.notify();
     }
 
     fn replace_text_in_range(
@@ -1073,12 +1084,13 @@ impl gpui::EntityInputHandler for ShogunWindow {
         _range: Option<std::ops::Range<usize>>,
         text: &str,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         self.ime_marked = None;
         if let Some(session) = self.active_session() {
             session.send_bytes(text.as_bytes());
         }
+        cx.notify();
     }
 
     fn replace_and_mark_text_in_range(
@@ -1087,9 +1099,13 @@ impl gpui::EntityInputHandler for ShogunWindow {
         new_text: &str,
         _new_selected_range: Option<std::ops::Range<usize>>,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        // GPUI consumes WM_IME_COMPOSITION, so the OS never draws its own
+        // composition window — the preedit is rendered inline at the terminal
+        // cursor by render_terminal_tab.
         self.ime_marked = Some(new_text.to_string());
+        cx.notify();
     }
 
     fn bounds_for_range(

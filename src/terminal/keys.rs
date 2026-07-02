@@ -1,9 +1,13 @@
 pub fn key_to_bytes(keystroke: &gpui::Keystroke) -> Vec<u8> {
     let ctrl = keystroke.modifiers.control;
+    let shift = keystroke.modifiers.shift;
     match keystroke.key.as_str() {
         "enter" => b"\r".to_vec(),
         "escape" => b"\x1b".to_vec(),
         "backspace" => b"\x7f".to_vec(),
+        // Back-tab: Shift+Tab must send CSI Z (used by Claude Code's
+        // shift+tab mode cycling), not a plain tab.
+        "tab" if shift => b"\x1b[Z".to_vec(),
         "tab" => b"\t".to_vec(),
         "space" => b" ".to_vec(),
         "delete" => b"\x1b[3~".to_vec(),
@@ -114,6 +118,19 @@ mod tests {
     #[test]
     fn space_maps_to_space_char() {
         assert_eq!(key_to_bytes(&ks("space")), b" ");
+    }
+
+    #[test]
+    fn shift_tab_maps_to_backtab() {
+        let keystroke = Keystroke {
+            key: "tab".to_string(),
+            modifiers: Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            key_char: None,
+        };
+        assert_eq!(key_to_bytes(&keystroke), b"\x1b[Z");
     }
 
     #[test]
