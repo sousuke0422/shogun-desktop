@@ -1,14 +1,15 @@
 use crate::terminal::GridSnapshot;
+use crate::terminal::ime::TerminalIme;
 use crate::terminal::renderer::render_grid;
 use crate::theme::Colors;
 use crate::window::{
     ShogunWindow, TERMINAL_KEY_CONTEXT, TerminalCopy, TerminalSendBacktab, TerminalSendTab,
 };
 use gpui::{
-    App, Context, DispatchPhase, ElementInputHandler, FocusHandle, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
-    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, canvas, div,
-    prelude::*, px,
+    App, Context, DispatchPhase, ElementInputHandler, Entity, FocusHandle, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Point, ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, canvas,
+    div, prelude::*, px,
 };
 use gpui_component::v_flex;
 
@@ -25,6 +26,8 @@ pub fn render_terminal_tab(
     snap: &GridSnapshot,
     scroll_handle: &ScrollHandle,
     focus_handle: &FocusHandle,
+    // Shared IME text-input handler entity (registered on the overlay canvas).
+    ime: Entity<TerminalIme<ShogunWindow>>,
     // IME composition (preedit) text, drawn inline at the terminal cursor.
     ime_preedit: Option<String>,
     // Normalized inclusive (start, end) cell range of the mouse selection.
@@ -135,7 +138,7 @@ pub fn render_terminal_tab(
                     move |bounds, (), window, cx: &mut App| {
                         window.handle_input(
                             &focus_handle,
-                            ElementInputHandler::new(bounds, view.clone()),
+                            ElementInputHandler::new(bounds, ime.clone()),
                             cx,
                         );
 

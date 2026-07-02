@@ -1,3 +1,4 @@
+pub mod ime;
 pub mod keys;
 pub mod pty_session;
 pub mod renderer;

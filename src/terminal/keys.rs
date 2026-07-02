@@ -1,3 +1,30 @@
+/// Key-down → PTY bytes, with the text-input-path guard shared by every
+/// terminal window.
+///
+/// Returns `None` when the key must be left to the platform text-input path:
+/// printable keys without ctrl/alt/cmd also arrive as WM_CHAR / IME commits
+/// and are delivered to the registered input handler
+/// (`replace_text_in_range`) — sending them here as well would double every
+/// character. Also `None` for unmapped keys (nothing to send).
+///
+/// `Some(bytes)` means the caller should send the bytes and stop propagation
+/// so GPUI's own actions (tab focus-cycling etc.) never see the key.
+pub fn key_to_pty_bytes(keystroke: &gpui::Keystroke) -> Option<Vec<u8>> {
+    let m = &keystroke.modifiers;
+    if !m.control
+        && !m.alt
+        && !m.platform
+        && keystroke
+            .key_char
+            .as_ref()
+            .is_some_and(|s| !s.is_empty() && !s.chars().any(char::is_control))
+    {
+        return None;
+    }
+    let bytes = key_to_bytes(keystroke);
+    (!bytes.is_empty()).then_some(bytes)
+}
+
 pub fn key_to_bytes(keystroke: &gpui::Keystroke) -> Vec<u8> {
     let ctrl = keystroke.modifiers.control;
     let shift = keystroke.modifiers.shift;
@@ -154,5 +181,34 @@ mod tests {
             key_char: Some("@".to_string()),
         };
         assert_eq!(key_to_bytes(&keystroke), b"@");
+    }
+
+    #[test]
+    fn pty_bytes_leaves_printable_keys_to_text_input_path() {
+        // "a" typed without modifiers arrives via WM_CHAR too — must not be
+        // sent from the key-down path or every character doubles.
+        let keystroke = Keystroke {
+            key: "a".to_string(),
+            modifiers: Modifiers::default(),
+            key_char: Some("a".to_string()),
+        };
+        assert_eq!(key_to_pty_bytes(&keystroke), None);
+    }
+
+    #[test]
+    fn pty_bytes_sends_control_and_named_keys() {
+        assert_eq!(key_to_pty_bytes(&ks_ctrl("c")), Some(b"\x03".to_vec()));
+        // "enter" has a control key_char ("\r") → not a printable text key.
+        let enter = Keystroke {
+            key: "enter".to_string(),
+            modifiers: Modifiers::default(),
+            key_char: Some("\r".to_string()),
+        };
+        assert_eq!(key_to_pty_bytes(&enter), Some(b"\r".to_vec()));
+    }
+
+    #[test]
+    fn pty_bytes_swallows_unmapped_named_keys() {
+        assert_eq!(key_to_pty_bytes(&ks("capslock")), None);
     }
 }

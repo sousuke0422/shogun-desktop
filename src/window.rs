@@ -7,15 +7,16 @@ use crate::tabs::{
     render_terminal_tab, render_terminal_tab_disconnected, render_terminal_tab_empty,
     render_terminal_tab_error, run_fetch_agents, run_fetch_dashboard,
 };
-use crate::terminal::keys::key_to_bytes;
+use crate::terminal::ime::{ImeHost, TerminalIme};
+use crate::terminal::keys::key_to_pty_bytes;
 use crate::terminal::pty_session;
 use crate::terminal::renderer::cell_width_for_font;
 use crate::terminal::{GridSnapshot, TerminalSession};
 use crate::theme::Colors;
 use gpui::{
     App, Bounds, ClickEvent, Context, ExternalPaths, FocusHandle, IntoElement, KeyDownEvent,
-    ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    UTF16Selection, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window,
+    WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
     Disableable, Root, Sizable,
@@ -250,18 +251,30 @@ pub struct ShogunWindow {
     /// can be registered (GPUI only routes WM_CHAR / IME composition events
     /// to a registered input handler on the focused element).
     pub(crate) terminal_focus: FocusHandle,
-    /// Current IME composition (marked) text, if any. The preedit itself is
-    /// drawn by the OS composition window at the caret position; we only keep
-    /// this for the platform's marked-range queries.
-    ime_marked: Option<String>,
+    /// Shared IME text-input handler (see `terminal::ime`). Holds the current
+    /// composition text; observed so composition changes re-render.
+    ime: gpui::Entity<TerminalIme<Self>>,
     /// Active mouse selection over one terminal pane's grid, if any.
     selection: Option<TerminalSelection>,
+}
+
+impl ImeHost for ShogunWindow {
+    fn ime_session(&self) -> Option<&TerminalSession> {
+        self.active_session()
+    }
+
+    fn ime_font(&self) -> &str {
+        &self.terminal_font
+    }
 }
 
 impl ShogunWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = load_settings().unwrap_or_default();
         let terminal_font = settings.terminal.font.clone();
+        let weak = cx.weak_entity();
+        let ime = cx.new(|_| TerminalIme::new(weak));
+        cx.observe(&ime, |_, _, cx| cx.notify()).detach();
         Self {
             selected_tab: 0,
             settings_tab: SettingsTab::new(window, cx, &settings),
@@ -287,7 +300,7 @@ impl ShogunWindow {
             upload_state: UploadState::Idle,
             dragged_paths: None,
             terminal_focus: cx.focus_handle(),
-            ime_marked: None,
+            ime,
             selection: None,
         }
     }
@@ -704,27 +717,11 @@ impl ShogunWindow {
             return true;
         }
 
-        // Printable keys (no ctrl/alt/cmd) also arrive through the platform's
-        // text-input path (WM_CHAR / IME commit) and are delivered to the
-        // registered EntityInputHandler as replace_text_in_range. Sending them
-        // here as well would double every character, so only named/control
-        // keys go through key_to_bytes.
-        let ks = &event.keystroke;
-        if !ks.modifiers.control
-            && !ks.modifiers.alt
-            && !ks.modifiers.platform
-            && ks
-                .key_char
-                .as_ref()
-                .is_some_and(|s| !s.is_empty() && !s.chars().any(char::is_control))
-        {
+        // key_to_pty_bytes returns None for keys that must be left to the
+        // platform text-input path (WM_CHAR / IME → TerminalIme handler).
+        let Some(bytes) = key_to_pty_bytes(&event.keystroke) else {
             return false;
-        }
-
-        let bytes = key_to_bytes(&event.keystroke);
-        if bytes.is_empty() {
-            return false;
-        }
+        };
         if let Some(session) = self.active_session() {
             session.send_bytes(&bytes);
         }
@@ -751,7 +748,8 @@ impl ShogunWindow {
                     &snap,
                     scroll_handle,
                     &self.terminal_focus,
-                    self.ime_marked.clone(),
+                    self.ime.clone(),
+                    self.ime.read(cx).marked.clone(),
                     self.selection_range_for(is_shogun),
                     is_shogun,
                     &self.terminal_font,
@@ -1165,128 +1163,6 @@ impl ShogunWindow {
                         }
                     }))
             }))
-    }
-}
-
-/// IME / text-input integration.
-///
-/// GPUI only delivers WM_CHAR and IME composition events to an input handler
-/// registered on the focused element ([`Window::handle_input`], done in
-/// `render_terminal_tab`). A terminal has no editable document: committed text
-/// is forwarded to the PTY, the preedit is drawn by the OS composition window
-/// (positioned at the terminal cursor via [`Self::bounds_for_range`]), and all
-/// document queries answer "empty".
-impl gpui::EntityInputHandler for ShogunWindow {
-    fn text_for_range(
-        &mut self,
-        _range: std::ops::Range<usize>,
-        _adjusted_range: &mut Option<std::ops::Range<usize>>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<String> {
-        None
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _ignore_disabled_input: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        // A zero-width caret; required so the platform can query the caret
-        // rect (bounds_for_range) to position the IME composition window.
-        Some(UTF16Selection {
-            range: 0..0,
-            reversed: false,
-        })
-    }
-
-    fn marked_text_range(
-        &self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<std::ops::Range<usize>> {
-        self.ime_marked
-            .as_ref()
-            .map(|s| 0..s.encode_utf16().count())
-    }
-
-    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.ime_marked = None;
-        cx.notify();
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        _range: Option<std::ops::Range<usize>>,
-        text: &str,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.ime_marked = None;
-        if let Some(session) = self.active_session() {
-            session.send_bytes(text.as_bytes());
-        }
-        cx.notify();
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        _range: Option<std::ops::Range<usize>>,
-        new_text: &str,
-        _new_selected_range: Option<std::ops::Range<usize>>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // GPUI consumes WM_IME_COMPOSITION, so the OS never draws its own
-        // composition window — the preedit is rendered inline at the terminal
-        // cursor by render_terminal_tab.
-        self.ime_marked = Some(new_text.to_string());
-        cx.notify();
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        _range_utf16: std::ops::Range<usize>,
-        element_bounds: Bounds<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        let session = self.active_session()?;
-        let snap = session.snapshot.lock();
-        let (row, col) = snap.cursor;
-        let rows = snap.rows;
-        drop(snap);
-
-        let (cw, ch) = measure_cell_metrics(
-            &cx.text_system(),
-            &self.terminal_font,
-            window.scale_factor(),
-        );
-
-        // The grid is bottom-anchored in its scroll viewport when it is taller
-        // than the visible area (auto scroll-to-bottom), so shift the caret up
-        // by the overflow.
-        let grid_h = rows as f32 * ch;
-        let viewport_h = f32::from(element_bounds.size.height);
-        let scroll_overflow = (grid_h - viewport_h).max(0.0);
-
-        Some(Bounds {
-            origin: point(
-                element_bounds.origin.x + px(col as f32 * cw),
-                element_bounds.origin.y + px(row as f32 * ch - scroll_overflow),
-            ),
-            size: size(px(cw), px(ch)),
-        })
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        _point: gpui::Point<Pixels>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        None
     }
 }
 
