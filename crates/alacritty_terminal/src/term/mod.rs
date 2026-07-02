@@ -1061,7 +1061,17 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline(never)]
     fn input(&mut self, c: char) {
         // Number of cells the char will occupy.
-        let width = match c.width_cjk() {
+        //
+        // Use the non-CJK width table (EAW=Ambiguous = 1 cell). The application
+        // driving the PTY (tmux, and every program inside it) lays out lines with
+        // standard wcwidth, where ambiguous-width chars — including all box-drawing
+        // U+2500-257F — occupy one column. A previous patch switched this to
+        // `width_cjk()` (EAW=A = 2), which made our grid disagree with the sender:
+        // 113-char tmux table separators expanded to 226 grid cells, wrapped at the
+        // right edge, and the spill survived tmux's differential redraw as phantom
+        // `─` fragments over blank cells. The grid MUST mirror the sender's width
+        // model; how wide a glyph is *drawn* is the renderer's concern, not the grid's.
+        let width = match c.width() {
             Some(width) => width,
             None => return,
         };
