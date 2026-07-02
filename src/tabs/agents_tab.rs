@@ -6,21 +6,14 @@ use crate::theme::Colors;
 use crate::window::{AgentsState, ShogunWindow};
 use gpui::{AlignItems, Context, IntoElement, ParentElement, Styled, div, prelude::*, px, rgb};
 use gpui_component::{Sizable, button::Button, scroll::ScrollableElement, v_flex};
-use serde_yml::Value;
+use shogun_core::{
+    StatusCategory, build_agent_card, build_karo_card, status_category, status_indicator,
+    truncate_summary,
+};
 
-const PLACEHOLDER: &str = "---";
 const CARD_BG: u32 = 0x242424;
 
-/// Structured agent status for the card grid.
-#[derive(Clone, Default, Debug, PartialEq)]
-pub struct AgentCardData {
-    pub name: String,
-    pub task_id: String,
-    pub status: String,
-    pub inbox_unread: usize,
-    pub last_report_at: String,
-    pub summary: String,
-}
+pub use shogun_core::AgentCardData;
 
 pub fn run_fetch_agents(settings: ShogunDesktopSettings) -> anyhow::Result<String> {
     if settings.project.path.is_empty() {
@@ -55,72 +48,24 @@ fn fetch_single_agent_card(
     }
 
     let base = format!("{project_path}/queue");
-    let task_path = format!("{base}/tasks/{name}.yaml");
-    let inbox_path = format!("{base}/inbox/{name}.yaml");
-    let report_path = format!("{base}/reports/{name}_report.yaml");
+    let task_yaml = ssh_cat(ssh, &format!("{base}/tasks/{name}.yaml"));
+    let inbox_yaml = ssh_cat(ssh, &format!("{base}/inbox/{name}.yaml"));
+    let report_yaml = ssh_cat(ssh, &format!("{base}/reports/{name}_report.yaml"));
 
-    let task_yaml = ssh_cat(ssh, &task_path);
-    let inbox_yaml = ssh_cat(ssh, &inbox_path);
-    let report_yaml = ssh_cat(ssh, &report_path);
-
-    // 3つ全て存在しない = 足軽未稼働。カードを出さない。
-    if task_yaml.is_none() && inbox_yaml.is_none() && report_yaml.is_none() {
-        return None;
-    }
-
-    let (task_id, status) = parse_task_yaml(&task_yaml);
-    let inbox_unread = parse_inbox_unread(&inbox_yaml);
-    let (last_report_at, summary) = parse_report_yaml(&report_yaml);
-
-    Some(AgentCardData {
-        name: name.to_string(),
-        task_id,
-        status,
-        inbox_unread,
-        last_report_at,
-        summary,
-    })
+    build_agent_card(
+        name,
+        task_yaml.as_deref(),
+        inbox_yaml.as_deref(),
+        report_yaml.as_deref(),
+    )
 }
 
-/// 家老は queue/shogun_to_karo.yaml（コマンドリスト）からステータスを読む。
 fn fetch_karo_card(ssh: &SshClient, project_path: &str) -> Option<AgentCardData> {
     let base = format!("{project_path}/queue");
     let cmd_yaml = ssh_cat(ssh, &format!("{base}/shogun_to_karo.yaml"));
     let inbox_yaml = ssh_cat(ssh, &format!("{base}/inbox/karo.yaml"));
 
-    if cmd_yaml.is_none() && inbox_yaml.is_none() {
-        return None;
-    }
-
-    let (task_id, status) = parse_karo_cmd_yaml(&cmd_yaml);
-    let inbox_unread = parse_inbox_unread(&inbox_yaml);
-
-    Some(AgentCardData {
-        name: "karo".to_string(),
-        task_id,
-        status,
-        inbox_unread,
-        last_report_at: String::new(),
-        summary: String::new(),
-    })
-}
-
-fn parse_karo_cmd_yaml(raw: &Option<String>) -> (String, String) {
-    let Some(raw) = raw.as_ref() else {
-        return (PLACEHOLDER.into(), PLACEHOLDER.into());
-    };
-    // shogun_to_karo.yaml はコマンドのリスト。先頭が最新。
-    let Ok(val) = serde_yml::from_str::<serde_yml::Value>(raw) else {
-        return (PLACEHOLDER.into(), PLACEHOLDER.into());
-    };
-    let first = val.as_sequence().and_then(|s| s.first());
-    let task_id = first
-        .and_then(|v| v.get("id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or(PLACEHOLDER)
-        .to_string();
-    // 家老には個別 status フィールドがないため固定表示
-    (task_id, "active".to_string())
+    build_karo_card(cmd_yaml.as_deref(), inbox_yaml.as_deref())
 }
 
 fn ssh_cat(ssh: &SshClient, path: &str) -> Option<String> {
@@ -131,115 +76,11 @@ fn ssh_cat(ssh: &SshClient, path: &str) -> Option<String> {
     }
 }
 
-fn parse_yaml(raw: &Option<String>) -> Option<Value> {
-    let raw = raw.as_ref()?;
-    serde_yml::from_str(raw).ok()
-}
-
-fn yaml_str(v: &Value, keys: &[&str]) -> Option<String> {
-    let mut cur = v;
-    for key in keys {
-        cur = cur.get(key)?;
-    }
-    match cur {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
-}
-
-pub fn parse_task_yaml(raw: &Option<String>) -> (String, String) {
-    let Some(v) = parse_yaml(raw) else {
-        return (PLACEHOLDER.into(), PLACEHOLDER.into());
-    };
-    let task_id = yaml_str(&v, &["task", "task_id"])
-        .or_else(|| yaml_str(&v, &["task_id"]))
-        .unwrap_or_else(|| PLACEHOLDER.into());
-    let status = yaml_str(&v, &["task", "status"])
-        .or_else(|| yaml_str(&v, &["status"]))
-        .unwrap_or_else(|| PLACEHOLDER.into());
-    (task_id, status)
-}
-
-pub fn parse_inbox_unread(raw: &Option<String>) -> usize {
-    let Some(v) = parse_yaml(raw) else {
-        return 0;
-    };
-    let messages = v.get("messages").and_then(|m| m.as_sequence());
-    let Some(msgs) = messages else {
-        return 0;
-    };
-    msgs.iter()
-        .filter(|m| m.get("read").and_then(|r| r.as_bool()) == Some(false))
-        .count()
-}
-
-pub fn parse_report_yaml(raw: &Option<String>) -> (String, String) {
-    let Some(v) = parse_yaml(raw) else {
-        return (PLACEHOLDER.into(), String::new());
-    };
-    let ts = yaml_str(&v, &["timestamp"]).unwrap_or_else(|| PLACEHOLDER.into());
-    let last_report_at = format_timestamp_hhmm(&ts);
-    let summary = yaml_str(&v, &["result", "summary"])
-        .map(|s| first_line(&s))
-        .unwrap_or_default();
-    (last_report_at, summary)
-}
-
-fn format_timestamp_hhmm(ts: &str) -> String {
-    if ts == PLACEHOLDER {
-        return PLACEHOLDER.into();
-    }
-    // "2026-05-25T17:00:00" or "2026-05-25T17:00:00+09:00"
-    if let Some(rest) = ts.split('T').nth(1) {
-        let time_part = rest.split('+').next().unwrap_or(rest);
-        let hhmm: String = time_part.chars().take(5).collect();
-        if hhmm.len() >= 4 && hhmm.contains(':') {
-            return hhmm;
-        }
-    }
-    // fallback: last 5 chars if looks like time
-    if ts.len() >= 5 {
-        let tail: String = ts
-            .chars()
-            .rev()
-            .take(8)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        if tail.contains(':') {
-            return tail;
-        }
-    }
-    PLACEHOLDER.into()
-}
-
-fn first_line(s: &str) -> String {
-    s.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("")
-        .chars()
-        .take(120)
-        .collect()
-}
-
 fn status_color(status: &str) -> gpui::Rgba {
-    match status {
-        "assigned" | "work" | "active" => Colors::kinpaku(),
-        "done" => Colors::matsuba(),
-        _ => Colors::muted(),
-    }
-}
-
-fn status_indicator(status: &str) -> &'static str {
-    match status {
-        "assigned" | "work" | "active" => "🟡",
-        "done" => "🟢",
-        "idle" => "⚪",
-        _ => "⚪",
+    match status_category(status) {
+        StatusCategory::Active => Colors::kinpaku(),
+        StatusCategory::Done => Colors::matsuba(),
+        StatusCategory::Idle | StatusCategory::Unknown => Colors::muted(),
     }
 }
 
@@ -319,16 +160,6 @@ fn render_agent_card(card: &AgentCardData) -> impl IntoElement {
         })
 }
 
-fn truncate_summary(s: &str, max_lines: usize) -> String {
-    let lines: Vec<_> = s.lines().take(max_lines).collect();
-    let joined = lines.join("\n");
-    if s.lines().count() > max_lines {
-        format!("{joined}…")
-    } else {
-        joined
-    }
-}
-
 fn render_card_grid(cards: &[AgentCardData]) -> impl IntoElement {
     if cards.is_empty() {
         return div()
@@ -344,7 +175,6 @@ fn render_card_grid(cards: &[AgentCardData]) -> impl IntoElement {
             .iter()
             .map(|c| render_agent_card(c).into_any_element())
             .collect();
-        // pad incomplete rows so card widths stay consistent across all rows
         for _ in row.len()..3 {
             children.push(
                 div()
@@ -452,51 +282,4 @@ fn render_ansi_lines(raw: &str) -> impl IntoElement {
                     .child(span.text)
             }))
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_task_yaml_extracts_fields() {
-        let raw = r#"
-task:
-  task_id: cmd_177
-  status: assigned
-"#;
-        let (id, st) = parse_task_yaml(&Some(raw.into()));
-        assert_eq!(id, "cmd_177");
-        assert_eq!(st, "assigned");
-    }
-
-    #[test]
-    fn parse_inbox_unread_counts_false_read() {
-        let raw = r#"
-messages:
-  - read: true
-  - read: false
-  - read: false
-"#;
-        assert_eq!(parse_inbox_unread(&Some(raw.into())), 2);
-    }
-
-    #[test]
-    fn parse_report_yaml_summary_and_time() {
-        let raw = r#"
-timestamp: "2026-05-25T11:32:00"
-result:
-  summary: |
-    第一行の要約
-    第二行
-"#;
-        let (at, sum) = parse_report_yaml(&Some(raw.into()));
-        assert_eq!(at, "11:32");
-        assert_eq!(sum, "第一行の要約");
-    }
-
-    #[test]
-    fn format_timestamp_missing_returns_placeholder() {
-        assert_eq!(format_timestamp_hhmm("---"), "---");
-    }
 }

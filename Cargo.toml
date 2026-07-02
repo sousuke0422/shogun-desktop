@@ -22,6 +22,7 @@ parking_lot = "0.12"
 arboard = "3"
 rfd = "0.15"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+shogun-core = { path = "../shogun-suite/crates/shogun-core" }
 
 [patch.crates-io]
 alacritty_terminal = { path = "crates/alacritty_terminal" }

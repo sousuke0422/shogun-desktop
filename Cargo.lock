@@ -6294,6 +6294,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "shogun-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yml",
+]
+
+[[package]]
 name = "shogun-desktop"
 version = "0.1.0"
 dependencies = [
@@ -6311,6 +6319,7 @@ dependencies = [
  "russh",
  "serde",
  "serde_yml",
+ "shogun-core",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "unicode-width 0.2.2",

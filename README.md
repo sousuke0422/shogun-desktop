@@ -52,6 +52,12 @@ cargo run --release
 
 ## ライセンス
 
-Private / multi-agent-shogun 内部用
+本リポジトリのソース（`src/` および `crates/` 配下の独自コード）は [MIT](LICENSE) です。
+エージェント状態の YAML 解析・カード組み立ては MIT の [`shogun-core`](../shogun-suite/crates/shogun-core/) に依存し、
+GPL 依存の GPUI UI 層（`agents_tab` の描画など）から分離しています。
+
+**Zed-GPL ソース取り込み時**: 将来 UI が Zed エディタ（GPL-3.0）由来のコードを
+本 crate に組み込む場合、当該部分を含む配布物全体は GPL-3.0 への再ライセンスが必要になります。
+現時点では Zed-GPL ソースは取り込んでおらず、設計参照のみです。
 
 アイコン: Copyright (c) 2026 yohey-w — [CREDITS](CREDITS) 参照
