@@ -1,11 +1,14 @@
 use crate::terminal::GridSnapshot;
 use crate::terminal::renderer::render_grid;
 use crate::theme::Colors;
-use crate::window::{ShogunWindow, TERMINAL_KEY_CONTEXT, TerminalSendBacktab, TerminalSendTab};
+use crate::window::{
+    ShogunWindow, TERMINAL_KEY_CONTEXT, TerminalCopy, TerminalSendBacktab, TerminalSendTab,
+};
 use gpui::{
-    App, Context, ElementInputHandler, FocusHandle, IntoElement, KeyDownEvent, ParentElement,
-    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, TextRun,
-    UnderlineStyle, canvas, div, point, prelude::*, px, rgba,
+    App, Bounds, Context, DispatchPhase, ElementInputHandler, FocusHandle, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Point, ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled,
+    TextRun, UnderlineStyle, canvas, div, fill, point, prelude::*, px, rgba, size,
 };
 use gpui_component::v_flex;
 
@@ -24,6 +27,8 @@ pub fn render_terminal_tab(
     focus_handle: &FocusHandle,
     // IME composition (preedit) text, drawn inline at the terminal cursor.
     ime_preedit: Option<String>,
+    // Normalized inclusive (start, end) cell range of the mouse selection.
+    selection: Option<((usize, usize), (usize, usize))>,
     is_shogun: bool,
     font: &str,
     // Cell width in logical pixels — measured via `TextSystem::ch_advance`.
@@ -33,10 +38,12 @@ pub fn render_terminal_tab(
     cx: &mut Context<ShogunWindow>,
 ) -> impl IntoElement {
     let scroll_handle = scroll_handle.clone();
+    let scroll_for_overlay = scroll_handle.clone();
     let focus_handle = focus_handle.clone();
     let view = cx.entity();
     let (cursor_row, cursor_col) = snap.cursor;
     let grid_rows = snap.rows;
+    let grid_cols = snap.cols;
     let font_name = font.to_string();
     v_flex().flex_1().size_full().bg(Colors::shikkoku()).child(
         div()
@@ -75,6 +82,9 @@ pub fn render_terminal_tab(
             }))
             .on_action(cx.listener(|this, _: &TerminalSendBacktab, _window, _cx| {
                 this.send_bytes_to_active(b"\x1b[Z");
+            }))
+            .on_action(cx.listener(|this, _: &TerminalCopy, _window, cx| {
+                this.copy_selection(cx);
             }))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 // Stop propagation for consumed keys so GPUI's own actions
@@ -130,6 +140,100 @@ pub fn render_terminal_tab(
                             ElementInputHandler::new(bounds, view.clone()),
                             cx,
                         );
+
+                        // ── Mouse selection ────────────────────────────────
+                        // Hit-testing and highlight painting share the same
+                        // bounds + scroll-offset transform, so the highlighted
+                        // cells are exactly the ones `copy_selection` reads.
+                        // The scroll offset is read at event/paint time (not
+                        // captured) because the pane keeps auto-scrolling.
+                        let cell_at = move |scroll: &ScrollHandle, pos: Point<Pixels>| {
+                            let off = scroll.offset();
+                            let gx = f32::from(pos.x - bounds.origin.x) - f32::from(off.x);
+                            let gy = f32::from(pos.y - bounds.origin.y) - f32::from(off.y);
+                            let col = ((gx / cw).floor().max(0.0) as usize)
+                                .min(grid_cols.saturating_sub(1));
+                            let row = ((gy / ch).floor().max(0.0) as usize)
+                                .min(grid_rows.saturating_sub(1));
+                            (row, col)
+                        };
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            let scroll = scroll_for_overlay.clone();
+                            move |ev: &MouseDownEvent, phase, _window, cx| {
+                                if phase != DispatchPhase::Bubble
+                                    || ev.button != MouseButton::Left
+                                    || !bounds.contains(&ev.position)
+                                {
+                                    return;
+                                }
+                                let (row, col) = cell_at(&scroll, ev.position);
+                                view.update(cx, |this, cx| {
+                                    this.begin_selection(is_shogun, row, col);
+                                    cx.notify();
+                                });
+                            }
+                        });
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            let scroll = scroll_for_overlay.clone();
+                            move |ev: &MouseMoveEvent, phase, _window, cx| {
+                                if phase != DispatchPhase::Bubble
+                                    || ev.pressed_button != Some(MouseButton::Left)
+                                {
+                                    return;
+                                }
+                                let (row, col) = cell_at(&scroll, ev.position);
+                                view.update(cx, |this, cx| {
+                                    if this.update_selection(row, col) {
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
+                        window.on_mouse_event({
+                            let view = view.clone();
+                            move |ev: &MouseUpEvent, phase, _window, cx| {
+                                if phase != DispatchPhase::Bubble || ev.button != MouseButton::Left
+                                {
+                                    return;
+                                }
+                                view.update(cx, |this, cx| {
+                                    if this.end_selection() {
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
+
+                        if let Some((start, end)) = selection {
+                            let off = scroll_for_overlay.offset();
+                            let last_row = grid_rows.saturating_sub(1);
+                            for row in start.0..=end.0.min(last_row) {
+                                let c0 = if row == start.0 { start.1 } else { 0 };
+                                let c1 = if row == end.0 {
+                                    (end.1 + 1).min(grid_cols)
+                                } else {
+                                    grid_cols
+                                };
+                                if c0 >= c1 {
+                                    continue;
+                                }
+                                let x =
+                                    f32::from(bounds.origin.x) + c0 as f32 * cw + f32::from(off.x);
+                                let y =
+                                    f32::from(bounds.origin.y) + row as f32 * ch + f32::from(off.y);
+                                window.paint_quad(fill(
+                                    Bounds {
+                                        origin: point(px(x), px(y)),
+                                        size: size(px((c1 - c0) as f32 * cw), px(ch)),
+                                    },
+                                    // Translucent steel blue: keeps the text
+                                    // legible whichever paint order wins.
+                                    rgba(0x3465a466),
+                                ));
+                            }
+                        }
 
                         let Some(pre) = ime_preedit.as_ref().filter(|s| !s.is_empty()) else {
                             return;

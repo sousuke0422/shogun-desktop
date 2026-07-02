@@ -7,10 +7,10 @@ use crate::tabs::{
     render_terminal_tab, render_terminal_tab_disconnected, render_terminal_tab_empty,
     render_terminal_tab_error, run_fetch_agents, run_fetch_dashboard,
 };
-use crate::terminal::TerminalSession;
 use crate::terminal::keys::key_to_bytes;
 use crate::terminal::pty_session;
 use crate::terminal::renderer::cell_width_for_font;
+use crate::terminal::{GridSnapshot, TerminalSession};
 use crate::theme::Colors;
 use gpui::{
     App, Bounds, ClickEvent, Context, ExternalPaths, FocusHandle, IntoElement, KeyDownEvent,
@@ -33,7 +33,10 @@ const TAB_LABELS: [&str; 6] = ["将軍", "エージェント", "戦況", "設定
 /// keys Root binds globally (tab / shift-tab focus cycling).
 pub const TERMINAL_KEY_CONTEXT: &str = "ShogunTerminal";
 
-gpui::actions!(shogun_terminal, [TerminalSendTab, TerminalSendBacktab]);
+gpui::actions!(
+    shogun_terminal,
+    [TerminalSendTab, TerminalSendBacktab, TerminalCopy]
+);
 
 /// Line-height multiplier applied to `font_size` to compute the cell height.
 ///
@@ -170,6 +173,54 @@ impl Default for DashboardState {
     }
 }
 
+/// A mouse-driven cell selection over one terminal pane's grid.
+///
+/// `anchor` is the cell where the drag started; `head` follows the pointer.
+/// Both are `(row, col)` grid coordinates. The selection is linear (reading
+/// order): rows strictly between anchor and head are selected full-width.
+pub(crate) struct TerminalSelection {
+    pub is_shogun: bool,
+    pub anchor: (usize, usize),
+    pub head: (usize, usize),
+    pub dragging: bool,
+}
+
+impl TerminalSelection {
+    /// Inclusive `(start, end)` cell range in reading order.
+    fn normalized(&self) -> ((usize, usize), (usize, usize)) {
+        if self.head < self.anchor {
+            (self.head, self.anchor)
+        } else {
+            (self.anchor, self.head)
+        }
+    }
+}
+
+/// Extract the text covered by an inclusive `(start, end)` cell range.
+///
+/// Rows strictly between start and end are taken full-width. Trailing spaces
+/// are trimmed per line. Wide-char spacer cells (`display_width == 0`) are
+/// skipped so double-width characters appear exactly once.
+fn selection_text(snap: &GridSnapshot, start: (usize, usize), end: (usize, usize)) -> String {
+    let mut lines = Vec::new();
+    for (row, cells) in snap.cells.iter().enumerate() {
+        if row < start.0 || row > end.0 {
+            continue;
+        }
+        let c0 = if row == start.0 { start.1 } else { 0 };
+        let c1 = if row == end.0 { end.1 + 1 } else { cells.len() };
+        let mut line = String::new();
+        for (col, cell) in cells.iter().enumerate() {
+            if col < c0 || col >= c1 || cell.display_width == 0 {
+                continue;
+            }
+            line.push(cell.c);
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    lines.join("\n")
+}
+
 pub struct ShogunWindow {
     selected_tab: usize,
     settings_tab: SettingsTab,
@@ -203,6 +254,8 @@ pub struct ShogunWindow {
     /// drawn by the OS composition window at the caret position; we only keep
     /// this for the platform's marked-range queries.
     ime_marked: Option<String>,
+    /// Active mouse selection over one terminal pane's grid, if any.
+    selection: Option<TerminalSelection>,
 }
 
 impl ShogunWindow {
@@ -235,6 +288,7 @@ impl ShogunWindow {
             dragged_paths: None,
             terminal_focus: cx.focus_handle(),
             ime_marked: None,
+            selection: None,
         }
     }
 
@@ -251,6 +305,74 @@ impl ShogunWindow {
     pub(crate) fn send_bytes_to_active(&self, bytes: &[u8]) {
         if let Some(session) = self.active_session() {
             session.send_bytes(bytes);
+        }
+    }
+
+    /// The normalized selection for one pane, or `None` when the selection
+    /// belongs to the other pane or is a collapsed (single-click) selection
+    /// that has already ended.
+    pub(crate) fn selection_range_for(
+        &self,
+        is_shogun: bool,
+    ) -> Option<((usize, usize), (usize, usize))> {
+        let sel = self.selection.as_ref()?;
+        if sel.is_shogun != is_shogun {
+            return None;
+        }
+        Some(sel.normalized())
+    }
+
+    pub(crate) fn begin_selection(&mut self, is_shogun: bool, row: usize, col: usize) {
+        self.selection = Some(TerminalSelection {
+            is_shogun,
+            anchor: (row, col),
+            head: (row, col),
+            dragging: true,
+        });
+    }
+
+    /// Move the selection head while dragging. Returns `true` when it moved.
+    pub(crate) fn update_selection(&mut self, row: usize, col: usize) -> bool {
+        match self.selection.as_mut() {
+            Some(sel) if sel.dragging && sel.head != (row, col) => {
+                sel.head = (row, col);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Finish a drag. A click without movement clears the selection.
+    /// Returns `true` when the visual state changed.
+    pub(crate) fn end_selection(&mut self) -> bool {
+        match self.selection.as_mut() {
+            Some(sel) if sel.dragging => {
+                sel.dragging = false;
+                if sel.anchor == sel.head {
+                    self.selection = None;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Copy the selected cells of the owning pane to the OS clipboard
+    /// (ctrl-shift-c / cmd-c via the `TerminalCopy` action).
+    pub(crate) fn copy_selection(&self, cx: &mut Context<Self>) {
+        let Some(sel) = self.selection.as_ref() else {
+            return;
+        };
+        let session = if sel.is_shogun {
+            self.shogun_session.as_ref()
+        } else {
+            self.multiagent_session.as_ref()
+        };
+        let Some(session) = session else { return };
+        let (start, end) = sel.normalized();
+        let text = selection_text(&session.snapshot.lock(), start, end);
+        if !text.is_empty() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
         }
     }
 
@@ -630,6 +752,7 @@ impl ShogunWindow {
                     scroll_handle,
                     &self.terminal_focus,
                     self.ime_marked.clone(),
+                    self.selection_range_for(is_shogun),
                     is_shogun,
                     &self.terminal_font,
                     cw,
@@ -1390,4 +1513,67 @@ pub fn open_shogun_window(cx: &mut App) {
         },
     )
     .expect("open main window");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal::SnapshotCell;
+
+    fn snap_from_lines(lines: &[&str]) -> GridSnapshot {
+        let cols = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        let mut snap = GridSnapshot::blank(cols, lines.len());
+        for (row, line) in lines.iter().enumerate() {
+            for (col, c) in line.chars().enumerate() {
+                snap.cells[row][col].c = c;
+            }
+        }
+        snap
+    }
+
+    #[test]
+    fn selection_text_single_row_range() {
+        let snap = snap_from_lines(&["hello world"]);
+        assert_eq!(selection_text(&snap, (0, 6), (0, 10)), "world");
+    }
+
+    #[test]
+    fn selection_text_multi_row_takes_middle_rows_full_width() {
+        let snap = snap_from_lines(&["abcde", "fghij", "klmno"]);
+        assert_eq!(selection_text(&snap, (0, 3), (2, 1)), "de\nfghij\nkl");
+    }
+
+    #[test]
+    fn selection_text_trims_trailing_spaces_per_line() {
+        let snap = snap_from_lines(&["ab   ", "cd   "]);
+        assert_eq!(selection_text(&snap, (0, 0), (1, 4)), "ab\ncd");
+    }
+
+    #[test]
+    fn selection_text_skips_wide_char_spacers() {
+        let mut snap = GridSnapshot::blank(4, 1);
+        snap.cells[0][0] = SnapshotCell {
+            c: 'あ',
+            display_width: 2,
+            ..SnapshotCell::blank()
+        };
+        snap.cells[0][1] = SnapshotCell {
+            c: ' ',
+            display_width: 0,
+            ..SnapshotCell::blank()
+        };
+        snap.cells[0][2].c = 'x';
+        assert_eq!(selection_text(&snap, (0, 0), (0, 2)), "あx");
+    }
+
+    #[test]
+    fn selection_normalized_orders_reading_direction() {
+        let sel = TerminalSelection {
+            is_shogun: true,
+            anchor: (5, 2),
+            head: (3, 7),
+            dragging: true,
+        };
+        assert_eq!(sel.normalized(), ((3, 7), (5, 2)));
+    }
 }

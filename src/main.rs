@@ -87,6 +87,19 @@ fn main() {
                 window::TerminalSendBacktab,
                 Some(window::TERMINAL_KEY_CONTEXT),
             ),
+            // Copy the mouse selection. Plain ctrl-c must keep sending SIGINT
+            // to the PTY, so copy lives on the terminal-conventional
+            // ctrl-shift-c (and cmd-c on macOS).
+            gpui::KeyBinding::new(
+                "ctrl-shift-c",
+                window::TerminalCopy,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+            gpui::KeyBinding::new(
+                "cmd-c",
+                window::TerminalCopy,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
         ]);
         open_shogun_window(cx);
     });
