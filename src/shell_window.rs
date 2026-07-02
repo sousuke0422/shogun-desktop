@@ -204,7 +204,7 @@ impl Render for ShellWindow {
                     }
                 }))
                 .p_1()
-                .child(render_grid(&snap, MONO_FONT, cw, ch))
+                .child(render_grid(&snap, MONO_FONT, cw, ch, None))
                 .into_any_element()
         } else {
             div()

@@ -638,8 +638,41 @@ fn paint_box_char(
 /// the active font via [`crate::window::measure_cell_metrics`]
 /// (`cw` = `ch_advance`; `ch` = `font_size × 1.5`).
 /// Fall back to [`CELL_W`] / hardcoded `20.0` when `TextSystem` is unavailable.
-pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl IntoElement {
+/// Selection highlight color: translucent steel blue painted over the row's
+/// ink, so the selected text stays legible underneath.
+const SELECTION_RGBA: u32 = 0x3465a480;
+
+/// Compute the selected column span of one row for an inclusive, linear
+/// (reading-order) selection. Rows strictly between the endpoints are selected
+/// full-width. Returns `None` when the row is outside the selection.
+pub(crate) fn selection_cols_for_row(
+    selection: Option<((usize, usize), (usize, usize))>,
+    row: usize,
+    grid_cols: usize,
+) -> Option<(usize, usize)> {
+    let (start, end) = selection?;
+    if row < start.0 || row > end.0 {
+        return None;
+    }
+    let c0 = if row == start.0 { start.1 } else { 0 };
+    let c1 = if row == end.0 {
+        (end.1 + 1).min(grid_cols)
+    } else {
+        grid_cols
+    };
+    (c0 < c1).then_some((c0, c1))
+}
+
+pub fn render_grid(
+    snap: &GridSnapshot,
+    font: &str,
+    cw: f32,
+    ch: f32,
+    // Normalized inclusive (start, end) cell range of the mouse selection.
+    selection: Option<((usize, usize), (usize, usize))>,
+) -> impl IntoElement {
     let (cursor_row, cursor_col) = snap.cursor;
+    let grid_cols = snap.cols;
     let font_name = font.to_string();
     v_flex()
         .font_family(font.to_string())
@@ -659,6 +692,7 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
             // has no such accumulation.
             let runs: Vec<Run> = coalesce_runs(row, cur_col).collect();
             let total_cols: usize = runs.iter().map(|r| r.width).sum();
+            let sel_cols = selection_cols_for_row(selection, row_idx, grid_cols);
             let font_name = font_name.clone();
 
             canvas(
@@ -786,6 +820,21 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
                             }
                             flush(&mut seg, seg_w, &mut x_off, window, cx);
                         }
+                    }
+
+                    // Mouse-selection highlight: painted last (over this row's
+                    // ink) with a translucent color, so it can never be hidden
+                    // by cell backgrounds and the text stays readable. Painted
+                    // here rather than in the viewport overlay because the row
+                    // canvas already lives in grid coordinates.
+                    if let Some((c0, c1)) = sel_cols {
+                        window.paint_quad(fill(
+                            Bounds {
+                                origin: point(px(ox + c0 as f32 * cw), px(oy)),
+                                size: size(px((c1 - c0) as f32 * cw), px(ch)),
+                            },
+                            rgba(SELECTION_RGBA),
+                        ));
                     }
                 },
             )
@@ -1048,6 +1097,33 @@ mod tests {
         // But box-drawing / block-elements ARE geometry:
         assert!(is_geom_box_char('─')); // U+2500
         assert!(is_geom_box_char('█')); // U+2588
+    }
+
+    #[test]
+    fn selection_cols_none_when_no_selection() {
+        assert_eq!(selection_cols_for_row(None, 3, 80), None);
+    }
+
+    #[test]
+    fn selection_cols_single_row() {
+        let sel = Some(((5, 10), (5, 20)));
+        assert_eq!(selection_cols_for_row(sel, 5, 80), Some((10, 21)));
+        assert_eq!(selection_cols_for_row(sel, 4, 80), None);
+        assert_eq!(selection_cols_for_row(sel, 6, 80), None);
+    }
+
+    #[test]
+    fn selection_cols_multi_row_middle_is_full_width() {
+        let sel = Some(((2, 30), (4, 10)));
+        assert_eq!(selection_cols_for_row(sel, 2, 80), Some((30, 80)));
+        assert_eq!(selection_cols_for_row(sel, 3, 80), Some((0, 80)));
+        assert_eq!(selection_cols_for_row(sel, 4, 80), Some((0, 11)));
+    }
+
+    #[test]
+    fn selection_cols_end_clamped_to_grid_width() {
+        let sel = Some(((0, 0), (0, 200)));
+        assert_eq!(selection_cols_for_row(sel, 0, 80), Some((0, 80)));
     }
 
     #[test]
