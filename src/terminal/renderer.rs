@@ -67,9 +67,10 @@ pub(crate) struct Run {
     /// True when every char in this run is a geometry-rendered box char (U+2500-U+259F).
     /// The renderer uses `canvas` + `paint_quad` for these.
     pub use_geom: bool,
-    /// Per-char display widths for geometry runs (parallel to `text.chars()`).
-    /// Empty for non-geom runs.
-    pub geom_char_widths: Vec<u8>,
+    /// Per-char display widths (parallel to `text.chars()`), for all runs.
+    /// Geometry runs use them for quad sizing; font runs use them to place each
+    /// glyph at its exact grid column (Σ width × cw).
+    pub char_widths: Vec<u8>,
 }
 
 /// Map a resolved terminal color to a GPUI `Rgba`.
@@ -661,7 +662,7 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
                         let chars: Vec<(char, u8)> = run
                             .text
                             .chars()
-                            .zip(run.geom_char_widths.iter().copied())
+                            .zip(run.char_widths.iter().copied())
                             .map(|(c, w)| (c, w))
                             .collect();
                         let fg_cap = fg_rgba;
@@ -693,23 +694,89 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
                         .into_any_element();
                     }
 
-                    // ── Font-rendered text ─────────────────────────────────────
-                    let mut el = div()
-                        .child(run.text)
-                        .w(total_w)
-                        .overflow_hidden()
-                        .font_family(font.to_string())
-                        .text_color(fg_rgba);
-                    if let Some(bg_rgba) = bg_opt {
-                        el = el.bg(bg_rgba);
-                    }
-                    if run.bold {
-                        el = el.font_weight(FontWeight::BOLD);
-                    }
-                    if run.underline {
-                        el = el.underline().text_decoration_1();
-                    }
-                    el.into_any_element()
+                    // ── Font-rendered text: grid-exact glyph placement ─────────
+                    //
+                    // A plain `div().child(text)` lets GPUI's shaper advance each
+                    // glyph by its natural font advance, while the container is
+                    // `cw × columns`. Any difference (cw is snapped to the physical
+                    // pixel ceiling; fallback fonts have different advances)
+                    // accumulates *inside* the run, drifting glyphs off the grid.
+                    // Instead, paint via shape_line:
+                    //   - all-narrow runs: one shape with force_width = cw, which
+                    //     re-pins every glyph to `n × cw`.
+                    //   - runs with wide (2-cell) chars: shape each char separately
+                    //     and paint it at its exact column offset Σ(width × cw).
+                    let text = run.text;
+                    let char_widths = run.char_widths;
+                    let all_narrow = char_widths.iter().all(|&w| w == 1);
+                    let bold = run.bold;
+                    let underline = run.underline;
+                    let font_name = font.to_string();
+                    let cw_cap = cw;
+                    let ch_cap = ch;
+
+                    return canvas(
+                        |_bounds, _window, _cx| (),
+                        move |bounds, (), window, cx: &mut App| {
+                            if let Some(bg) = bg_opt {
+                                window.paint_quad(fill(bounds, bg));
+                            }
+                            let mut run_font = gpui::font(font_name);
+                            if bold {
+                                run_font.weight = FontWeight::BOLD;
+                            }
+                            let fg_hsla: gpui::Hsla = fg_rgba.into();
+                            let underline_style = underline.then_some(gpui::UnderlineStyle {
+                                color: Some(fg_hsla),
+                                thickness: px(1.),
+                                wavy: false,
+                            });
+                            let font_size = px(13.);
+                            let line_height = px(ch_cap);
+
+                            if all_narrow {
+                                let text_run = gpui::TextRun {
+                                    len: text.len(),
+                                    font: run_font,
+                                    color: fg_hsla,
+                                    background_color: None,
+                                    underline: underline_style,
+                                    strikethrough: None,
+                                };
+                                let line = window.text_system().shape_line(
+                                    text.into(),
+                                    font_size,
+                                    &[text_run],
+                                    Some(px(cw_cap)),
+                                );
+                                let _ = line.paint(bounds.origin, line_height, window, cx);
+                            } else {
+                                let mut x = f32::from(bounds.origin.x);
+                                let y = bounds.origin.y;
+                                for (c, w) in text.chars().zip(char_widths.iter().copied()) {
+                                    let text_run = gpui::TextRun {
+                                        len: c.len_utf8(),
+                                        font: run_font.clone(),
+                                        color: fg_hsla,
+                                        background_color: None,
+                                        underline: underline_style,
+                                        strikethrough: None,
+                                    };
+                                    let line = window.text_system().shape_line(
+                                        c.to_string().into(),
+                                        font_size,
+                                        &[text_run],
+                                        None,
+                                    );
+                                    let _ = line.paint(point(px(x), y), line_height, window, cx);
+                                    x += cw_cap * w as f32;
+                                }
+                            }
+                        },
+                    )
+                    .w(total_w)
+                    .h(px(ch))
+                    .into_any_element();
                 }))
         }))
 }
@@ -743,13 +810,10 @@ pub(crate) fn coalesce_runs(
             {
                 last.text.push(cell.c);
                 last.width += w;
-                if use_geom {
-                    last.geom_char_widths.push(w as u8);
-                }
+                last.char_widths.push(w as u8);
                 continue;
             }
         }
-        let geom_char_widths = if use_geom { vec![w as u8] } else { Vec::new() };
         runs.push(Run {
             text: cell.c.to_string(),
             fg: cell.fg,
@@ -759,7 +823,7 @@ pub(crate) fn coalesce_runs(
             underline: cell.underline,
             is_cursor,
             use_geom,
-            geom_char_widths,
+            char_widths: vec![w as u8],
         });
     }
     runs.into_iter()
@@ -913,7 +977,7 @@ mod tests {
         assert!(!runs[0].use_geom);
         assert!(runs[1].use_geom);
         assert!(!runs[2].use_geom);
-        assert_eq!(runs[1].geom_char_widths, vec![2u8]);
+        assert_eq!(runs[1].char_widths, vec![2u8]);
     }
 
     #[test]
@@ -923,7 +987,7 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].text, "──");
         assert_eq!(runs[0].width, 4);
-        assert_eq!(runs[0].geom_char_widths, vec![2u8, 2u8]);
+        assert_eq!(runs[0].char_widths, vec![2u8, 2u8]);
     }
 
     #[test]

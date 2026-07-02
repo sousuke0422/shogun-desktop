@@ -1004,7 +1004,11 @@ impl Render for ShogunWindow {
         //
         // Cell dimensions are measured from the active font via TextSystem::ch_advance
         // (Windows Terminal–style; see measure_cell_metrics).
-        let (cw, ch) = measure_cell_metrics(&cx.text_system(), &self.terminal_font, window.scale_factor());
+        let (cw, ch) = measure_cell_metrics(
+            &cx.text_system(),
+            &self.terminal_font,
+            window.scale_factor(),
+        );
         {
             let vp = window.viewport_size();
             let content_w = vp.width / px(1.);

@@ -360,8 +360,7 @@ impl SshClient {
         match self {
             SshClient::System(c) => c.upload_image(local_path, remote_filename, project_path),
             SshClient::Native(c) => {
-                let remote_path =
-                    format!("{project_path}/queue/screenshots/{remote_filename}");
+                let remote_path = format!("{project_path}/queue/screenshots/{remote_filename}");
                 c.upload_file(local_path, &remote_path)
             }
         }
