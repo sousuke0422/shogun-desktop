@@ -6,11 +6,14 @@ use crate::terminal::pty_session;
 use crate::terminal::renderer::render_grid;
 use crate::terminal::{GridSnapshot, TerminalSession};
 use crate::theme::Colors;
-use crate::window::measure_cell_metrics;
+use crate::window::{
+    TERMINAL_KEY_CONTEXT, TerminalSendBacktab, TerminalSendTab, measure_cell_metrics,
+};
 use gpui::{
-    App, Bounds, Context, IntoElement, KeyDownEvent, ParentElement, Render, ScrollHandle,
-    StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, div, prelude::*, px,
-    size,
+    App, Bounds, Context, ElementInputHandler, FocusHandle, IntoElement, KeyDownEvent,
+    ParentElement, Pixels, Render, ScrollHandle, StatefulInteractiveElement, Styled, TextRun,
+    UTF16Selection, UnderlineStyle, Window, WindowBounds, WindowOptions, canvas, div, point,
+    prelude::*, px, rgba, size,
 };
 use gpui_component::{Root, v_flex};
 use std::sync::atomic::Ordering;
@@ -25,6 +28,12 @@ pub struct ShellWindow {
     last_gen: u64,
     terminal_cols: u16,
     terminal_rows: u16,
+    /// Focus handle for the shell pane; required so an IME input handler can
+    /// be registered (GPUI only routes WM_CHAR / IME composition events to a
+    /// registered input handler on the focused element).
+    terminal_focus: FocusHandle,
+    /// Current IME composition (marked) text; drawn inline at the cursor.
+    ime_marked: Option<String>,
 }
 
 impl ShellWindow {
@@ -38,9 +47,42 @@ impl ShellWindow {
             last_gen: 0,
             terminal_cols: 0,
             terminal_rows: 0,
+            terminal_focus: cx.focus_handle(),
+            ime_marked: None,
         };
         win.connect(cx);
         win
+    }
+
+    fn send_bytes(&self, bytes: &[u8]) {
+        if let Some(s) = &self.session {
+            s.send_bytes(bytes);
+        }
+    }
+
+    /// Handle a key-down aimed at the shell terminal. Returns `true` when the
+    /// key was consumed here (caller stops propagation); `false` when the key
+    /// is left for the platform text-input path (WM_CHAR / IME →
+    /// EntityInputHandler). Same double-input guard as
+    /// `ShogunWindow::handle_terminal_key`.
+    fn handle_key(&mut self, event: &KeyDownEvent) -> bool {
+        let ks = &event.keystroke;
+        if !ks.modifiers.control
+            && !ks.modifiers.alt
+            && !ks.modifiers.platform
+            && ks
+                .key_char
+                .as_ref()
+                .is_some_and(|s| !s.is_empty() && !s.chars().any(char::is_control))
+        {
+            return false;
+        }
+        let bytes = key_to_bytes(ks);
+        if bytes.is_empty() {
+            return false;
+        }
+        self.send_bytes(&bytes);
+        true
     }
 
     fn connect(&mut self, cx: &mut Context<Self>) {
@@ -186,24 +228,89 @@ impl Render for ShellWindow {
         };
 
         let terminal_body: gpui::AnyElement = if let Some(snap) = self.snap() {
+            let focus_handle = self.terminal_focus.clone();
+            let view = cx.entity();
+            let ime_preedit = self.ime_marked.clone();
+            let (cursor_row, cursor_col) = snap.cursor;
+            let grid_rows = snap.rows;
             div()
                 .id("shell-pane")
                 .flex_1()
                 .w_full()
                 .track_scroll(&self.scroll_handle)
                 .overflow_y_scroll()
-                .focusable()
-                // capture_key_down: fires before GPUI action dispatch so built-in
-                // bindings (Enter, arrows, Tab, Escape…) cannot consume the event first.
-                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _win, _cx| {
-                    let bytes = key_to_bytes(&event.keystroke);
-                    if !bytes.is_empty() {
-                        if let Some(s) = &this.session {
-                            s.send_bytes(&bytes);
-                        }
+                // track_focus binds OUR FocusHandle so the IME input handler
+                // below can be registered against the same handle (mirrors
+                // render_terminal_tab).
+                .track_focus(&focus_handle)
+                // Reclaim tab / shift-tab from Root's focus cycling — the
+                // bindings in main.rs target this key context.
+                .key_context(TERMINAL_KEY_CONTEXT)
+                .on_action(cx.listener(|this, _: &TerminalSendTab, _window, _cx| {
+                    this.send_bytes(b"\t");
+                }))
+                .on_action(cx.listener(|this, _: &TerminalSendBacktab, _window, _cx| {
+                    this.send_bytes(b"\x1b[Z");
+                }))
+                // Stop propagation for consumed keys; printable unmodified keys
+                // must keep propagating so the platform generates WM_CHAR for
+                // the input handler (otherwise every char would double).
+                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _win, cx| {
+                    if this.handle_key(event) {
+                        cx.stop_propagation();
                     }
                 }))
                 .p_1()
+                // Overlay: registers the IME input handler and draws the
+                // preedit inline at the cursor (GPUI consumes
+                // WM_IME_COMPOSITION, so the OS never shows its own window).
+                // Same mechanism as render_terminal_tab.
+                .child(
+                    canvas(
+                        |_bounds, _window, _cx| (),
+                        move |bounds, (), window, cx: &mut App| {
+                            window.handle_input(
+                                &focus_handle,
+                                ElementInputHandler::new(bounds, view.clone()),
+                                cx,
+                            );
+
+                            let Some(pre) = ime_preedit.as_ref().filter(|s| !s.is_empty()) else {
+                                return;
+                            };
+                            let grid_h = grid_rows as f32 * ch;
+                            let vp_h = f32::from(bounds.size.height);
+                            let overflow = (grid_h - vp_h).max(0.0);
+                            let x = f32::from(bounds.origin.x) + cursor_col as f32 * cw;
+                            let y = f32::from(bounds.origin.y) + cursor_row as f32 * ch - overflow;
+
+                            let fg: gpui::Hsla = rgba(0xffffffff).into();
+                            let text_run = TextRun {
+                                len: pre.len(),
+                                font: gpui::font(MONO_FONT),
+                                color: fg,
+                                background_color: Some(rgba(0x1e3a5fff).into()),
+                                underline: Some(UnderlineStyle {
+                                    color: Some(fg),
+                                    thickness: px(1.),
+                                    wavy: false,
+                                }),
+                                strikethrough: None,
+                            };
+                            let line = window.text_system().shape_line(
+                                pre.clone().into(),
+                                px(13.),
+                                &[text_run],
+                                None,
+                            );
+                            let origin = point(px(x), px(y));
+                            let _ = line.paint_background(origin, px(ch), window, cx);
+                            let _ = line.paint(origin, px(ch), window, cx);
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
                 .child(render_grid(&snap, MONO_FONT, cw, ch, None))
                 .into_any_element()
         } else {
@@ -230,6 +337,115 @@ impl Render for ShellWindow {
                     .child(status_text),
             )
             .child(div().flex_1().overflow_hidden().child(terminal_body))
+    }
+}
+
+/// IME / text-input integration — the shell window counterpart of
+/// `ShogunWindow`'s impl. A terminal has no editable document: committed text
+/// goes to the PTY, the preedit is drawn inline at the cursor, and all
+/// document queries answer "empty".
+impl gpui::EntityInputHandler for ShellWindow {
+    fn text_for_range(
+        &mut self,
+        _range: std::ops::Range<usize>,
+        _adjusted_range: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        // A zero-width caret; required so the platform can query the caret
+        // rect (bounds_for_range) to position the IME candidate window.
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        self.ime_marked
+            .as_ref()
+            .map(|s| 0..s.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.ime_marked = None;
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ime_marked = None;
+        self.send_bytes(text.as_bytes());
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ime_marked = Some(new_text.to_string());
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: std::ops::Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let session = self.session.as_ref()?;
+        let snap = session.snapshot.lock();
+        let (row, col) = snap.cursor;
+        let rows = snap.rows;
+        drop(snap);
+
+        let (cw, ch) = measure_cell_metrics(&cx.text_system(), MONO_FONT, window.scale_factor());
+
+        // The grid is bottom-anchored in its scroll viewport when it is taller
+        // than the visible area (auto scroll-to-bottom), so shift the caret up
+        // by the overflow.
+        let grid_h = rows as f32 * ch;
+        let viewport_h = f32::from(element_bounds.size.height);
+        let scroll_overflow = (grid_h - viewport_h).max(0.0);
+
+        Some(Bounds {
+            origin: point(
+                element_bounds.origin.x + px(col as f32 * cw),
+                element_bounds.origin.y + px(row as f32 * ch - scroll_overflow),
+            ),
+            size: size(px(cw), px(ch)),
+        })
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: gpui::Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
     }
 }
 
