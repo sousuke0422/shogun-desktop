@@ -696,6 +696,14 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
                             continue;
                         }
 
+                        // Blank runs (all spaces, no decoration) have no ink at
+                        // all — bg is already painted above. Most of a terminal
+                        // grid is blank, so skipping the shape+paint here is the
+                        // single biggest per-frame saving.
+                        if !run.underline && run.text.bytes().all(|b| b == b' ') {
+                            continue;
+                        }
+
                         // ── Font-rendered text: grid-exact glyph placement ─────
                         //
                         // Flowing text through a div lets the shaper advance each
@@ -703,8 +711,10 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
                         // `cw`-snapped grid. Instead, paint via shape_line:
                         //   - all-narrow runs: one shape with force_width = cw,
                         //     which re-pins every glyph to `n × cw`.
-                        //   - runs with wide (2-cell) chars: shape each char
-                        //     separately and paint it at Σ(display_width × cw).
+                        //   - mixed-width runs: split into maximal segments of
+                        //     uniform display width and shape each segment once
+                        //     with force_width = width × cw (glyph n of an
+                        //     all-wide segment belongs at n × 2cw).
                         let mut run_font = gpui::font(font_name.clone());
                         if run.bold {
                             run_font.weight = FontWeight::BOLD;
@@ -734,10 +744,23 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
                             );
                             let _ = line.paint(point(px(x), px(oy)), line_height, window, cx);
                         } else {
+                            // Maximal segments of uniform display width, one
+                            // shape_line each: glyph n of an all-wide segment
+                            // belongs at n × 2cw, so force_width still applies.
                             let mut x_off = x;
-                            for (c, w) in run.text.chars().zip(run.char_widths.iter().copied()) {
+                            let mut seg = String::new();
+                            let mut seg_w = 0u8;
+                            let flush = |seg: &mut String,
+                                         seg_w: u8,
+                                         x_off: &mut f32,
+                                         window: &mut Window,
+                                         cx: &mut App| {
+                                if seg.is_empty() {
+                                    return;
+                                }
+                                let cells = seg.chars().count() as f32 * seg_w as f32;
                                 let text_run = gpui::TextRun {
-                                    len: c.len_utf8(),
+                                    len: seg.len(),
                                     font: run_font.clone(),
                                     color: fg_hsla,
                                     background_color: None,
@@ -745,15 +768,23 @@ pub fn render_grid(snap: &GridSnapshot, font: &str, cw: f32, ch: f32) -> impl In
                                     strikethrough: None,
                                 };
                                 let line = window.text_system().shape_line(
-                                    c.to_string().into(),
+                                    std::mem::take(seg).into(),
                                     font_size,
                                     &[text_run],
-                                    None,
+                                    Some(px(cw * seg_w as f32)),
                                 );
                                 let _ =
-                                    line.paint(point(px(x_off), px(oy)), line_height, window, cx);
-                                x_off += cw * w as f32;
+                                    line.paint(point(px(*x_off), px(oy)), line_height, window, cx);
+                                *x_off += cw * cells;
+                            };
+                            for (c, w) in run.text.chars().zip(run.char_widths.iter().copied()) {
+                                if w != seg_w {
+                                    flush(&mut seg, seg_w, &mut x_off, window, cx);
+                                    seg_w = w;
+                                }
+                                seg.push(c);
                             }
+                            flush(&mut seg, seg_w, &mut x_off, window, cx);
                         }
                     }
                 },
