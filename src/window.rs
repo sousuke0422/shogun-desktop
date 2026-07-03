@@ -35,6 +35,13 @@ const TAB_LABELS: [&str; 6] = ["将軍", "エージェント", "戦況", "設定
 /// keys Root binds globally (tab / shift-tab focus cycling).
 pub const TERMINAL_KEY_CONTEXT: &str = "ShogunTerminal";
 
+/// Vertical padding of the terminal scroll pane (`.p_1()` = 4px top + 4px
+/// bottom). Must be subtracted when computing the grid row count: otherwise
+/// the grid + padding overflows the pane by up to 8px whenever
+/// `available_height % cell_height < 8`, and `overflow_y_scroll` turns that
+/// remainder into a spurious few-pixel scroll range.
+pub const TERMINAL_PANE_PADDING_PX: f32 = 8.0;
+
 gpui::actions!(
     shogun_terminal,
     [TerminalSendTab, TerminalSendBacktab, TerminalCopy]
@@ -1092,7 +1099,7 @@ impl Render for ShogunWindow {
         {
             let vp = window.viewport_size();
             let content_w = vp.width / px(1.);
-            let content_h = ((vp.height / px(1.)) - 104.0).max(ch);
+            let content_h = ((vp.height / px(1.)) - 104.0 - TERMINAL_PANE_PADDING_PX).max(ch);
             let new_cols = (content_w / cw) as u16;
             let new_rows = (content_h / ch) as u16;
 

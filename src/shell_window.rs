@@ -9,7 +9,8 @@ use crate::terminal::selection::{self, SelectionHost, SelectionState};
 use crate::terminal::{GridSnapshot, TerminalSession};
 use crate::theme::Colors;
 use crate::window::{
-    TERMINAL_KEY_CONTEXT, TerminalCopy, TerminalSendBacktab, TerminalSendTab, measure_cell_metrics,
+    TERMINAL_KEY_CONTEXT, TERMINAL_PANE_PADDING_PX, TerminalCopy, TerminalSendBacktab,
+    TerminalSendTab, measure_cell_metrics,
 };
 use gpui::{
     App, Bounds, Context, ElementInputHandler, Entity, FocusHandle, IntoElement, KeyDownEvent,
@@ -187,7 +188,8 @@ impl Render for ShellWindow {
         {
             let vp = window.viewport_size();
             let new_cols = ((vp.width / px(1.)) / cw) as u16;
-            let new_rows = (((vp.height / px(1.)) - 24.0).max(ch) / ch) as u16;
+            let new_rows =
+                (((vp.height / px(1.)) - 24.0 - TERMINAL_PANE_PADDING_PX).max(ch) / ch) as u16;
 
             let needs = |s: &Option<TerminalSession>| {
                 s.as_ref().map_or(false, |sess| {
