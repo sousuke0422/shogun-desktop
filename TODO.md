@@ -11,7 +11,7 @@
       `shell_window.rs` の `on_scroll_wheel` で `lines` を符号反転するだけ
 - [ ] ssh 系ペインの微スクロールが消えたか — **padding 修正では消えず（2026-07-03 実機NG）**。
       再修正済み: クローム高さ推定(104px/24px)を廃し、overlay canvas の実測 bounds から
-      rows/cols を導出（40cdbe7）。要再検証
+      rows/cols を導出（dd23b4e）。要再検証
 - [ ] アイドル時 CPU がほぼ 0%（16ms ポーリング全廃・イベント駆動化）
 - [ ] shell window: 履歴スクロール／ステータスバー「履歴 N行上」／キー入力で最下部復帰
 - [ ] shell window: Shift+PageUp/PageDown ページング
@@ -60,7 +60,7 @@ Air は 60Hz（ProMotion なし）→ 省電力側の検証機。
 - [ ] **push**: `git push --force-with-lease origin master`（殿実行、workflow scope 必要）。
       **2026-07-03 に全履歴を書換済み**（`Users\aki`→`Users\dev` 匿名化、fast-export/import
       同一長置換）— push 済み分も含め全ハッシュが変わったため通常 push 不可。
-      過去メモの旧ハッシュ(556a554/db57378 等)は新履歴では引けない（件名で探す）
+      過去メモの旧ハッシュ参照は 2026-07-04 に新ハッシュへ付替済み
 - [ ] **shogun-suite を GitHub に新規作成して push**（remote 未設定のローカル repo。
       public 推奨 = CI が素の github.token で checkout 可。private なら
       shogun-desktop 側に `SUITE_CHECKOUT_TOKEN` secret 登録）
