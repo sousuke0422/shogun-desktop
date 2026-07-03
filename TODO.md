@@ -57,8 +57,10 @@ Air は 60Hz（ProMotion なし）→ 省電力側の検証機。
 
 ## 4. リリース / インフラ（殿の作業を含む）
 
-- [ ] **push**: master が origin より 16 コミット先行（殿実行、workflow scope 必要 —
-      ci.yml 変更を含む）
+- [ ] **push**: `git push --force-with-lease origin master`（殿実行、workflow scope 必要）。
+      **2026-07-03 に全履歴を書換済み**（`Users\aki`→`Users\dev` 匿名化、fast-export/import
+      同一長置換）— push 済み分も含め全ハッシュが変わったため通常 push 不可。
+      過去メモの旧ハッシュ(556a554/db57378 等)は新履歴では引けない（件名で探す）
 - [ ] **shogun-suite を GitHub に新規作成して push**（remote 未設定のローカル repo。
       public 推奨 = CI が素の github.token で checkout 可。private なら
       shogun-desktop 側に `SUITE_CHECKOUT_TOKEN` secret 登録）
