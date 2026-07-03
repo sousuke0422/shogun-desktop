@@ -57,9 +57,8 @@ Air は 60Hz（ProMotion なし）→ 省電力側の検証機。
 
 ## 4. リリース / インフラ（殿の作業を含む）
 
-- [ ] **push**: `git push --force-with-lease origin master`（殿実行、workflow scope 必要）。
-      **2026-07-03 に全履歴を書換済み**（`Users\aki`→`Users\dev` 匿名化、fast-export/import
-      同一長置換）— push 済み分も含め全ハッシュが変わったため通常 push 不可。
+- [x] **push**: 2026-07-04 完了（Windows git で `--force-with-lease`、61c2b38）。
+      匿名化履歴（`Users\aki`→`Users\dev`）が origin に反映済み。
       過去メモの旧ハッシュ参照は 2026-07-04 に新ハッシュへ付替済み
 - [ ] **shogun-suite を GitHub に新規作成して push**（remote 未設定のローカル repo。
       public 推奨 = CI が素の github.token で checkout 可。private なら
