@@ -1,0 +1,12 @@
+[package]
+name = "shogun-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yml = "0.0.12"
+
+[dev-dependencies]
+tempfile = "3"
