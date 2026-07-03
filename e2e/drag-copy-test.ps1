@@ -126,8 +126,18 @@ $bmp.Dispose()
 Write-Output "SCREENSHOT=$ScreenshotPath"
 
 # Keys go to the foreground window; bail if the click didn't focus the app.
+# The user's active window (e.g. the terminal driving this script) can win the
+# focus race after the synthetic click, so re-assert foreground once before
+# giving up, and name the thief in the failure message.
 if ([E2E]::GetForegroundWindow() -ne $script:hwnd) {
-    Write-Output 'FAIL: app lost foreground before keystrokes'
+    [E2E]::SetForegroundWindow($script:hwnd) | Out-Null
+    Start-Sleep -Milliseconds 500
+}
+if ([E2E]::GetForegroundWindow() -ne $script:hwnd) {
+    $fg = [E2E]::GetForegroundWindow()
+    $sb = New-Object System.Text.StringBuilder 256
+    [E2E]::GetWindowText($fg, $sb, 256) | Out-Null
+    Write-Output "FAIL: app lost foreground before keystrokes (foreground='$($sb.ToString())')"
     Stop-App
     exit 1
 }
