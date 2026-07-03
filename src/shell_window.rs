@@ -14,8 +14,8 @@ use crate::window::{
 };
 use gpui::{
     App, Bounds, Context, ElementInputHandler, Entity, FocusHandle, IntoElement, KeyDownEvent,
-    ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Window, WindowBounds,
-    WindowOptions, canvas, div, prelude::*, px, size,
+    ParentElement, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement,
+    Styled, Window, WindowBounds, WindowOptions, canvas, div, prelude::*, px, size,
 };
 use gpui_component::{Root, v_flex};
 use std::sync::atomic::Ordering;
@@ -38,6 +38,9 @@ pub struct ShellWindow {
     ime: Entity<TerminalIme<Self>>,
     /// Shared mouse-selection state (see `terminal::selection`).
     selection: SelectionState,
+    /// Fractional wheel-scroll remainder so slow touchpad deltas (< 1 line
+    /// per event) still accumulate into scrollback lines.
+    scroll_accum: f32,
 }
 
 impl SelectionHost for ShellWindow {
@@ -73,6 +76,7 @@ impl ShellWindow {
             terminal_focus: cx.focus_handle(),
             ime,
             selection: SelectionState::default(),
+            scroll_accum: 0.0,
         };
         win.connect(cx);
         win
@@ -80,6 +84,9 @@ impl ShellWindow {
 
     fn send_bytes(&self, bytes: &[u8]) {
         if let Some(s) = &self.session {
+            // Typing snaps the view back to the live bottom, like every
+            // terminal emulator.
+            s.scroll_display_to_bottom();
             s.send_bytes(bytes);
         }
     }
@@ -226,15 +233,19 @@ impl Render for ShellWindow {
         } else {
             Colors::kurenai()
         };
+        let snap_opt = self.snap();
+        let scrollback = snap_opt.as_ref().map_or(0, |s| s.display_offset);
         let status_text = if let Some(ref e) = self.error {
             e.clone()
+        } else if scrollback > 0 {
+            format!("シェル — 履歴 {scrollback}行上（入力で最下部へ）")
         } else if is_connected {
             "シェル — 接続中".into()
         } else {
             "未接続".into()
         };
 
-        let terminal_body: gpui::AnyElement = if let Some(snap) = self.snap() {
+        let terminal_body: gpui::AnyElement = if let Some(snap) = snap_opt {
             let focus_handle = self.terminal_focus.clone();
             let ime = self.ime.clone();
             let ime_preedit = self.ime.read(cx).marked.clone();
@@ -268,11 +279,42 @@ impl Render for ShellWindow {
                 // must keep propagating so the platform generates WM_CHAR for
                 // the input handler (otherwise every char would double).
                 .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _win, cx| {
-                    if let Some(bytes) = key_to_pty_bytes(&event.keystroke) {
+                    let ks = &event.keystroke;
+                    // Shift+PageUp/PageDown: page through the scrollback.
+                    if ks.modifiers.shift && (ks.key == "pageup" || ks.key == "pagedown") {
+                        if let Some(s) = &this.session {
+                            let page = s.rows.load(Ordering::Relaxed).saturating_sub(1) as i32;
+                            s.scroll_display(if ks.key == "pageup" { page } else { -page });
+                        }
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if let Some(bytes) = key_to_pty_bytes(ks) {
                         this.send_bytes(&bytes);
                         cx.stop_propagation();
                     }
                 }))
+                // Wheel scrolls the emulator's scrollback (alacritty history),
+                // not the gpui container: after the padding fix the grid fits
+                // the pane exactly, so the container has nothing to scroll.
+                // gpui wheel-up yields positive y (Zed's terminal does the
+                // same direct mapping); Scroll::Delta(positive) = older lines.
+                .on_scroll_wheel(
+                    cx.listener(move |this, event: &ScrollWheelEvent, _win, _cx| {
+                        let lines = match &event.delta {
+                            ScrollDelta::Pixels(p) => (p.y / px(1.)) / ch,
+                            ScrollDelta::Lines(l) => l.y,
+                        };
+                        this.scroll_accum += lines;
+                        let whole = this.scroll_accum.trunc() as i32;
+                        if whole != 0 {
+                            this.scroll_accum -= whole as f32;
+                            if let Some(s) = &this.session {
+                                s.scroll_display(whole);
+                            }
+                        }
+                    }),
+                )
                 .p_1()
                 // Overlay: registers the IME input handler (GPUI only routes
                 // WM_CHAR / IME composition to a registered handler) and the

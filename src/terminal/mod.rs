@@ -103,6 +103,40 @@ impl TerminalSession {
         let _ = self.writer.lock().write_all(bytes);
     }
 
+    /// Scroll the emulator's display window into the scrollback history
+    /// (positive = older content) and refresh the snapshot immediately —
+    /// the reader thread only refreshes it on PTY output.
+    pub fn scroll_display(&self, delta: i32) {
+        use alacritty_terminal::grid::Scroll;
+        if delta == 0 {
+            return;
+        }
+        let mut t = self.term.lock();
+        let before = t.grid().display_offset();
+        t.scroll_display(Scroll::Delta(delta));
+        if t.grid().display_offset() == before {
+            return; // already clamped at top/bottom — nothing to repaint
+        }
+        *self.snapshot.lock() = take_snapshot(&t);
+        drop(t);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.notify.notify_one();
+    }
+
+    /// Snap the display window back to the live view (bottom).
+    pub fn scroll_display_to_bottom(&self) {
+        use alacritty_terminal::grid::Scroll;
+        let mut t = self.term.lock();
+        if t.grid().display_offset() == 0 {
+            return;
+        }
+        t.scroll_display(Scroll::Bottom);
+        *self.snapshot.lock() = take_snapshot(&t);
+        drop(t);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.notify.notify_one();
+    }
+
     /// Resize the terminal to the given dimensions.
     ///
     /// This updates the internal `alacritty_terminal::Term` geometry **and**
@@ -133,6 +167,8 @@ pub struct GridSnapshot {
     pub cells: Vec<Vec<SnapshotCell>>,
     #[allow(dead_code)]
     pub cursor: (usize, usize),
+    /// Lines scrolled back into history (0 = live view at the bottom).
+    pub display_offset: usize,
 }
 
 impl GridSnapshot {
@@ -142,6 +178,7 @@ impl GridSnapshot {
             rows,
             cells: vec![vec![SnapshotCell::blank(); cols]; rows],
             cursor: (0, 0),
+            display_offset: 0,
         }
     }
 }
@@ -219,6 +256,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         rows,
         cells,
         cursor: (cur.line.0 as usize, cur.column.0),
+        display_offset: term.grid().display_offset(),
     }
 }
 
