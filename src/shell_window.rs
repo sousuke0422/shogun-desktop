@@ -379,7 +379,8 @@ impl Render for ShellWindow {
                 .into_any_element()
         };
 
-        v_flex()
+        // Root carries the bundled-emoji fallback (see renderer::with_emoji_fallback).
+        crate::terminal::renderer::with_emoji_fallback(v_flex())
             .size_full()
             .bg(Colors::shikkoku())
             .child(

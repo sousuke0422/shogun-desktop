@@ -1275,7 +1275,9 @@ impl Render for ShogunWindow {
                 .into_any_element(),
         };
 
-        div()
+        // Root carries the bundled-emoji fallback so every descendant text
+        // run (UI chrome included) resolves emoji to the embedded font.
+        crate::terminal::renderer::with_emoji_fallback(div())
             .size_full()
             .flex()
             .flex_col()

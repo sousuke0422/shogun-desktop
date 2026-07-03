@@ -34,3 +34,13 @@ Windows Terminal project's custom glyph rendering implementation.
     PR #5743  — Scale box drawing glyphs to fit cells (BoxDrawingEffect)
     PR #13549 — AtlasEngine: scale glyphs to fit cell size
     PR #16729 — Custom box drawing and powerline glyphs (geometry LUT)
+
+## Emoji Font
+
+Bundled color emoji font (rendered identically on every OS the app runs on).
+
+  Twemoji Mozilla (Twemoji.Mozilla.ttf, COLRv0/CPAL build)
+  Font build: Copyright (c) Mozilla — https://github.com/mozilla/twemoji-colr
+  Emoji artwork: Copyright (c) Twitter, Inc and other contributors
+  Artwork licensed under CC-BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+  Font code licensed under the Apache License, Version 2.0

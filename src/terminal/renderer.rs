@@ -28,6 +28,30 @@ pub fn cell_width_for_font(font: &str) -> f32 {
     }
 }
 
+/// Family name of the bundled color emoji font (see `main.rs` / CREDITS).
+pub const EMOJI_FONT: &str = "Twemoji Mozilla";
+
+/// Build the terminal font with the bundled emoji fallback attached, so emoji
+/// resolve to the same (embedded) glyphs on every OS instead of the platform
+/// emoji font. gpui inserts user fallbacks ahead of the system fallback chain
+/// on both DirectWrite and CoreText.
+pub fn terminal_font(family: &str) -> gpui::Font {
+    let mut f = gpui::font(family.to_string());
+    f.fallbacks = Some(gpui::FontFallbacks::from_fonts(vec![EMOJI_FONT.into()]));
+    f
+}
+
+/// Attach the bundled emoji fallback to an element's inherited text style, so
+/// UI chrome (buttons, status bars, tab labels) renders emoji with the same
+/// embedded glyphs as the terminal grid. Only the fallback list is touched —
+/// family/size/weight keep cascading as before.
+pub fn with_emoji_fallback<E: gpui::Styled>(mut el: E) -> E {
+    el.text_style()
+        .get_or_insert_with(Default::default)
+        .font_fallbacks = Some(gpui::FontFallbacks::from_fonts(vec![EMOJI_FONT.into()]));
+    el
+}
+
 /// Returns `true` for Unicode code-points rendered as geometry (box drawing + block
 /// elements).  Characters in this range are drawn as filled quads by
 /// [`paint_box_char`], eliminating any font-metric dependency.
@@ -759,7 +783,7 @@ pub fn render_grid(
                         //     uniform display width and shape each segment once
                         //     with force_width = width × cw (glyph n of an
                         //     all-wide segment belongs at n × 2cw).
-                        let mut run_font = gpui::font(font_name.clone());
+                        let mut run_font = terminal_font(&font_name);
                         if run.bold {
                             run_font.weight = FontWeight::BOLD;
                         }
@@ -854,7 +878,7 @@ pub fn render_grid(
                         let fg: gpui::Hsla = rgba(0xffffffff).into();
                         let text_run = gpui::TextRun {
                             len: pre.len(),
-                            font: gpui::font(font_name.clone()),
+                            font: terminal_font(&font_name),
                             color: fg,
                             background_color: Some(rgba(0x1e3a5fff).into()),
                             underline: Some(gpui::UnderlineStyle {
