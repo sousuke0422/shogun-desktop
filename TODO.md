@@ -9,7 +9,9 @@
 
 - [ ] **ホイール方向の符号** — gpui wheel-up=正 前提で直結マッピング。逆なら
       `shell_window.rs` の `on_scroll_wheel` で `lines` を符号反転するだけ
-- [ ] ssh 系ペインの微スクロールが消えたか（pane padding 勘定漏れ修正）
+- [ ] ssh 系ペインの微スクロールが消えたか — **padding 修正では消えず（2026-07-03 実機NG）**。
+      再修正済み: クローム高さ推定(104px/24px)を廃し、overlay canvas の実測 bounds から
+      rows/cols を導出（40cdbe7）。要再検証
 - [ ] アイドル時 CPU がほぼ 0%（16ms ポーリング全廃・イベント駆動化）
 - [ ] shell window: 履歴スクロール／ステータスバー「履歴 N行上」／キー入力で最下部復帰
 - [ ] shell window: Shift+PageUp/PageDown ページング
