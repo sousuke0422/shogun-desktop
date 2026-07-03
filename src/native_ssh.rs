@@ -272,10 +272,22 @@ impl NativeSshClient {
             }
         });
 
-        let writer = ChannelSyncWriter {
-            write_half: Arc::clone(&write_half_arc),
-            rt: Arc::clone(&self.rt),
-        };
+        // Drain task: serializes writes to the channel off the UI thread.
+        // Keystroke ordering is preserved by the queue; a network stall only
+        // delays delivery instead of freezing the caller.
+        let (wtx, mut wrx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let write_half_for_writer = Arc::clone(&write_half_arc);
+        self.rt.spawn(async move {
+            while let Some(data) = wrx.recv().await {
+                let guard = write_half_for_writer.lock().await;
+                let mut writer = guard.make_writer();
+                if writer.write_all(&data).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let writer = ChannelSyncWriter { tx: wtx };
         let resizer = NativeResizer {
             write_half: write_half_arc,
             rt: Arc::clone(&self.rt),
@@ -332,7 +344,14 @@ impl NativeSshClient {
     }
 
     async fn connect_async(&self) -> Result<client::Handle<ShogunHandler>> {
-        let config = Arc::new(client::Config::default());
+        // Keepalive keeps the (tailscale/NAT) path warm so the first write
+        // after an idle period doesn't stall on path re-establishment, and a
+        // dead connection is detected instead of hanging silently.
+        let config = Arc::new(client::Config {
+            keepalive_interval: Some(std::time::Duration::from_secs(15)),
+            keepalive_max: 3,
+            ..client::Config::default()
+        });
         let handler = ShogunHandler::new(&self.host, self.port, self.accept_all_host_keys);
         let mut handle = if let Some(ref proxy_cmd) = self.proxy_command {
             let expanded = proxy_cmd
@@ -441,9 +460,13 @@ impl Read for MpscChannelReader {
     }
 }
 
+/// Non-blocking channel writer: `write` only enqueues; a runtime task drains
+/// the queue to the SSH channel. The UI thread calls `write` on every
+/// keystroke, so it must NEVER wait on the network — a stalled connection
+/// (e.g. tailscale re-establishing its path after idle) used to freeze the
+/// whole window for the duration of the stall.
 struct ChannelSyncWriter {
-    write_half: Arc<Mutex<ChannelWriteHalf<client::Msg>>>,
-    rt: Arc<tokio::runtime::Runtime>,
+    tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 impl Write for ChannelSyncWriter {
@@ -451,14 +474,9 @@ impl Write for ChannelSyncWriter {
         if buf.is_empty() {
             return Ok(0);
         }
-        let data = buf.to_vec();
-        self.rt
-            .block_on(async {
-                let guard = self.write_half.lock().await;
-                let mut writer = guard.make_writer();
-                writer.write_all(&data).await
-            })
-            .map_err(|e| io::Error::other(e.to_string()))?;
+        self.tx
+            .send(buf.to_vec())
+            .map_err(|_| io::Error::other("SSH書込タスクが終了済み"))?;
         Ok(buf.len())
     }
 
@@ -470,7 +488,9 @@ impl Write for ChannelSyncWriter {
 /// PTY resizer for the native russh backend.
 ///
 /// Sends an SSH `window-change` request on the existing channel so that the
-/// remote pty (and tmux) can reflow to the new dimensions.
+/// remote pty (and tmux) can reflow to the new dimensions. Fire-and-forget:
+/// resize is called from the render path (UI thread), which must not block
+/// on the network for the same reason as `ChannelSyncWriter`.
 struct NativeResizer {
     write_half: Arc<Mutex<ChannelWriteHalf<client::Msg>>>,
     rt: Arc<tokio::runtime::Runtime>,
@@ -479,13 +499,11 @@ struct NativeResizer {
 impl PtyResizer for NativeResizer {
     fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
         let write_half = Arc::clone(&self.write_half);
-        self.rt.block_on(async move {
+        self.rt.spawn(async move {
             let guard = write_half.lock().await;
-            guard
-                .window_change(cols as u32, rows as u32, 0, 0)
-                .await
-                .map_err(|e| anyhow::anyhow!("SSH window_change failed: {:?}", e))
-        })
+            let _ = guard.window_change(cols as u32, rows as u32, 0, 0).await;
+        });
+        Ok(())
     }
 }
 
