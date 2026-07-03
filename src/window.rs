@@ -24,6 +24,8 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
@@ -226,6 +228,12 @@ pub struct ShogunWindow {
     ime: gpui::Entity<TerminalIme<Self>>,
     /// Shared mouse-selection state (see `terminal::selection`).
     selection: SelectionState,
+    /// Terminal-pane size actually painted (logical px, padding box),
+    /// reported by the pane's overlay canvas. `(0, 0)` until the first
+    /// paint; `render` derives rows/cols from this instead of estimating
+    /// chrome heights (the estimate drifting even 1px past the padding
+    /// made the pane scrollable — the "micro-scroll" bug).
+    pane_measured: Rc<Cell<(f32, f32)>>,
 }
 
 impl SelectionHost for ShogunWindow {
@@ -277,6 +285,7 @@ impl ShogunWindow {
             terminal_focus: cx.focus_handle(),
             ime,
             selection: SelectionState::default(),
+            pane_measured: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
 
@@ -693,6 +702,7 @@ impl ShogunWindow {
                     &self.terminal_font,
                     cw,
                     ch,
+                    self.pane_measured.clone(),
                     cx,
                 )
                 .into_any_element()
@@ -1121,10 +1131,25 @@ impl Render for ShogunWindow {
         );
         {
             let vp = window.viewport_size();
-            let content_w = vp.width / px(1.);
-            let content_h = ((vp.height / px(1.)) - 104.0 - TERMINAL_PANE_PADDING_PX).max(ch);
-            let new_cols = (content_w / cw) as u16;
-            let new_rows = (content_h / ch) as u16;
+            // Prefer the pane size the overlay canvas actually painted —
+            // exact regardless of chrome heights, borders or DPI rounding.
+            // It is the pane's padding box (`size_full` on an absolute child
+            // resolves against container minus border), so subtract the
+            // padding. The chrome-height estimate only covers the first
+            // frame, before anything has painted.
+            let (mw, mh) = self.pane_measured.get();
+            let content_w = if mw > 0.0 {
+                mw - TERMINAL_PANE_PADDING_PX
+            } else {
+                vp.width / px(1.)
+            };
+            let content_h = if mh > 0.0 {
+                (mh - TERMINAL_PANE_PADDING_PX).max(ch)
+            } else {
+                ((vp.height / px(1.)) - 104.0 - TERMINAL_PANE_PADDING_PX).max(ch)
+            };
+            let new_cols = ((content_w / cw) as u16).max(1);
+            let new_rows = ((content_h / ch) as u16).max(1);
 
             // Resize whenever the viewport changes OR when a session was just
             // started and its recorded size doesn't yet match the target.

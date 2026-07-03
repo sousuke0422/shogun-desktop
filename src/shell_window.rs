@@ -41,6 +41,10 @@ pub struct ShellWindow {
     /// Fractional wheel-scroll remainder so slow touchpad deltas (< 1 line
     /// per event) still accumulate into scrollback lines.
     scroll_accum: f32,
+    /// Pane size actually painted (logical px, padding box), reported by the
+    /// overlay canvas. `(0, 0)` until the first paint; `render` derives
+    /// rows from this instead of estimating the status-bar height.
+    pane_measured: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
 }
 
 impl SelectionHost for ShellWindow {
@@ -77,6 +81,7 @@ impl ShellWindow {
             ime,
             selection: SelectionState::default(),
             scroll_accum: 0.0,
+            pane_measured: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
         };
         win.connect(cx);
         win
@@ -201,9 +206,21 @@ impl Render for ShellWindow {
         let (cw, ch) = measure_cell_metrics(&cx.text_system(), MONO_FONT, window.scale_factor());
         {
             let vp = window.viewport_size();
-            let new_cols = ((vp.width / px(1.)) / cw) as u16;
-            let new_rows =
-                (((vp.height / px(1.)) - 24.0 - TERMINAL_PANE_PADDING_PX).max(ch) / ch) as u16;
+            // Prefer the painted pane size (padding box — subtract the
+            // padding); estimate chrome only for the first, pre-paint frame.
+            let (mw, mh) = self.pane_measured.get();
+            let content_w = if mw > 0.0 {
+                mw - TERMINAL_PANE_PADDING_PX
+            } else {
+                vp.width / px(1.)
+            };
+            let content_h = if mh > 0.0 {
+                (mh - TERMINAL_PANE_PADDING_PX).max(ch)
+            } else {
+                ((vp.height / px(1.)) - 24.0 - TERMINAL_PANE_PADDING_PX).max(ch)
+            };
+            let new_cols = ((content_w / cw) as u16).max(1);
+            let new_rows = ((content_h / ch) as u16).max(1);
 
             let needs = |s: &Option<TerminalSession>| {
                 s.as_ref().map_or(false, |sess| {
@@ -251,6 +268,7 @@ impl Render for ShellWindow {
             let ime_preedit = self.ime.read(cx).marked.clone();
             let view = cx.entity();
             let scroll_for_overlay = self.scroll_handle.clone();
+            let pane_measured = self.pane_measured.clone();
             let grid_rows = snap.rows;
             let grid_cols = snap.cols;
             div()
@@ -349,6 +367,17 @@ impl Render for ShellWindow {
                     canvas(
                         |_bounds, _window, _cx| (),
                         move |bounds, (), window, cx: &mut App| {
+                            // Report the painted pane size back to the view
+                            // (deferred notify — we are inside paint) so the
+                            // PTY is resized to the true fit.
+                            let painted = (bounds.size.width / px(1.), bounds.size.height / px(1.));
+                            let (pw, ph) = pane_measured.get();
+                            if (pw - painted.0).abs() > 0.5 || (ph - painted.1).abs() > 0.5 {
+                                pane_measured.set(painted);
+                                let view = view.clone();
+                                cx.defer(move |cx| view.update(cx, |_, cx| cx.notify()));
+                            }
+
                             window.handle_input(
                                 &focus_handle,
                                 ElementInputHandler::new(bounds, ime.clone()),

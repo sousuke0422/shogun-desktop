@@ -39,6 +39,9 @@ pub fn render_terminal_tab(
     cw: f32,
     // Cell height in logical pixels — measured via `ascent + descent`.
     ch: f32,
+    // Written back with the pane's painted size (padding box) each frame so
+    // the view derives rows/cols from reality instead of a chrome estimate.
+    pane_measured: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
     cx: &mut Context<ShogunWindow>,
 ) -> impl IntoElement {
     let scroll_handle = scroll_handle.clone();
@@ -140,6 +143,17 @@ pub fn render_terminal_tab(
                 canvas(
                     |_bounds, _window, _cx| (),
                     move |bounds, (), window, cx: &mut App| {
+                        // Report the painted pane size back to the view.
+                        // A change re-renders (deferred — we are inside
+                        // paint) so the PTY is resized to the true fit.
+                        let painted = (bounds.size.width / px(1.), bounds.size.height / px(1.));
+                        let (pw, ph) = pane_measured.get();
+                        if (pw - painted.0).abs() > 0.5 || (ph - painted.1).abs() > 0.5 {
+                            pane_measured.set(painted);
+                            let view = view.clone();
+                            cx.defer(move |cx| view.update(cx, |_, cx| cx.notify()));
+                        }
+
                         window.handle_input(
                             &focus_handle,
                             ElementInputHandler::new(bounds, ime.clone()),
