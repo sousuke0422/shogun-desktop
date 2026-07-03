@@ -103,6 +103,22 @@ impl TerminalSession {
         let _ = self.writer.lock().write_all(bytes);
     }
 
+    /// Route a wheel event to the PTY when the running application asked for
+    /// it. Returns `false` when the wheel should scroll the local scrollback
+    /// instead (plain primary-screen shell). See [`wheel_pty_bytes`].
+    pub fn wheel_to_pty(&self, lines: i32, col: usize, row: usize) -> bool {
+        let mode = *self.term.lock().mode();
+        match wheel_pty_bytes(mode, lines, col, row) {
+            Some(buf) => {
+                if !buf.is_empty() {
+                    self.send_bytes(&buf);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Scroll the emulator's display window into the scrollback history
     /// (positive = older content) and refresh the snapshot immediately —
     /// the reader thread only refreshes it on PTY output.
@@ -211,6 +227,58 @@ impl SnapshotCell {
 pub enum ResolvedColor {
     Default,
     Rgb(u8, u8, u8),
+}
+
+/// Encode a wheel event for the PTY according to the terminal's modes, or
+/// `None` when the wheel should scroll the local scrollback instead.
+///
+/// - Mouse-reporting apps (btop, htop, tmux `mouse on`): mouse buttons 64/65
+///   at the pointed-at cell, SGR (`?1006`) or X10 flavor.
+/// - Alt-screen apps with alternate-scroll (`?1007`): arrow keys, honoring
+///   DECCKM application-cursor mode (less, vim without mouse).
+///
+/// `lines > 0` = wheel up. `col`/`row` are 0-based grid coordinates.
+pub fn wheel_pty_bytes(
+    mode: alacritty_terminal::term::TermMode,
+    lines: i32,
+    col: usize,
+    row: usize,
+) -> Option<Vec<u8>> {
+    use alacritty_terminal::term::TermMode;
+    if mode.intersects(TermMode::MOUSE_MODE) {
+        let btn: u32 = if lines > 0 { 64 } else { 65 };
+        let mut buf = Vec::new();
+        for _ in 0..lines.unsigned_abs() {
+            if mode.contains(TermMode::SGR_MOUSE) {
+                buf.extend_from_slice(format!("\x1b[<{btn};{};{}M", col + 1, row + 1).as_bytes());
+            } else {
+                // X10 encoding caps coordinates at 223 (255 - 32).
+                buf.extend_from_slice(&[
+                    0x1b,
+                    b'[',
+                    b'M',
+                    (32 + btn) as u8,
+                    (32 + (col + 1).min(223)) as u8,
+                    (32 + (row + 1).min(223)) as u8,
+                ]);
+            }
+        }
+        Some(buf)
+    } else if mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL) {
+        let seq: &[u8] = match (lines > 0, mode.contains(TermMode::APP_CURSOR)) {
+            (true, true) => b"\x1bOA",
+            (true, false) => b"\x1b[A",
+            (false, true) => b"\x1bOB",
+            (false, false) => b"\x1b[B",
+        };
+        let mut buf = Vec::new();
+        for _ in 0..lines.unsigned_abs() {
+            buf.extend_from_slice(seq);
+        }
+        Some(buf)
+    } else {
+        None
+    }
 }
 
 /// alacritty_terminal の Cell/Color → SnapshotCell に変換
@@ -375,6 +443,59 @@ mod tests {
         for &byte in bytes {
             parser.advance(term, byte);
         }
+    }
+
+    #[test]
+    fn wheel_plain_shell_scrolls_local_history() {
+        let term = make_term(80, 24);
+        assert_eq!(wheel_pty_bytes(*term.mode(), 1, 0, 0), None);
+    }
+
+    #[test]
+    fn wheel_sgr_mouse_reporting_encodes_buttons_at_cell() {
+        let mut term = make_term(80, 24);
+        // ?1002h = mouse drag reporting, ?1006h = SGR encoding (btop's setup).
+        advance_bytes(&mut term, b"\x1b[?1002h\x1b[?1006h");
+        let up = wheel_pty_bytes(*term.mode(), 2, 5, 3).expect("routed to pty");
+        assert_eq!(up, b"\x1b[<64;6;4M\x1b[<64;6;4M");
+        let down = wheel_pty_bytes(*term.mode(), -1, 0, 0).expect("routed to pty");
+        assert_eq!(down, b"\x1b[<65;1;1M");
+    }
+
+    #[test]
+    fn wheel_x10_mouse_reporting_without_sgr() {
+        let mut term = make_term(80, 24);
+        advance_bytes(&mut term, b"\x1b[?1000h");
+        let up = wheel_pty_bytes(*term.mode(), 1, 5, 3).expect("routed to pty");
+        assert_eq!(up, &[0x1b, b'[', b'M', 32 + 64, 32 + 6, 32 + 4]);
+    }
+
+    #[test]
+    fn wheel_alternate_scroll_sends_arrows() {
+        let mut term = make_term(80, 24);
+        // ?1049h = alt screen, ?1007h = alternate scroll (less-style).
+        advance_bytes(&mut term, b"\x1b[?1049h\x1b[?1007h");
+        let up = wheel_pty_bytes(*term.mode(), 2, 0, 0).expect("routed to pty");
+        assert_eq!(up, b"\x1b[A\x1b[A");
+        // DECCKM application cursor mode switches to SS3 arrows.
+        advance_bytes(&mut term, b"\x1b[?1h");
+        let down = wheel_pty_bytes(*term.mode(), -1, 0, 0).expect("routed to pty");
+        assert_eq!(down, b"\x1bOB");
+    }
+
+    #[test]
+    fn wheel_alt_screen_defaults_to_arrows_and_1007l_disables() {
+        let mut term = make_term(80, 24);
+        // ALTERNATE_SCROLL is ON by default in alacritty, so entering the
+        // alt screen alone already routes the wheel as arrow keys…
+        advance_bytes(&mut term, b"\x1b[?1049h");
+        assert_eq!(
+            wheel_pty_bytes(*term.mode(), 1, 0, 0),
+            Some(b"\x1b[A".to_vec())
+        );
+        // …until the app opts out with ?1007l.
+        advance_bytes(&mut term, b"\x1b[?1007l");
+        assert_eq!(wheel_pty_bytes(*term.mode(), 1, 0, 0), None);
     }
 
     #[test]

@@ -294,9 +294,11 @@ impl Render for ShellWindow {
                         cx.stop_propagation();
                     }
                 }))
-                // Wheel scrolls the emulator's scrollback (alacritty history),
-                // not the gpui container: after the padding fix the grid fits
-                // the pane exactly, so the container has nothing to scroll.
+                // Wheel: routed to the PTY when the app asked for it (mouse
+                // reporting / alternate scroll — btop, less…), otherwise it
+                // scrolls the emulator's scrollback (alacritty history). The
+                // gpui container never scrolls: after the padding fix the
+                // grid fits the pane exactly.
                 // gpui wheel-up yields positive y (Zed's terminal does the
                 // same direct mapping); Scroll::Delta(positive) = older lines.
                 .on_scroll_wheel(
@@ -310,7 +312,20 @@ impl Render for ShellWindow {
                         if whole != 0 {
                             this.scroll_accum -= whole as f32;
                             if let Some(s) = &this.session {
-                                s.scroll_display(whole);
+                                // Pointed-at cell for mouse reporting; the
+                                // pane sits at the window origin + padding.
+                                let pad = TERMINAL_PANE_PADDING_PX / 2.0;
+                                let cols = s.cols.load(Ordering::Relaxed).max(1) as usize;
+                                let rows = s.rows.load(Ordering::Relaxed).max(1) as usize;
+                                let col = ((((event.position.x / px(1.)) - pad) / cw).max(0.0)
+                                    as usize)
+                                    .min(cols - 1);
+                                let row = ((((event.position.y / px(1.)) - pad) / ch).max(0.0)
+                                    as usize)
+                                    .min(rows - 1);
+                                if !s.wheel_to_pty(whole, col, row) {
+                                    s.scroll_display(whole);
+                                }
                             }
                         }
                     }),
