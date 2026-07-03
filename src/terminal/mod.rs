@@ -119,6 +119,14 @@ impl TerminalSession {
         }
     }
 
+    /// Paste text into the terminal, honoring bracketed-paste mode. Snaps the
+    /// view back to the live bottom first, like typing does.
+    pub fn paste(&self, text: &str) {
+        let mode = *self.term.lock().mode();
+        self.scroll_display_to_bottom();
+        self.send_bytes(&paste_pty_bytes(mode, text));
+    }
+
     /// Scroll the emulator's display window into the scrollback history
     /// (positive = older content) and refresh the snapshot immediately —
     /// the reader thread only refreshes it on PTY output.
@@ -227,6 +235,29 @@ impl SnapshotCell {
 pub enum ResolvedColor {
     Default,
     Rgb(u8, u8, u8),
+}
+
+/// Encode pasted text for the PTY.
+///
+/// - Bracketed-paste mode (`?2004`, requested by claude code / opencode /
+///   modern shells): wrap in `ESC[200~ … ESC[201~` so the app can tell a
+///   paste from typing (multiline text stops auto-executing per line). Any
+///   embedded end marker is stripped — otherwise clipboard content could
+///   break out of the bracket and inject keystrokes.
+/// - Plain mode: newlines are normalized to CR, which is what a terminal
+///   sends for the Enter key.
+pub fn paste_pty_bytes(mode: alacritty_terminal::term::TermMode, text: &str) -> Vec<u8> {
+    use alacritty_terminal::term::TermMode;
+    if mode.contains(TermMode::BRACKETED_PASTE) {
+        let sanitized = text.replace("\x1b[201~", "");
+        let mut buf = Vec::with_capacity(sanitized.len() + 12);
+        buf.extend_from_slice(b"\x1b[200~");
+        buf.extend_from_slice(sanitized.as_bytes());
+        buf.extend_from_slice(b"\x1b[201~");
+        buf
+    } else {
+        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+    }
 }
 
 /// Encode a wheel event for the PTY according to the terminal's modes, or
@@ -443,6 +474,27 @@ mod tests {
         for &byte in bytes {
             parser.advance(term, byte);
         }
+    }
+
+    #[test]
+    fn paste_plain_normalizes_newlines_to_cr() {
+        let term = make_term(80, 24);
+        assert_eq!(
+            paste_pty_bytes(*term.mode(), "a\r\nb\nc"),
+            b"a\rb\rc".to_vec()
+        );
+    }
+
+    #[test]
+    fn paste_bracketed_wraps_and_strips_end_marker() {
+        let mut term = make_term(80, 24);
+        advance_bytes(&mut term, b"\x1b[?2004h");
+        // Newlines pass through untouched; an embedded end marker is stripped
+        // so clipboard content cannot break out of the bracket.
+        assert_eq!(
+            paste_pty_bytes(*term.mode(), "a\nb\x1b[201~echo pwned\n"),
+            b"\x1b[200~a\nbecho pwned\n\x1b[201~".to_vec()
+        );
     }
 
     #[test]

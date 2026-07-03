@@ -108,6 +108,19 @@ fn main() {
                 window::TerminalCopy,
                 Some(window::TERMINAL_KEY_CONTEXT),
             ),
+            // Paste (bracketed when the app enabled ?2004). Plain ctrl-v must
+            // keep sending ^V (shell literal-next), so paste mirrors copy on
+            // ctrl-shift-v (and cmd-v on macOS).
+            gpui::KeyBinding::new(
+                "ctrl-shift-v",
+                window::TerminalPaste,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+            gpui::KeyBinding::new(
+                "cmd-v",
+                window::TerminalPaste,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
         ]);
         open_shogun_window(cx);
     });

@@ -4,8 +4,8 @@ use crate::terminal::renderer::render_grid;
 use crate::terminal::selection;
 use crate::theme::Colors;
 use crate::window::{
-    ShogunWindow, TERMINAL_KEY_CONTEXT, TerminalCopy, TerminalSendBacktab, TerminalSendTab,
-    selection_pane,
+    ShogunWindow, TERMINAL_KEY_CONTEXT, TerminalCopy, TerminalPaste, TerminalSendBacktab,
+    TerminalSendTab, selection_pane,
 };
 use gpui::{
     App, Context, ElementInputHandler, Entity, FocusHandle, IntoElement, KeyDownEvent,
@@ -87,6 +87,9 @@ pub fn render_terminal_tab(
             }))
             .on_action(cx.listener(|this, _: &TerminalCopy, _window, cx| {
                 this.copy_selection(cx);
+            }))
+            .on_action(cx.listener(|this, _: &TerminalPaste, _window, cx| {
+                this.paste_clipboard(cx);
             }))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 // Stop propagation for consumed keys so GPUI's own actions

@@ -44,7 +44,12 @@ pub const TERMINAL_PANE_PADDING_PX: f32 = 8.0;
 
 gpui::actions!(
     shogun_terminal,
-    [TerminalSendTab, TerminalSendBacktab, TerminalCopy]
+    [
+        TerminalSendTab,
+        TerminalSendBacktab,
+        TerminalCopy,
+        TerminalPaste
+    ]
 );
 
 /// Line-height multiplier applied to `font_size` to compute the cell height.
@@ -288,6 +293,18 @@ impl ShogunWindow {
     pub(crate) fn send_bytes_to_active(&self, bytes: &[u8]) {
         if let Some(session) = self.active_session() {
             session.send_bytes(bytes);
+        }
+    }
+
+    /// Paste the OS clipboard into the active pane's PTY (ctrl-shift-v /
+    /// cmd-v via the `TerminalPaste` action), bracketed when the app
+    /// enabled `?2004`.
+    pub(crate) fn paste_clipboard(&self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        if let Some(session) = self.active_session() {
+            session.paste(&text);
         }
     }
 

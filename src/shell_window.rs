@@ -9,8 +9,8 @@ use crate::terminal::selection::{self, SelectionHost, SelectionState};
 use crate::terminal::{GridSnapshot, TerminalSession};
 use crate::theme::Colors;
 use crate::window::{
-    TERMINAL_KEY_CONTEXT, TERMINAL_PANE_PADDING_PX, TerminalCopy, TerminalSendBacktab,
-    TerminalSendTab, measure_cell_metrics,
+    TERMINAL_KEY_CONTEXT, TERMINAL_PANE_PADDING_PX, TerminalCopy, TerminalPaste,
+    TerminalSendBacktab, TerminalSendTab, measure_cell_metrics,
 };
 use gpui::{
     App, Bounds, Context, ElementInputHandler, Entity, FocusHandle, IntoElement, KeyDownEvent,
@@ -274,6 +274,14 @@ impl Render for ShellWindow {
                 }))
                 .on_action(cx.listener(|this, _: &TerminalCopy, _window, cx| {
                     selection::copy_to_clipboard(&this.selection, this.session.as_ref(), cx);
+                }))
+                .on_action(cx.listener(|this, _: &TerminalPaste, _window, cx| {
+                    let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+                        return;
+                    };
+                    if let Some(s) = &this.session {
+                        s.paste(&text);
+                    }
                 }))
                 // Stop propagation for consumed keys; printable unmodified keys
                 // must keep propagating so the platform generates WM_CHAR for
