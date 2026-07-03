@@ -19,7 +19,9 @@
 - [ ] Ctrl+Shift+V ペースト（claude code へ複数行貼り→ 1行ずつ実行されないこと）
 - [ ] shell window の選択コピー・IME（前回実装分の目視）
 - [ ] tailscale アイドル後の入力引っかかり解消（keepalive + 非同期書込）
-- [ ] e2e/ スクリプト再実行（PowerShell 実行ポリシーの都合で自動実行不可、手動で）
+- [ ] e2e/ スクリプト再実行 — `pwsh.exe -NoProfile -File` で呼ぶこと（ポリシーは
+      RemoteSigned で問題なし。壊れているのは powershell.exe 5.1 側 = PSModulePath 汚染で
+      v7 の Security モジュールを誤ロード→TypeData 衝突。Bypass フラグは不要）
 
 ## 2. 未実装 — ターミナル機能（優先順）
 
