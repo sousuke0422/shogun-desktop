@@ -133,7 +133,7 @@ if CARGO_CFG_TARGET_OS == "windows" {
 
 ```powershell
 # Windows PowerShell — WSL cargo は不可
-cd C:\Users\dev\work\shogun-desktop
+cd <repo-path>  # 例: C:\work\shogun-desktop
 cargo build --release
 
 # テスト (GPU 不要、純粋関数のみ)

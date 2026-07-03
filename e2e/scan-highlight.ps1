@@ -8,9 +8,8 @@
 #
 # PASS threshold: 1000 sampled matches.
 #
-# Usage:
-#   powershell.exe -NoProfile -ExecutionPolicy Bypass \
-#     -File 'C:\Users\dev\work\shogun-desktop\e2e\scan-highlight.ps1' \
+# Usage (repo path abbreviated):
+#   pwsh.exe -NoProfile -File 'C:\...\shogun-desktop\e2e\scan-highlight.ps1' \
 #     [-ImagePath <png>] [-Threshold <n>]
 
 param(

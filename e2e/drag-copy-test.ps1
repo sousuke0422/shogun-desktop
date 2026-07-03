@@ -16,13 +16,12 @@
 #   - Keep this file ASCII-only, or save as UTF-8 WITH BOM: Windows PowerShell
 #     5.1 parses BOM-less .ps1 as ANSI and multibyte literals break the parser.
 #
-# Usage (from WSL):
-#   powershell.exe -NoProfile -ExecutionPolicy Bypass \
-#     -File 'C:\Users\dev\work\shogun-desktop\e2e\drag-copy-test.ps1' \
+# Usage (from WSL; repo path abbreviated):
+#   pwsh.exe -NoProfile -File 'C:\...\shogun-desktop\e2e\drag-copy-test.ps1' \
 #     [-ExePath <path>] [-ScreenshotPath <path>]
 
 param(
-    [string]$ExePath = 'C:\Users\dev\work\shogun-desktop\target\release\shogun-desktop.exe',
+    [string]$ExePath = "$PSScriptRoot\..\target\release\shogun-desktop.exe",
     [string]$ScreenshotPath = "$env:TEMP\shogun-e2e-sel.png",
     # Seconds to wait for the SSH/tmux session to connect and render.
     [int]$ConnectWaitSec = 12

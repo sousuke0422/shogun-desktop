@@ -14,18 +14,20 @@ CI には組み込めない（対話デスクトップと SSH/tmux 接続が必�
 | `drag-copy-test.ps1` | 起動 → 端末ペインをドラッグ選択 → スクショ保存 → Ctrl+Shift+C → クリップボードに選択テキストが入れば PASS |
 | `scan-highlight.ps1` | 上記スクショを画素走査し、選択ハイライト色（青系）が閾値以上あれば PASS |
 
-## 実行（WSL から）
+## 実行（WSL から。`$REPO` = リポジトリの Windows パス）
 
 ```bash
-powershell.exe -NoProfile -ExecutionPolicy Bypass \
-  -File 'C:\Users\dev\work\shogun-desktop\e2e\drag-copy-test.ps1' \
-  -ExePath 'C:\Users\dev\work\shogun-desktop\target-verify\release\shogun-desktop.exe'
+pwsh.exe -NoProfile -File "$REPO\\e2e\\drag-copy-test.ps1" \
+  -ExePath "$REPO\\target-verify\\release\\shogun-desktop.exe"
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass \
-  -File 'C:\Users\dev\work\shogun-desktop\e2e\scan-highlight.ps1'
+pwsh.exe -NoProfile -File "$REPO\\e2e\\scan-highlight.ps1"
 ```
 
 両方 `PASS` / exit 0 で合格。スクショは既定で `%TEMP%\shogun-e2e-sel.png`。
+`-ExePath` 省略時は `<repo>\target\release\` のバイナリを使う。
+
+pwsh 7 を使うこと（RemoteSigned でフラグ不要）。powershell.exe 5.1 は WSL 継承の
+PSModulePath が v7 モジュールを誤ロードして Security モジュールごと壊れる環境がある。
 
 ## ハマりどころ（実測済み）
 
@@ -39,3 +41,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass \
   して解釈し、日本語リテラルがパースエラーになる。スクリプトは ASCII のみで
   書くか、UTF-8 with BOM で保存する。
 - 実行中はカーソルを実際に動かすので、テスト中はマウスに触らない。
+- **画面ロック中は不成立**: 合成キーはロック画面に落ち、スクショもロック画面を写す
+  （scan-highlight はロック画面の青で偽 PASS しうる）。対話デスクトップ必須。

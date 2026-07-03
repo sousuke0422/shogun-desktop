@@ -15,7 +15,7 @@ multi-agent-shogun の将軍・足軽・軍師を SSH 経由で監視・操作�
 PowerShell で **Windows ネイティブ** の `cargo` を使用してください（WSL の cargo は不可）。
 
 ```powershell
-cd C:\Users\dev\work\shogun-desktop
+cd <repo-path>  # 例: C:\work\shogun-desktop
 cargo build --release
 cargo test
 ```
