@@ -279,6 +279,7 @@ fn build_terminal_session(
     )));
     let connected = Arc::new(AtomicBool::new(true));
     let generation = Arc::new(AtomicU64::new(0));
+    let notify = Arc::new(tokio::sync::Notify::new());
     let error: Arc<FairMutex<Option<String>>> = Arc::new(FairMutex::new(None));
 
     {
@@ -286,6 +287,7 @@ fn build_terminal_session(
         let snap2 = Arc::clone(&snapshot);
         let conn2 = Arc::clone(&connected);
         let gen2 = Arc::clone(&generation);
+        let notify2 = Arc::clone(&notify);
         let err2 = Arc::clone(&error);
         std::thread::spawn(move || {
             let mut reader = reader;
@@ -296,6 +298,10 @@ fn build_terminal_session(
                     Ok(0) | Err(_) => {
                         conn2.store(false, Ordering::Relaxed);
                         *err2.lock() = Some("PTY接続が切断されました".into());
+                        // Bump + signal so the UI repaints the disconnected
+                        // state promptly instead of waiting for other traffic.
+                        gen2.fetch_add(1, Ordering::Relaxed);
+                        notify2.notify_one();
                         break;
                     }
                     Ok(n) => {
@@ -305,6 +311,7 @@ fn build_terminal_session(
                         }
                         *snap2.lock() = take_snapshot(&t);
                         gen2.fetch_add(1, Ordering::Relaxed);
+                        notify2.notify_one();
                     }
                 }
             }
@@ -317,6 +324,7 @@ fn build_terminal_session(
         snapshot,
         connected,
         generation,
+        notify,
         error,
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),

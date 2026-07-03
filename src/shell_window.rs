@@ -137,34 +137,41 @@ impl ShellWindow {
         .detach();
     }
 
+    /// Event-driven refresh: parks on the session's `Notify` (zero wakeups
+    /// while idle) and coalesces output bursts into ~60fps frames. Mirrors
+    /// `ShogunWindow::start_terminal_refresh`.
     fn start_refresh(&self, cx: &mut Context<Self>) {
-        let gen_arc = self
-            .session
-            .as_ref()
-            .map(|s| std::sync::Arc::clone(&s.generation));
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let generation = std::sync::Arc::clone(&session.generation);
+        let notify = std::sync::Arc::clone(&session.notify);
         let scroll = self.scroll_handle.clone();
 
         cx.spawn(async move |this, cx| {
-            let mut last = 0u64;
+            let mut last = generation.load(Ordering::Relaxed);
             loop {
+                notify.notified().await;
+                // Coalesce a burst of PTY chunks into a single frame.
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
 
-                let cur = gen_arc
-                    .as_ref()
-                    .map(|g| g.load(Ordering::Relaxed))
-                    .unwrap_or(0);
-                if cur != last {
-                    last = cur;
-                    let _ = this.update(cx, |view, cx| {
-                        view.last_gen = cur;
-                        if !view.scroll_locked {
-                            scroll.scroll_to_bottom();
-                        }
-                        view.prev_offset_y = scroll.offset().y / px(1.);
-                        cx.notify();
-                    });
+                let cur = generation.load(Ordering::Relaxed);
+                if cur == last {
+                    continue;
+                }
+                last = cur;
+                let alive = this.update(cx, |view, cx| {
+                    view.last_gen = cur;
+                    if !view.scroll_locked {
+                        scroll.scroll_to_bottom();
+                    }
+                    view.prev_offset_y = scroll.offset().y / px(1.);
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
                 }
             }
         })

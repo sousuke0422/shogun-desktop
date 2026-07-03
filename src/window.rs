@@ -205,7 +205,6 @@ pub struct ShogunWindow {
     pub(crate) multiagent_prev_offset_y: f32,
     shogun_last_gen: u64,
     multiagent_last_gen: u64,
-    terminal_refresh_started: bool,
     status_message: SharedString,
     /// Last known terminal size, used to detect viewport changes and resize sessions.
     terminal_cols: u16,
@@ -264,7 +263,6 @@ impl ShogunWindow {
             multiagent_prev_offset_y: 0.0,
             shogun_last_gen: 0,
             multiagent_last_gen: 0,
-            terminal_refresh_started: false,
             status_message: SharedString::default(),
             terminal_cols: 0,
             terminal_rows: 0,
@@ -440,16 +438,6 @@ impl ShogunWindow {
         }
     }
 
-    fn maybe_start_terminal_refresh(&mut self, cx: &mut Context<Self>) {
-        if self.terminal_refresh_started {
-            return;
-        }
-        if self.shogun_session.is_some() || self.multiagent_session.is_some() {
-            self.terminal_refresh_started = true;
-            self.start_terminal_refresh(cx);
-        }
-    }
-
     pub fn start_shogun_session(&mut self, cx: &mut Context<Self>) {
         let settings = load_settings().unwrap_or_default();
         if settings.ssh.host.is_empty() {
@@ -488,7 +476,7 @@ impl ShogunWindow {
                     Ok(session) => {
                         view.shogun_session = Some(session);
                         view.shogun_error = None;
-                        view.maybe_start_terminal_refresh(cx);
+                        view.start_terminal_refresh(true, cx);
                     }
                     Err(e) => {
                         view.shogun_error = Some(format!("PTY起動失敗: {e}"));
@@ -538,7 +526,7 @@ impl ShogunWindow {
                     Ok(session) => {
                         view.multiagent_session = Some(session);
                         view.multiagent_error = None;
-                        view.maybe_start_terminal_refresh(cx);
+                        view.start_terminal_refresh(false, cx);
                     }
                     Err(e) => {
                         view.multiagent_error = Some(format!("PTY起動失敗: {e}"));
@@ -550,57 +538,75 @@ impl ShogunWindow {
         .detach();
     }
 
-    fn start_terminal_refresh(&self, cx: &mut Context<Self>) {
-        let gen_s = self
-            .shogun_session
-            .as_ref()
-            .map(|s| Arc::clone(&s.generation));
-        let gen_m = self
-            .multiagent_session
-            .as_ref()
-            .map(|s| Arc::clone(&s.generation));
-        let scroll_s = self.shogun_scroll_handle.clone();
-        let scroll_m = self.multiagent_scroll_handle.clone();
+    /// Event-driven refresh: one watcher task per session. The task parks on
+    /// the session's `Notify` (zero wakeups while the terminal is idle) and
+    /// coalesces output bursts into ~60fps frames with a short timer. Each
+    /// (re)connect spawns a fresh watcher bound to the new session; a watcher
+    /// exits when its session has been replaced (`Arc::ptr_eq` mismatch), and
+    /// a watcher whose session merely died stays parked at no CPU cost.
+    fn start_terminal_refresh(&self, is_shogun: bool, cx: &mut Context<Self>) {
+        let session = if is_shogun {
+            &self.shogun_session
+        } else {
+            &self.multiagent_session
+        };
+        let Some(session) = session.as_ref() else {
+            return;
+        };
+        let generation = Arc::clone(&session.generation);
+        let notify = Arc::clone(&session.notify);
+        let scroll = if is_shogun {
+            self.shogun_scroll_handle.clone()
+        } else {
+            self.multiagent_scroll_handle.clone()
+        };
 
         cx.spawn(async move |this, cx| {
-            let mut last_s = 0u64;
-            let mut last_m = 0u64;
+            let mut last = generation.load(Ordering::Relaxed);
             loop {
+                notify.notified().await;
+                // Coalesce a burst of PTY chunks into a single frame.
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
 
-                let cur_s = gen_s
-                    .as_ref()
-                    .map(|g| g.load(Ordering::Relaxed))
-                    .unwrap_or(0);
-                let cur_m = gen_m
-                    .as_ref()
-                    .map(|g| g.load(Ordering::Relaxed))
-                    .unwrap_or(0);
+                let cur = generation.load(Ordering::Relaxed);
+                if cur == last {
+                    continue;
+                }
+                last = cur;
 
-                if cur_s != last_s || cur_m != last_m {
-                    let s_changed = cur_s != last_s;
-                    let m_changed = cur_m != last_m;
-                    last_s = cur_s;
-                    last_m = cur_m;
-                    let _ = this.update(cx, |view, cx| {
-                        view.shogun_last_gen = cur_s;
-                        view.multiagent_last_gen = cur_m;
-                        if s_changed {
-                            if !view.shogun_scroll_locked {
-                                scroll_s.scroll_to_bottom();
-                            }
-                            view.shogun_prev_offset_y = scroll_s.offset().y / px(1.);
+                let alive = this.update(cx, |view, cx| {
+                    let current = if is_shogun {
+                        &view.shogun_session
+                    } else {
+                        &view.multiagent_session
+                    };
+                    // Session replaced by a reconnect: a newer watcher owns it.
+                    let owned = current
+                        .as_ref()
+                        .is_some_and(|s| Arc::ptr_eq(&s.generation, &generation));
+                    if !owned {
+                        return false;
+                    }
+                    if is_shogun {
+                        view.shogun_last_gen = cur;
+                        if !view.shogun_scroll_locked {
+                            scroll.scroll_to_bottom();
                         }
-                        if m_changed {
-                            if !view.multiagent_scroll_locked {
-                                scroll_m.scroll_to_bottom();
-                            }
-                            view.multiagent_prev_offset_y = scroll_m.offset().y / px(1.);
+                        view.shogun_prev_offset_y = scroll.offset().y / px(1.);
+                    } else {
+                        view.multiagent_last_gen = cur;
+                        if !view.multiagent_scroll_locked {
+                            scroll.scroll_to_bottom();
                         }
-                        cx.notify();
-                    });
+                        view.multiagent_prev_offset_y = scroll.offset().y / px(1.);
+                    }
+                    cx.notify();
+                    true
+                });
+                if !matches!(alive, Ok(true)) {
+                    break;
                 }
             }
         })

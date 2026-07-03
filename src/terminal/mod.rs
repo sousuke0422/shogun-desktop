@@ -80,6 +80,10 @@ pub struct TerminalSession {
     pub snapshot: Arc<FairMutex<GridSnapshot>>,
     pub connected: Arc<AtomicBool>,
     pub generation: Arc<AtomicU64>,
+    /// Signalled by the reader thread whenever `generation` advances (and on
+    /// disconnect). UI refresh tasks park on this instead of polling, so an
+    /// idle terminal causes zero wakeups.
+    pub notify: Arc<tokio::sync::Notify>,
     #[allow(dead_code)]
     pub error: Arc<FairMutex<Option<String>>>,
     /// Current terminal width in columns (updated by `resize`).
