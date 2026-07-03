@@ -1,5 +1,14 @@
 name: CI
 
+# Layout note: shogun-desktop depends on shogun-core via a relative path
+# (`../shogun-suite/crates/shogun-core`), so every build job checks out BOTH
+# repositories side by side inside the workspace:
+#   $GITHUB_WORKSPACE/shogun-desktop   (this repo)
+#   $GITHUB_WORKSPACE/shogun-suite     (sousuke0422/shogun-suite)
+# and runs cargo from shogun-desktop/. If shogun-suite is private, set the
+# SUITE_CHECKOUT_TOKEN secret (a PAT with repo read); for a public suite the
+# default github.token suffices.
+
 on:
   push:
     branches: [main, master]
@@ -17,9 +26,22 @@ jobs:
     name: Build & Test — macOS 14 (aarch64)
     runs-on: macos-14
 
+    defaults:
+      run:
+        working-directory: shogun-desktop
+
     steps:
-      - name: Checkout
+      - name: Checkout shogun-desktop
         uses: actions/checkout@v4
+        with:
+          path: shogun-desktop
+
+      - name: Checkout shogun-suite (shogun-core path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: sousuke0422/shogun-suite
+          token: ${{ secrets.SUITE_CHECKOUT_TOKEN || github.token }}
+          path: shogun-suite
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -31,8 +53,8 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            target
-          key: macos14-cargo-${{ hashFiles('**/Cargo.lock') }}
+            shogun-desktop/target
+          key: macos14-cargo-${{ hashFiles('shogun-desktop/Cargo.lock') }}
           restore-keys: macos14-cargo-
 
       - name: Build (release)
@@ -56,7 +78,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: shogun-desktop-macos14-app
-          path: dist/shogun-desktop-macos.zip
+          path: shogun-desktop/dist/shogun-desktop-macos.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -65,9 +87,22 @@ jobs:
     name: Build & Test — Windows (x86_64)
     runs-on: windows-latest
 
+    defaults:
+      run:
+        working-directory: shogun-desktop
+
     steps:
-      - name: Checkout
+      - name: Checkout shogun-desktop
         uses: actions/checkout@v4
+        with:
+          path: shogun-desktop
+
+      - name: Checkout shogun-suite (shogun-core path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: sousuke0422/shogun-suite
+          token: ${{ secrets.SUITE_CHECKOUT_TOKEN || github.token }}
+          path: shogun-suite
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -79,8 +114,8 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            target
-          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+            shogun-desktop/target
+          key: windows-cargo-${{ hashFiles('shogun-desktop/Cargo.lock') }}
           restore-keys: windows-cargo-
 
       - name: Build (release)
@@ -93,7 +128,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: shogun-desktop-windows-x86_64
-          path: target/release/shogun-desktop.exe
+          path: shogun-desktop/target/release/shogun-desktop.exe
           if-no-files-found: error
           retention-days: 30
 
@@ -102,9 +137,22 @@ jobs:
     name: Lint (clippy + rustfmt)
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: shogun-desktop
+
     steps:
-      - name: Checkout
+      - name: Checkout shogun-desktop
         uses: actions/checkout@v4
+        with:
+          path: shogun-desktop
+
+      - name: Checkout shogun-suite (shogun-core path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: sousuke0422/shogun-suite
+          token: ${{ secrets.SUITE_CHECKOUT_TOKEN || github.token }}
+          path: shogun-suite
 
       - name: Install Rust stable with clippy & rustfmt
         uses: dtolnay/rust-toolchain@stable
@@ -118,8 +166,8 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            target
-          key: lint-cargo-${{ hashFiles('**/Cargo.lock') }}
+            shogun-desktop/target
+          key: lint-cargo-${{ hashFiles('shogun-desktop/Cargo.lock') }}
           restore-keys: lint-cargo-
 
       # Plain clippy (no -D warnings): 22 existing warnings would fail CI.
