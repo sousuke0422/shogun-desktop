@@ -19,9 +19,10 @@
 - [ ] btop でホイールがアプリ側スクロールになるか（マウスレポーティング転送）
 - [ ] less / man でホイールが効くか（alternate scroll → 矢印変換）
 - [ ] 絵文字が Twemoji 絵柄で出るか・セル幅 2 に収まるか（`echo 😀🍣🚀`）—
-      2026-07-04 実機で Segoe 落ちを確認 → 真因 = gpui が fallback を system collection
-      でしか解決しない → 0469cd8 で起動時 AddFontResourceExW 登録。要再検証（UI/グリッド両方）。
-      gpui 上流 PR ネタ: generate_font_fallbacks は custom collection も探すべき
+      AddFontResourceExW 案は不発（fontprobe 実証）→ 44b69fd で gpui を vendored patch
+      （custom collection 検索 + AddMapping へ collection 明示、crates/gpui）。
+      fontprobe では mono/segoe 両 base で Twemoji 解決を確認済み。要実機目視（UI/グリッド）。
+      gpui 上流 PR ネタ×2: 本件 + Linux FontFallbacks 無視
 - [ ] Ctrl+Shift+V ペースト（claude code へ複数行貼り→ 1行ずつ実行されないこと）
 - [ ] shell window の選択コピー・IME（前回実装分の目視）
 - [ ] tailscale アイドル後の入力引っかかり解消（keepalive + 非同期書込）
