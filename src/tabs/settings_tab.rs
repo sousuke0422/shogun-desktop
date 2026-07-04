@@ -35,31 +35,57 @@ impl SettingsTab {
     where
         E: 'static,
     {
-        let host =
-            cx.new(|cx| InputState::new(window, cx).default_value(settings.ssh.host.clone()));
-        let port =
-            cx.new(|cx| InputState::new(window, cx).default_value(settings.ssh.port.to_string()));
-        let user =
-            cx.new(|cx| InputState::new(window, cx).default_value(settings.ssh.user.clone()));
-        let key_path =
-            cx.new(|cx| InputState::new(window, cx).default_value(settings.ssh.key_path.clone()));
+        let host = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.ssh.host.clone())
+                .placeholder("192.168.x.x / ssh config のホスト名")
+        });
+        let port = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.ssh.port.to_string())
+                .placeholder("22")
+        });
+        let user = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.ssh.user.clone())
+                .placeholder("空欄可（Coder 等 ProxyCommand 先で決まる接続）")
+        });
+        let key_path = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.ssh.key_path.clone())
+                .placeholder(r"C:\Users\you\.ssh\id_ed25519（空欄 = ssh-agent）")
+        });
         let password = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(settings.ssh.password.clone())
+                .placeholder("鍵も ssh-agent も使えない場合のみ")
                 .masked(true)
         });
         let proxy_command = cx.new(|cx| {
-            InputState::new(window, cx).default_value(settings.ssh.proxy_command.clone())
+            InputState::new(window, cx)
+                .default_value(settings.ssh.proxy_command.clone())
+                .placeholder("coder ssh --stdio %h / ssh -W %h:%p jump.host")
         });
-        let project_path =
-            cx.new(|cx| InputState::new(window, cx).default_value(settings.project.path.clone()));
-        let shogun_session = cx
-            .new(|cx| InputState::new(window, cx).default_value(settings.sessions.shogun.clone()));
+        let project_path = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.project.path.clone())
+                .placeholder("/mnt/c/Users/you/work/multi-agent-shogun")
+        });
+        let shogun_session = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.sessions.shogun.clone())
+                .placeholder("shogun")
+        });
         let multiagent_session = cx.new(|cx| {
-            InputState::new(window, cx).default_value(settings.sessions.multiagent.clone())
+            InputState::new(window, cx)
+                .default_value(settings.sessions.multiagent.clone())
+                .placeholder("multiagent")
         });
-        let terminal_font =
-            cx.new(|cx| InputState::new(window, cx).default_value(settings.terminal.font.clone()));
+        let terminal_font = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.terminal.font.clone())
+                .placeholder("Moralerspace Neon HW")
+        });
 
         Self {
             host,
@@ -135,77 +161,145 @@ pub fn render_settings_tab(
     font_preset_buttons: impl IntoElement,
     control_path_selector: Option<impl IntoElement>,
 ) -> impl IntoElement {
-    let mut panel = v_flex()
-        .flex_1()
-        .overflow_y_scrollbar()
-        .gap_3()
-        .p_4()
-        .bg(Colors::shikkoku())
-        .child(section_label("SSH設定"))
-        .child(labeled_input("SSHホスト", &tab.host))
-        .child(labeled_input("SSHポート", &tab.port))
-        .child(labeled_input("SSHユーザー", &tab.user))
-        .child(labeled_input("SSH秘密鍵パス", &tab.key_path))
-        .child(labeled_input("SSHパスワード", &tab.password))
-        .child(labeled_input("SSH ProxyCommand", &tab.proxy_command))
-        .child(
-            div()
-                .text_xs()
-                .text_color(Colors::zouge())
-                .child("例: coder ssh --stdio %h  /  ssh -W %h:%p jump.host"),
-        )
-        .child(section_label("ホスト鍵"))
-        .child(accept_all_host_keys_toggle)
-        .child(section_label("接続バックエンド"))
-        .child(connection_backend_selector);
+    let mut advanced = section_card(
+        "接続の詳細",
+        Some("普段は変更不要。接続がうまくいかない時だけ触る"),
+    )
+    .child(labeled_input("ProxyCommand", &tab.proxy_command))
+    .child(hint("Coder / 踏み台経由はここ。%h がホスト名に展開される"))
+    .child(field_label("接続バックエンド"))
+    .child(connection_backend_selector)
+    .child(hint(
+        "Native (russh) 推奨。System は OpenSSH (ssh.exe) を使う互換モード",
+    ))
+    .child(field_label("ホスト鍵"))
+    .child(accept_all_host_keys_toggle);
 
     if let Some(selector) = control_path_selector {
-        panel = panel
-            .child(section_label("ControlPath（Windows）"))
+        advanced = advanced
+            .child(field_label(
+                "ControlPath（Windows / System バックエンド用）",
+            ))
             .child(selector);
     }
 
-    panel
-        .child(section_label("ターミナル設定"))
-        .child(labeled_input("フォント名", &tab.terminal_font))
-        .child(font_preset_buttons)
+    v_flex()
+        .flex_1()
+        .bg(Colors::shikkoku())
         .child(
-            div()
-                .text_xs()
-                .text_color(Colors::zouge())
-                .child("例: Moralerspace Neon HW / Cica / 任意のシステムフォント名"),
+            v_flex()
+                .flex_1()
+                .overflow_y_scrollbar()
+                .gap_4()
+                .p_4()
+                .child(
+                    section_card(
+                        "SSH接続",
+                        Some("ユーザー名は空欄でもよい — Coder のように接続先がユーザーを決める場合はホストだけで繋がる"),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().flex_1().child(labeled_input("ホスト", &tab.host)))
+                            .child(div().w(px(120.)).child(labeled_input("ポート", &tab.port))),
+                    )
+                    .child(labeled_input("ユーザー名", &tab.user)),
+                )
+                .child(
+                    section_card(
+                        "認証",
+                        Some("上から順に試す: 秘密鍵 → ssh-agent → パスワード。通常は鍵パスだけ埋めれば良い"),
+                    )
+                    .child(labeled_input("秘密鍵パス", &tab.key_path))
+                    .child(labeled_input("パスワード", &tab.password)),
+                )
+                .child(
+                    section_card("ターミナル", None)
+                        .child(labeled_input("フォント名", &tab.terminal_font))
+                        .child(font_preset_buttons)
+                        .child(hint("システムにインストール済みの等幅フォント名を指定")),
+                )
+                .child(
+                    section_card(
+                        "プロジェクト / セッション",
+                        Some("リモート側 multi-agent-shogun のパスと、監視する tmux セッション名"),
+                    )
+                    .child(labeled_input("プロジェクトパス", &tab.project_path))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(labeled_input("将軍セッション", &tab.shogun_session)),
+                            )
+                            .child(div().flex_1().child(labeled_input(
+                                "エージェントセッション",
+                                &tab.multiagent_session,
+                            ))),
+                    ),
+                )
+                .child(advanced),
         )
-        .child(section_label("プロジェクト設定"))
-        .child(labeled_input("プロジェクトパス", &tab.project_path))
-        .child(section_label("セッション設定"))
-        .child(labeled_input("将軍セッション名", &tab.shogun_session))
-        .child(labeled_input(
-            "エージェントセッション名",
-            &tab.multiagent_session,
-        ))
-        .child(
-            div()
-                .min_h(px(24.))
-                .text_sm()
-                .text_color(Colors::zouge())
-                .child(status_message),
-        )
+        // Action bar pinned below the scroll area: the buttons and the
+        // save/test status stay visible no matter where the form is
+        // scrolled (they used to live at the bottom of the scroll).
         .child(
             h_flex()
                 .gap_2()
+                .p_3()
+                .items_center()
+                .border_t_1()
+                .border_color(Colors::border())
+                .bg(Colors::sumi())
                 .child(save_button)
                 .child(test_button)
-                .child(shell_button),
+                .child(shell_button)
+                .child(
+                    div()
+                        .flex_1()
+                        .text_sm()
+                        .text_color(Colors::zouge())
+                        .text_right()
+                        .child(status_message),
+                ),
         )
 }
 
-fn section_label(text: &'static str) -> impl IntoElement {
+/// A visually separated settings group: bordered card with a bold title and
+/// an optional one-line description.
+fn section_card(title: &'static str, description: Option<&'static str>) -> gpui::Div {
+    let mut header = v_flex().gap_1().child(
+        div()
+            .text_base()
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(Colors::kinpaku())
+            .child(title),
+    );
+    if let Some(desc) = description {
+        header = header.child(hint(desc));
+    }
+    v_flex()
+        .gap_3()
+        .p_4()
+        .bg(Colors::sumi())
+        .rounded_lg()
+        .border_1()
+        .border_color(Colors::border())
+        .child(header)
+}
+
+fn field_label(text: &'static str) -> impl IntoElement {
     div().text_sm().text_color(Colors::kinpaku()).child(text)
+}
+
+fn hint(text: &'static str) -> gpui::Div {
+    div().text_xs().text_color(Colors::zouge()).child(text)
 }
 
 fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
     v_flex()
         .gap_1()
-        .child(Label::new(label).text_color(Colors::kinpaku()))
+        .child(Label::new(label).text_sm().text_color(Colors::kinpaku()))
         .child(Input::new(state).w_full())
 }
