@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
   <!-- Kabuto (samurai helmet) silhouette derived from multi-agent-shogun by yohey-w (MIT) -->
-  <!-- Crescent moon ornament (maedate) -->
-  <path fill="#C9A94E" d="M22,46 Q54,2 86,46 L80,46 Q54,14 28,46 Z"/>
+  <!-- Crescent moon ornament (maedate) — horns pointing up, Date style -->
+  <path fill="#C9A94E" d="M28,22 Q54,50 80,22 Q54,36 28,22 Z"/>
   <!-- Helmet dome (hachi) -->
   <path fill="#C9A94E" d="M34,46 Q54,30 74,46 L74,62 L34,62 Z"/>
   <!-- Neck guard tier 1 (shikoro) -->
