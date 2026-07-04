@@ -22,7 +22,9 @@
       system collection でしか解決しない（44b69fd: custom 検索 + AddMapping へ collection
       明示）②raster_bounds がベースグリフのみ解析 → COLR ベース空の Twemoji が 0×0 で
       消滅（6f5f9ae: COLR レイヤー bounds の union）。vendored gpui (crates/gpui) に実装。
-      gpui 上流 PR ネタ×3: 上記2件 + Linux FontFallbacks 無視。診断は src/bin/fontprobe.rs
+      gpui 上流 PR ネタ×3: 上記2件 + Linux FontFallbacks 無視。診断は src/bin/fontprobe.rs。
+      **上流起票用の下書きは本 repo issue #2 / #3 / #4 に格納済み**（zed へは殿が自分の
+      言葉で起票し、下書きは AI 生成と開示して引用添付 — Zed AI Policy 準拠の形式）
 - [ ] Ctrl+Shift+V ペースト（claude code へ複数行貼り→ 1行ずつ実行されないこと）
 - [ ] shell window の選択コピー・IME（前回実装分の目視）
 - [ ] tailscale アイドル後の入力引っかかり解消（keepalive + 非同期書込）
