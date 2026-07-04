@@ -28,6 +28,11 @@ shogun-core = { path = "crates/shogun-core" }
 
 [patch.crates-io]
 alacritty_terminal = { path = "crates/alacritty_terminal" }
+# Vendored for one fix: generate_font_fallbacks (DirectWrite) never searched
+# the custom font collection, so embedded fallback fonts (bundled Twemoji)
+# were silently skipped and emoji fell through to Segoe UI Emoji.
+# See crates/gpui/src/platform/windows/direct_write.rs "PATCHED".
+gpui = { path = "crates/gpui" }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

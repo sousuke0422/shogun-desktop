@@ -55,57 +55,7 @@ fn load_system_font(family: &str) -> Option<Vec<u8>> {
     None
 }
 
-/// Register the bundled emoji font with the Windows *session* font table
-/// before gpui builds its DirectWrite system font collection.
-///
-/// gpui 0.2.2's `generate_font_fallbacks` resolves user fallback families
-/// against the SYSTEM font collection only (direct_write.rs:333) — fonts
-/// embedded via `add_fonts` land in the CUSTOM collection and are silently
-/// skipped ("No matching font found"), so emoji fell through to Segoe UI
-/// Emoji. `AddFontResourceExW` without FR_PRIVATE makes the font visible in
-/// the system collection for this login session (no install, refcounted,
-/// gone after reboot). Upstream fix would be searching the custom
-/// collection too.
-#[cfg(target_os = "windows")]
-fn register_session_emoji_font() {
-    #[link(name = "gdi32")]
-    unsafe extern "system" {
-        fn AddFontResourceExW(name: *const u16, fl: u32, res: *mut core::ffi::c_void) -> i32;
-    }
-
-    let dir = std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("shogun-desktop")
-        .join("fonts");
-    let path = dir.join("Twemoji.Mozilla.ttf");
-    let up_to_date = std::fs::metadata(&path)
-        .map(|m| m.len() == TWEMOJI_MOZILLA.len() as u64)
-        .unwrap_or(false);
-    if !up_to_date {
-        if std::fs::create_dir_all(&dir).is_err() {
-            return;
-        }
-        if std::fs::write(&path, TWEMOJI_MOZILLA).is_err() {
-            return;
-        }
-    }
-    let wide: Vec<u16> = path
-        .as_os_str()
-        .to_string_lossy()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let added = unsafe { AddFontResourceExW(wide.as_ptr(), 0, std::ptr::null_mut()) };
-    if added == 0 {
-        eprintln!("emoji font session registration failed: {}", path.display());
-    }
-}
-
 fn main() {
-    #[cfg(target_os = "windows")]
-    register_session_emoji_font();
-
     Application::new().run(|cx| {
         let mut fonts: Vec<Cow<'static, [u8]>> = vec![
             Cow::Borrowed(MORALERSPACE_NEON),
