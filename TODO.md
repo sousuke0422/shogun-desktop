@@ -35,8 +35,13 @@
 
 ## 2. 未実装 — ターミナル機能（優先順）
 
-- [ ] **kitty keyboard protocol のエンコード** — vendored alacritty はモード追跡済み、
-      `keys.rs` が非対応。opencode（bubbletea v2）等が要求した場合キー挙動に影響
+- [x] **kitty keyboard protocol のエンコード** — 2026-07-04 実装。Config::kitty_keyboard
+      有効化（push/pop/CSI ? u 応答は alacritty、返信は PtyWrite 経由）＋ keys.rs が
+      TermMode でエンコード切替。flag 1 (disambiguate)・8 (all keys as esc) 対応、
+      flag 2 (event types) は key-up/repeat 未送出の縮退動作、4/16 未対応（省略合法）。
+      ついでにレガシー側も拡充: F1-F12・Insert・修飾付き矢印/Home/End/PgUp/PgDn
+      (CSI 1;m X / n;m ~)・Alt=ESC prefix。実機確認: `kitten show-key -m kitty` 相当か
+      claude code / opencode で矢印・Esc・ctrl+英字の挙動
 - [ ] **ssh/tmux ペインの履歴スクロール** — tmux は alternate screen 故サーバ側履歴。
       tmux `mouse on` なら `wheel_pty_bytes` を本窓ペインに配線するだけで動く見込み。
       copy-mode 中継 / capture-pane 方式はその後

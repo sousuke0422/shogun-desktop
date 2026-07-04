@@ -85,10 +85,10 @@ pub fn render_terminal_tab(
             // own tab bindings (see main.rs), routed straight to the PTY.
             .key_context(TERMINAL_KEY_CONTEXT)
             .on_action(cx.listener(|this, _: &TerminalSendTab, _window, _cx| {
-                this.send_bytes_to_active(b"\t");
+                this.send_tab_to_active(false);
             }))
             .on_action(cx.listener(|this, _: &TerminalSendBacktab, _window, _cx| {
-                this.send_bytes_to_active(b"\x1b[Z");
+                this.send_tab_to_active(true);
             }))
             .on_action(cx.listener(|this, _: &TerminalCopy, _window, cx| {
                 this.copy_selection(cx);

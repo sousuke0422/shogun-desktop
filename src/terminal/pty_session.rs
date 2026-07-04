@@ -276,6 +276,10 @@ fn build_terminal_session(
     // tool that only connects to our own infrastructure.
     let config = Config {
         osc52: alacritty_terminal::term::Osc52::CopyPaste,
+        // Track kitty keyboard-protocol pushes/pops and answer the CSI ? u
+        // query (reply arrives via Event::PtyWrite → ClipboardEvent). The
+        // resulting TermMode bits drive the encoder in terminal::keys.
+        kitty_keyboard: true,
         ..Config::default()
     };
     let term = Arc::new(FairMutex::new(Term::new(

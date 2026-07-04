@@ -210,6 +210,28 @@ impl ShellWindow {
             .filter(|s| s.is_connected())
             .map(|s| s.snapshot.lock().clone())
     }
+
+    fn term_mode(&self) -> alacritty_terminal::term::TermMode {
+        self.session
+            .as_ref()
+            .map(|s| *s.term.lock().mode())
+            .unwrap_or_else(alacritty_terminal::term::TermMode::empty)
+    }
+
+    /// Tab / back-tab via the key encoder — see ShogunWindow::send_tab_to_active.
+    fn send_tab(&self, shift: bool) {
+        let ks = gpui::Keystroke {
+            key: "tab".to_string(),
+            modifiers: gpui::Modifiers {
+                shift,
+                ..Default::default()
+            },
+            key_char: None,
+        };
+        if let Some(bytes) = key_to_pty_bytes(&ks, self.term_mode()) {
+            self.send_bytes(&bytes);
+        }
+    }
 }
 
 impl Render for ShellWindow {
@@ -297,10 +319,10 @@ impl Render for ShellWindow {
                 // bindings in main.rs target this key context.
                 .key_context(TERMINAL_KEY_CONTEXT)
                 .on_action(cx.listener(|this, _: &TerminalSendTab, _window, _cx| {
-                    this.send_bytes(b"\t");
+                    this.send_tab(false);
                 }))
                 .on_action(cx.listener(|this, _: &TerminalSendBacktab, _window, _cx| {
-                    this.send_bytes(b"\x1b[Z");
+                    this.send_tab(true);
                 }))
                 .on_action(cx.listener(|this, _: &TerminalCopy, _window, cx| {
                     selection::copy_to_clipboard(&this.selection, this.session.as_ref(), cx);
@@ -327,7 +349,7 @@ impl Render for ShellWindow {
                         cx.stop_propagation();
                         return;
                     }
-                    if let Some(bytes) = key_to_pty_bytes(ks) {
+                    if let Some(bytes) = key_to_pty_bytes(ks, this.term_mode()) {
                         this.send_bytes(&bytes);
                         cx.stop_propagation();
                     }

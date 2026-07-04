@@ -308,6 +308,28 @@ impl ShogunWindow {
         }
     }
 
+    /// Tab / back-tab for the TerminalSendTab/Backtab actions. Routed through
+    /// the key encoder — the actions bypass capture_key_down, so the kitty
+    /// keyboard-protocol mode must be applied here too (shift-tab is CSI Z
+    /// only in legacy mode; kitty-aware apps expect CSI 9;2u).
+    pub(crate) fn send_tab_to_active(&self, shift: bool) {
+        let Some(session) = self.active_session() else {
+            return;
+        };
+        let mode = *session.term.lock().mode();
+        let ks = gpui::Keystroke {
+            key: "tab".to_string(),
+            modifiers: gpui::Modifiers {
+                shift,
+                ..Default::default()
+            },
+            key_char: None,
+        };
+        if let Some(bytes) = key_to_pty_bytes(&ks, mode) {
+            session.send_bytes(&bytes);
+        }
+    }
+
     /// Paste the OS clipboard into the active pane's PTY (ctrl-shift-v /
     /// cmd-v via the `TerminalPaste` action), bracketed when the app
     /// enabled `?2004`.
@@ -685,7 +707,12 @@ impl ShogunWindow {
 
         // key_to_pty_bytes returns None for keys that must be left to the
         // platform text-input path (WM_CHAR / IME → TerminalIme handler).
-        let Some(bytes) = key_to_pty_bytes(&event.keystroke) else {
+        // The term mode selects the encoding (legacy vs kitty protocol).
+        let mode = self
+            .active_session()
+            .map(|s| *s.term.lock().mode())
+            .unwrap_or_else(alacritty_terminal::term::TermMode::empty);
+        let Some(bytes) = key_to_pty_bytes(&event.keystroke, mode) else {
             return false;
         };
         if let Some(session) = self.active_session() {
