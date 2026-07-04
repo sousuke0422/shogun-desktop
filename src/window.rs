@@ -243,6 +243,15 @@ impl SelectionHost for ShogunWindow {
     fn selection_state(&mut self) -> &mut SelectionState {
         &mut self.selection
     }
+
+    fn pane_session(&self, pane: usize) -> Option<&TerminalSession> {
+        // Pane indices from `selection_pane`: 0 = 将軍, 1 = 家老陣.
+        match pane {
+            0 => self.shogun_session.as_ref(),
+            1 => self.multiagent_session.as_ref(),
+            _ => None,
+        }
+    }
 }
 
 impl ImeHost for ShogunWindow {

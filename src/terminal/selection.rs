@@ -12,15 +12,48 @@
 //! The highlight itself is painted by `render_grid` (paint calls from the
 //! overlay canvas never reach the screen — see `render_terminal_tab`).
 
-use crate::terminal::{GridSnapshot, TerminalSession};
+use crate::terminal::{GridSnapshot, MouseReport, ReportButton, ReportMods, TerminalSession};
 use gpui::{
-    App, Bounds, ClipboardItem, DispatchPhase, Entity, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, ScrollHandle, Window,
+    App, Bounds, ClipboardItem, DispatchPhase, Entity, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, Window,
 };
 
 /// What a window must provide for the shared mouse-selection listeners.
 pub trait SelectionHost: 'static {
     fn selection_state(&mut self) -> &mut SelectionState;
+
+    /// The terminal session behind `pane`, consulted for mouse reporting
+    /// (clicks/drags forwarded to apps that asked for them — btop, claude
+    /// code's clickable menus, tmux `mouse on`). `None` = plain selection.
+    fn pane_session(&self, pane: usize) -> Option<&TerminalSession>;
+}
+
+/// Buttons that participate in reporting. Right is deliberately absent: it
+/// owns the local context menu, like Windows Terminal.
+fn report_button(button: MouseButton) -> Option<ReportButton> {
+    match button {
+        MouseButton::Left => Some(ReportButton::Left),
+        MouseButton::Middle => Some(ReportButton::Middle),
+        _ => None,
+    }
+}
+
+fn report_mods(mods: &Modifiers) -> ReportMods {
+    ReportMods {
+        alt: mods.alt,
+        ctrl: mods.control,
+    }
+}
+
+/// A press that was forwarded to the PTY. Drag motion and the release pair
+/// with it even if the app toggles reporting modes mid-drag, so the app
+/// never sees an unbalanced press/release.
+#[derive(Clone, Copy)]
+struct ReportDrag {
+    pane: usize,
+    button: ReportButton,
+    mods: ReportMods,
+    last_cell: (usize, usize),
 }
 
 /// A mouse-driven cell selection over one terminal pane's grid.
@@ -53,6 +86,10 @@ impl TerminalSelection {
 #[derive(Default)]
 pub struct SelectionState {
     sel: Option<TerminalSelection>,
+    /// In-flight reported (forwarded-to-PTY) drag, if any.
+    report: Option<ReportDrag>,
+    /// Last hover cell reported under `?1003` (all-motion), for dedup.
+    hover_cell: Option<(usize, usize)>,
 }
 
 impl SelectionState {
@@ -137,16 +174,35 @@ pub fn register_mouse_selection<V: SelectionHost>(
         let view = view.clone();
         let scroll = scroll.clone();
         move |ev: &MouseDownEvent, phase, _window, cx| {
-            if phase != DispatchPhase::Bubble
-                || ev.button != MouseButton::Left
-                || !bounds.contains(&ev.position)
-            {
+            if phase != DispatchPhase::Bubble || !bounds.contains(&ev.position) {
                 return;
             }
             let (row, col) = cell_at(&scroll, ev.position);
             view.update(cx, |this, cx| {
-                this.selection_state().begin(pane, row, col);
-                cx.notify();
+                // Mouse reporting first: apps that asked (btop, claude code
+                // menus, tmux `mouse on`) get the click. Shift is the
+                // universal bypass — hold it to select locally regardless.
+                if !ev.modifiers.shift
+                    && let Some(btn) = report_button(ev.button)
+                {
+                    let mods = report_mods(&ev.modifiers);
+                    let forwarded = this
+                        .pane_session(pane)
+                        .is_some_and(|s| s.mouse_to_pty(MouseReport::Press(btn), mods, col, row));
+                    if forwarded {
+                        this.selection_state().report = Some(ReportDrag {
+                            pane,
+                            button: btn,
+                            mods,
+                            last_cell: (row, col),
+                        });
+                        return;
+                    }
+                }
+                if ev.button == MouseButton::Left {
+                    this.selection_state().begin(pane, row, col);
+                    cx.notify();
+                }
             });
         }
     });
@@ -154,26 +210,79 @@ pub fn register_mouse_selection<V: SelectionHost>(
         let view = view.clone();
         let scroll = scroll.clone();
         move |ev: &MouseMoveEvent, phase, _window, cx| {
-            if phase != DispatchPhase::Bubble || ev.pressed_button != Some(MouseButton::Left) {
+            if phase != DispatchPhase::Bubble {
                 return;
             }
             let (row, col) = cell_at(&scroll, ev.position);
             view.update(cx, |this, cx| {
-                if this.selection_state().update_head(row, col) {
+                // Reported drag in flight: forward motion per cell change.
+                if let Some(drag) = this.selection_state().report
+                    && drag.pane == pane
+                {
+                    if drag.last_cell != (row, col) {
+                        if let Some(s) = this.pane_session(pane) {
+                            s.mouse_to_pty(
+                                MouseReport::Motion(Some(drag.button)),
+                                drag.mods,
+                                col,
+                                row,
+                            );
+                        }
+                        if let Some(drag) = this.selection_state().report.as_mut() {
+                            drag.last_cell = (row, col);
+                        }
+                    }
+                    return;
+                }
+                // Hover motion (only reported when the app set ?1003).
+                if ev.pressed_button.is_none() && bounds.contains(&ev.position) {
+                    if this.selection_state().hover_cell != Some((row, col)) {
+                        if let Some(s) = this.pane_session(pane) {
+                            s.mouse_to_pty(
+                                MouseReport::Motion(None),
+                                report_mods(&ev.modifiers),
+                                col,
+                                row,
+                            );
+                        }
+                        this.selection_state().hover_cell = Some((row, col));
+                    }
+                    return;
+                }
+                if ev.pressed_button == Some(MouseButton::Left)
+                    && this.selection_state().update_head(row, col)
+                {
                     cx.notify();
                 }
             });
         }
     });
-    window.on_mouse_event(move |ev: &MouseUpEvent, phase, _window, cx| {
-        if phase != DispatchPhase::Bubble || ev.button != MouseButton::Left {
-            return;
-        }
-        view.update(cx, |this, cx| {
-            if this.selection_state().end_drag() {
-                cx.notify();
+    window.on_mouse_event({
+        let scroll = scroll.clone();
+        move |ev: &MouseUpEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
             }
-        });
+            let (row, col) = cell_at(&scroll, ev.position);
+            view.update(cx, |this, cx| {
+                // Pair the release with a forwarded press, even if the app
+                // dropped reporting mid-drag (mouse_to_pty then no-ops).
+                if let Some(drag) = this.selection_state().report
+                    && drag.pane == pane
+                {
+                    if report_button(ev.button) == Some(drag.button) {
+                        if let Some(s) = this.pane_session(pane) {
+                            s.mouse_to_pty(MouseReport::Release(drag.button), drag.mods, col, row);
+                        }
+                        this.selection_state().report = None;
+                    }
+                    return;
+                }
+                if ev.button == MouseButton::Left && this.selection_state().end_drag() {
+                    cx.notify();
+                }
+            });
+        }
     });
 }
 

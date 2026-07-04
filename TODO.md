@@ -45,7 +45,13 @@
 - [ ] **ssh/tmux ペインの履歴スクロール** — tmux は alternate screen 故サーバ側履歴。
       tmux `mouse on` なら `wheel_pty_bytes` を本窓ペインに配線するだけで動く見込み。
       copy-mode 中継 / capture-pane 方式はその後
-- [ ] マウス click/drag のレポーティング転送（現状ホイールのみ。btop のクリック操作等）
+- [x] **マウス click/drag のレポーティング転送** — 2026-07-04 実装。動機: claude code
+      2.1.187 で select menu がクリック対応・2.1.178 で statusline リンクもクリック化。
+      `mouse_pty_bytes`（?1000 click / ?1002 drag / ?1003 hover、SGR/X10 両対応、
+      release は SGR=ボタン保持+'m'・X10=btn3、mods は alt+8/ctrl+16）＋
+      selection.rs のリスナーがレポーティング優先で分岐（shift＝ローカル選択バイパス、
+      右クリックはローカルメニュー温存 = WT 同様、press/release は mode 途中切替でも対で送る）。
+      実機確認待ち: btop のクリック操作・CC の /model メニュークリック・tmux `mouse on`
 - [x] **OSC 9;4 進捗表示** — 2026-07-04 実装。PTY reader の受動スキャナ
       (`terminal/progress.rs`、vte は 9;4 を捨てるため素通し監視) → タブ下端 +
       shell window ステータスバー下端に 3px バー（通常=虹色スクロール・ゲーミング仕様/
@@ -53,9 +59,20 @@
       実機確認待ち: `printf '\e]9;4;1;50\a'`
   - [ ] Phase 2: Windows タスクバー進捗 (ITaskbarList3::SetProgressValue)。
         HWND は vendored gpui に accessor を足すか EnumWindows+PID で取得
-- [ ] OSC 8 ハイパーリンクのクリック（パース済み・snapshot が捨てている）
+- [ ] **OSC 8 ハイパーリンクのクリック**（パース済み・snapshot が捨てている）。
+      優先度UP (2026-07-04): CC 2.1.181/187/191 で 3 連続「Cmd+click で URL が開かない」修正
+      = リンクを踏ませる前提の UI。マウスヒットテストを click レポーティングと共有できるので
+      上記とセット実装が効率的。修飾キー+クリック → ShellExecute/open
+- [ ] **Synchronized output (DEC ?2026)** — 新規 (2026-07-04)。CC 2.1.191 は更新を 100ms に
+      合体するなど高頻度書換方向。begin/end synchronized update の間は描画を保留して
+      チラつき根絶。WT/Ghostty/kitty 対応済みの現代標準。alacritty_terminal がパース済みなら
+      renderer 側でフラグを見るだけの可能性。高リフレッシュ構想 §3 の dirty batch 境界にも流用可
+- [ ] **Focus reporting (?1004)** — 新規 (2026-07-04)。focus in/out で `CSI I`/`CSI O`。
+      CC 2.1.181 の presence 検知（在席中は mobile push 抑止）の標準経路。vim/tmux も使う。数十行
 - [ ] OSC 0/2 ウィンドウタイトル反映（実害小）
-- [ ] OSC 9 / 777 デスクトップ通知 — エージェント完了通知に転用できる可能性
+- [ ] OSC 9 / 777 デスクトップ通知 — エージェント完了通知に転用できる可能性。
+      価値UP (2026-07-04): CC の `preferredNotifChannel` 設定だけで「足軽完了→Windows トースト」
+      が成立する。multi-agent-shogun 運用との相乗効果が最大の項目
 - [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）

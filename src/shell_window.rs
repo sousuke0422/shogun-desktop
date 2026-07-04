@@ -52,6 +52,10 @@ impl SelectionHost for ShellWindow {
     fn selection_state(&mut self) -> &mut SelectionState {
         &mut self.selection
     }
+
+    fn pane_session(&self, _pane: usize) -> Option<&TerminalSession> {
+        self.session.as_ref()
+    }
 }
 
 impl ImeHost for ShellWindow {

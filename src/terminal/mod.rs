@@ -123,6 +123,26 @@ impl TerminalSession {
         }
     }
 
+    /// Route a click/drag/motion event to the PTY when the running
+    /// application asked for mouse reporting. Returns `false` when the event
+    /// should be handled locally (selection) instead. See [`mouse_pty_bytes`].
+    pub fn mouse_to_pty(
+        &self,
+        event: MouseReport,
+        mods: ReportMods,
+        col: usize,
+        row: usize,
+    ) -> bool {
+        let mode = *self.term.lock().mode();
+        match mouse_pty_bytes(mode, event, mods, col, row) {
+            Some(buf) => {
+                self.send_bytes(&buf);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Paste text into the terminal, honoring bracketed-paste mode. Snaps the
     /// view back to the live bottom first, like typing does.
     pub fn paste(&self, text: &str) {
@@ -353,6 +373,96 @@ pub fn wheel_pty_bytes(
         Some(buf)
     } else {
         None
+    }
+}
+
+/// Mouse buttons that participate in click/drag reporting. The numeric value
+/// is the xterm button code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReportButton {
+    Left = 0,
+    Middle = 1,
+    /// Part of the wire protocol but never forwarded today: right-click
+    /// keeps the local context menu (see `selection::report_button`).
+    #[allow(dead_code)]
+    Right = 2,
+}
+
+/// A pointer event to (maybe) report to the application.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MouseReport {
+    Press(ReportButton),
+    Release(ReportButton),
+    /// Pointer moved. `Some(btn)` while a button is held (drag), `None` for
+    /// hover motion (only reported under `?1003`).
+    Motion(Option<ReportButton>),
+}
+
+/// Modifier bits added to the xterm button code (shift is intentionally
+/// absent: shift+click is the universal "bypass reporting, select locally"
+/// escape hatch and never reaches the encoder).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct ReportMods {
+    pub alt: bool,
+    pub ctrl: bool,
+}
+
+impl ReportMods {
+    fn bits(self) -> u32 {
+        (if self.alt { 8 } else { 0 }) + (if self.ctrl { 16 } else { 0 })
+    }
+}
+
+/// Encode a click/drag/motion event for the PTY, or `None` when the running
+/// application did not ask for that class of event.
+///
+/// Reporting tiers (each includes the previous):
+/// - `?1000` (MOUSE_REPORT_CLICK): press + release
+/// - `?1002` (MOUSE_DRAG): + motion while a button is held
+/// - `?1003` (MOUSE_MOTION): + all motion
+///
+/// Encoding is SGR (`?1006`, `CSI < Cb;col;row M|m`) when negotiated, X10
+/// otherwise (coordinates capped at 223; release loses the button identity —
+/// that is the protocol, not a bug). Wheel has its own path
+/// ([`wheel_pty_bytes`]).
+pub fn mouse_pty_bytes(
+    mode: alacritty_terminal::term::TermMode,
+    event: MouseReport,
+    mods: ReportMods,
+    col: usize,
+    row: usize,
+) -> Option<Vec<u8>> {
+    use alacritty_terminal::term::TermMode;
+    let wanted = match event {
+        MouseReport::Press(_) | MouseReport::Release(_) => TermMode::MOUSE_MODE,
+        MouseReport::Motion(Some(_)) => TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION,
+        MouseReport::Motion(None) => TermMode::MOUSE_MOTION,
+    };
+    if !mode.intersects(wanted) {
+        return None;
+    }
+    // Cb: button id + 32 for motion + modifier bits. Motion without a button
+    // reports the "released" id 3.
+    let (btn, motion, release) = match event {
+        MouseReport::Press(b) => (b as u32, false, false),
+        MouseReport::Release(b) => (b as u32, false, true),
+        MouseReport::Motion(b) => (b.map_or(3, |b| b as u32), true, false),
+    };
+    let cb = btn + if motion { 32 } else { 0 } + mods.bits();
+    if mode.contains(TermMode::SGR_MOUSE) {
+        let m = if release { 'm' } else { 'M' };
+        Some(format!("\x1b[<{cb};{};{}{m}", col + 1, row + 1).into_bytes())
+    } else {
+        // X10: release is always button 3, coordinates cap at 223 (255 - 32).
+        let cb = if release { 3 + mods.bits() } else { cb };
+        Some(vec![
+            0x1b,
+            b'[',
+            b'M',
+            (32 + cb).min(255) as u8,
+            (32 + (col + 1).min(223)) as u8,
+            (32 + (row + 1).min(223)) as u8,
+        ])
     }
 }
 
@@ -682,6 +792,118 @@ mod tests {
         // …until the app opts out with ?1007l.
         advance_bytes(&mut term, b"\x1b[?1007l");
         assert_eq!(wheel_pty_bytes(*term.mode(), 1, 0, 0), None);
+    }
+
+    #[test]
+    fn mouse_plain_shell_stays_local() {
+        let term = make_term(80, 24);
+        let ev = MouseReport::Press(ReportButton::Left);
+        assert_eq!(
+            mouse_pty_bytes(*term.mode(), ev, ReportMods::default(), 0, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn mouse_sgr_press_release_encode_button_and_suffix() {
+        let mut term = make_term(80, 24);
+        advance_bytes(&mut term, b"\x1b[?1000h\x1b[?1006h");
+        let mods = ReportMods::default();
+        let press = mouse_pty_bytes(
+            *term.mode(),
+            MouseReport::Press(ReportButton::Left),
+            mods,
+            5,
+            3,
+        );
+        assert_eq!(press.unwrap(), b"\x1b[<0;6;4M");
+        // SGR releases keep the button identity, with a lowercase suffix.
+        let release = mouse_pty_bytes(
+            *term.mode(),
+            MouseReport::Release(ReportButton::Left),
+            mods,
+            5,
+            3,
+        );
+        assert_eq!(release.unwrap(), b"\x1b[<0;6;4m");
+        let middle = mouse_pty_bytes(
+            *term.mode(),
+            MouseReport::Press(ReportButton::Middle),
+            mods,
+            0,
+            0,
+        );
+        assert_eq!(middle.unwrap(), b"\x1b[<1;1;1M");
+    }
+
+    #[test]
+    fn mouse_x10_release_is_button_three() {
+        let mut term = make_term(80, 24);
+        advance_bytes(&mut term, b"\x1b[?1000h");
+        let mods = ReportMods::default();
+        let press = mouse_pty_bytes(
+            *term.mode(),
+            MouseReport::Press(ReportButton::Left),
+            mods,
+            5,
+            3,
+        );
+        assert_eq!(press.unwrap(), &[0x1b, b'[', b'M', 32, 32 + 6, 32 + 4]);
+        let release = mouse_pty_bytes(
+            *term.mode(),
+            MouseReport::Release(ReportButton::Left),
+            mods,
+            5,
+            3,
+        );
+        assert_eq!(
+            release.unwrap(),
+            &[0x1b, b'[', b'M', 32 + 3, 32 + 6, 32 + 4]
+        );
+    }
+
+    #[test]
+    fn mouse_drag_motion_needs_1002_hover_needs_1003() {
+        let mut term = make_term(80, 24);
+        let mods = ReportMods::default();
+        let drag = MouseReport::Motion(Some(ReportButton::Left));
+        let hover = MouseReport::Motion(None);
+        // ?1000: clicks only — no motion of either kind.
+        advance_bytes(&mut term, b"\x1b[?1000h\x1b[?1006h");
+        assert_eq!(mouse_pty_bytes(*term.mode(), drag, mods, 0, 0), None);
+        assert_eq!(mouse_pty_bytes(*term.mode(), hover, mods, 0, 0), None);
+        // ?1002: drag motion carries the button + 32.
+        advance_bytes(&mut term, b"\x1b[?1002h");
+        assert_eq!(
+            mouse_pty_bytes(*term.mode(), drag, mods, 2, 1).unwrap(),
+            b"\x1b[<32;3;2M"
+        );
+        assert_eq!(mouse_pty_bytes(*term.mode(), hover, mods, 0, 0), None);
+        // ?1003: hover motion reports the released id 3 + 32 = 35.
+        advance_bytes(&mut term, b"\x1b[?1003h");
+        assert_eq!(
+            mouse_pty_bytes(*term.mode(), hover, mods, 2, 1).unwrap(),
+            b"\x1b[<35;3;2M"
+        );
+    }
+
+    #[test]
+    fn mouse_modifier_bits_add_to_button_code() {
+        let mut term = make_term(80, 24);
+        advance_bytes(&mut term, b"\x1b[?1000h\x1b[?1006h");
+        let mods = ReportMods {
+            alt: true,
+            ctrl: true,
+        };
+        let press = mouse_pty_bytes(
+            *term.mode(),
+            MouseReport::Press(ReportButton::Left),
+            mods,
+            0,
+            0,
+        );
+        // 0 (left) + 8 (alt) + 16 (ctrl) = 24.
+        assert_eq!(press.unwrap(), b"\x1b[<24;1;1M");
     }
 
     #[test]
