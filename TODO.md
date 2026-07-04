@@ -51,7 +51,12 @@
       release は SGR=ボタン保持+'m'・X10=btn3、mods は alt+8/ctrl+16）＋
       selection.rs のリスナーがレポーティング優先で分岐（shift＝ローカル選択バイパス、
       右クリックはローカルメニュー温存 = WT 同様、press/release は mode 途中切替でも対で送る）。
-      実機確認待ち: btop のクリック操作・CC の /model メニュークリック・tmux `mouse on`
+      **2026-07-05 実機確認済み**（tmux ペイン選択・ドラッグ転送とも動作。合成入力で
+      座標の完全一致を検証）。付随事故: 「横ドラッグで選択が縦にずれる」の真因は
+      本アプリではなく tmux — マウス掴みアプリ(opencode ?1003)のペイン内ドラッグが
+      境界セルを踏むと既定 MouseDrag1Border → resize-pane -M が発火し境界が追随、
+      リフローで選択が縦に動く。対処は ~/.tmux.conf の `unbind -n MouseDrag1Border`
+      （WSL 側・注入実験で再現と修正効果を確認済み）
 - [x] **OSC 9;4 進捗表示** — 2026-07-04 実装。PTY reader の受動スキャナ
       (`terminal/progress.rs`、vte は 9;4 を捨てるため素通し監視) → タブ下端 +
       shell window ステータスバー下端に 3px バー（通常=虹色スクロール・ゲーミング仕様/
