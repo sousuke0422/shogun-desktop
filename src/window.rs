@@ -1082,8 +1082,17 @@ impl ShogunWindow {
             .border_color(Colors::border())
             .children((0..6).map(|index| {
                 let selected = self.selected_tab == index;
+                // OSC 9;4 progress reported by the terminal behind this tab
+                // (将軍 / 家老陣), drawn as a thin bar along the tab's bottom.
+                let progress = match index {
+                    0 => self.shogun_session.as_ref(),
+                    5 => self.multiagent_session.as_ref(),
+                    _ => None,
+                }
+                .and_then(|s| s.progress.get());
                 div()
                     .id(("tab", index))
+                    .relative()
                     .flex_1()
                     .h_full()
                     .flex()
@@ -1098,6 +1107,7 @@ impl ShogunWindow {
                         Colors::muted()
                     })
                     .child(TAB_LABELS[index])
+                    .children(progress.map(render_progress_bar))
                     .on_click(cx.listener(move |this, event, window, cx| {
                         if index != 4 {
                             this.select_tab(index, event, window, cx);
@@ -1105,6 +1115,37 @@ impl ShogunWindow {
                     }))
             }))
     }
+}
+
+/// Thin OSC 9;4 progress bar pinned to its parent's bottom edge (the parent
+/// must be `.relative()`). Used on the terminal tabs and the shell window's
+/// status bar.
+///
+/// Colors follow the taskbar conventions: normal=松葉 (green), error=紅,
+/// warning/paused=金箔, indeterminate=full-width muted (no meaningful value).
+pub fn render_progress_bar(
+    (state, percent): (crate::terminal::progress::ProgressState, u8),
+) -> gpui::Div {
+    use crate::terminal::progress::ProgressState;
+    let (color, fraction) = match state {
+        ProgressState::Normal => (Colors::matsuba(), percent as f32 / 100.0),
+        ProgressState::Error => (Colors::kurenai(), (percent as f32 / 100.0).max(0.05)),
+        ProgressState::Warning => (Colors::kinpaku(), (percent as f32 / 100.0).max(0.05)),
+        ProgressState::Indeterminate => (Colors::muted(), 1.0),
+    };
+    div()
+        .absolute()
+        .bottom_0()
+        .left_0()
+        .right_0()
+        .h(px(3.))
+        .bg(Colors::raised())
+        .child(
+            div()
+                .h_full()
+                .w(gpui::relative(fraction.clamp(0.0, 1.0)))
+                .bg(color),
+        )
 }
 
 impl Render for ShogunWindow {

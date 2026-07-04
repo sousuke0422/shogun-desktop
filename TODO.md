@@ -41,6 +41,12 @@
       tmux `mouse on` なら `wheel_pty_bytes` を本窓ペインに配線するだけで動く見込み。
       copy-mode 中継 / capture-pane 方式はその後
 - [ ] マウス click/drag のレポーティング転送（現状ホイールのみ。btop のクリック操作等）
+- [x] **OSC 9;4 進捗表示** — 2026-07-04 実装。PTY reader の受動スキャナ
+      (`terminal/progress.rs`、vte は 9;4 を捨てるため素通し監視) → タブ下端 +
+      shell window ステータスバー下端に 3px バー（通常=松葉/エラー=紅/警告=金箔/
+      不定=muted 全幅）。実機確認待ち: `printf '\e]9;4;1;50\a'`
+  - [ ] Phase 2: Windows タスクバー進捗 (ITaskbarList3::SetProgressValue)。
+        HWND は vendored gpui に accessor を足すか EnumWindows+PID で取得
 - [ ] OSC 8 ハイパーリンクのクリック（パース済み・snapshot が捨てている）
 - [ ] OSC 0/2 ウィンドウタイトル反映（実害小）
 - [ ] OSC 9 / 777 デスクトップ通知 — エージェント完了通知に転用できる可能性

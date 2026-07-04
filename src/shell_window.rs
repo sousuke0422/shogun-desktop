@@ -439,12 +439,21 @@ impl Render for ShellWindow {
                     .w_full()
                     .h(px(24.))
                     .bg(status_bg)
+                    .relative()
                     .flex()
                     .items_center()
                     .px_2()
                     .text_color(Colors::zouge())
                     .text_size(px(12.))
-                    .child(status_text),
+                    .child(status_text)
+                    // OSC 9;4 progress from the running application, drawn
+                    // along the status bar's bottom edge.
+                    .children(
+                        self.session
+                            .as_ref()
+                            .and_then(|s| s.progress.get())
+                            .map(crate::window::render_progress_bar),
+                    ),
             )
             .child(div().flex_1().overflow_hidden().child(terminal_body))
     }

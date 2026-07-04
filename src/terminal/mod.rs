@@ -1,5 +1,6 @@
 pub mod ime;
 pub mod keys;
+pub mod progress;
 pub mod pty_session;
 pub mod renderer;
 pub mod selection;
@@ -86,6 +87,9 @@ pub struct TerminalSession {
     pub notify: Arc<tokio::sync::Notify>,
     #[allow(dead_code)]
     pub error: Arc<FairMutex<Option<String>>>,
+    /// OSC 9;4 progress reported by the running application (written by the
+    /// PTY reader thread, read by the UI). See [`progress`].
+    pub progress: Arc<progress::Progress>,
     /// Current terminal width in columns (updated by `resize`).
     pub cols: AtomicU16,
     /// Current terminal height in rows (updated by `resize`).
