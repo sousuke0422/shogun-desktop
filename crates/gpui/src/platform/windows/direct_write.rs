@@ -786,6 +786,17 @@ impl DirectWriteState {
     }
 
     fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+        // PATCHED (shogun-desktop): color glyphs whose BASE outline is empty
+        // (e.g. Twemoji Mozilla COLRv0 — unlike Segoe UI Emoji, it carries no
+        // monochrome fallback outline) yield 0×0 alpha bounds here, and
+        // rasterize_glyph then bails with "glyph bounds are empty", so the
+        // emoji never appears. For emoji, take the union of the COLR layer
+        // bounds instead, falling back to the monochrome path.
+        if params.is_emoji {
+            if let Ok(Some(bounds)) = self.color_raster_bounds(params) {
+                return Ok(bounds);
+            }
+        }
         let glyph_analysis = self.create_glyph_run_analysis(params)?;
 
         let bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1)? };
@@ -804,6 +815,103 @@ impl DirectWriteState {
                 ),
             })
         }
+    }
+
+    /// PATCHED (shogun-desktop): union of the COLR layer alpha bounds of a
+    /// color glyph, in the same coordinate space as [`Self::raster_bounds`].
+    /// `Ok(None)` when the glyph has no COLR layers with visible coverage.
+    fn color_raster_bounds(
+        &self,
+        params: &RenderGlyphParams,
+    ) -> Result<Option<Bounds<DevicePixels>>> {
+        let font = &self.fonts[params.font_id.0];
+        let subpixel_shift = params
+            .subpixel_variant
+            .map(|v| v as f32 / SUBPIXEL_VARIANTS_X as f32);
+        let baseline_origin_x = subpixel_shift.x / params.scale_factor;
+        let baseline_origin_y = subpixel_shift.y / params.scale_factor;
+        let transform = DWRITE_MATRIX {
+            m11: params.scale_factor,
+            m12: 0.0,
+            m21: 0.0,
+            m22: params.scale_factor,
+            dx: 0.0,
+            dy: 0.0,
+        };
+        let glyph_id = [params.glyph_id.0 as u16];
+        let advance = [0.0f32];
+        let offset = [DWRITE_GLYPH_OFFSET {
+            advanceOffset: 0.0,
+            ascenderOffset: 0.0,
+        }];
+        let glyph_run = DWRITE_GLYPH_RUN {
+            fontFace: unsafe { std::mem::transmute_copy(&font.font_face) },
+            fontEmSize: params.font_size.0,
+            glyphCount: 1,
+            glyphIndices: glyph_id.as_ptr(),
+            glyphAdvances: advance.as_ptr(),
+            glyphOffsets: offset.as_ptr(),
+            isSideways: BOOL(0),
+            bidiLevel: 0,
+        };
+        let color_enumerator = unsafe {
+            self.components.factory.TranslateColorGlyphRun(
+                Vector2::new(baseline_origin_x, baseline_origin_y),
+                &glyph_run,
+                None,
+                DWRITE_GLYPH_IMAGE_FORMATS_COLR,
+                DWRITE_MEASURING_MODE_NATURAL,
+                Some(&transform),
+                0,
+            )
+        }?;
+
+        let mut union_rect: Option<RECT> = None;
+        loop {
+            let color_run = unsafe { color_enumerator.GetCurrentRun() }?;
+            let color_run = unsafe { &*color_run };
+            let image_format = color_run.glyphImageFormat & !DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE;
+            if image_format == DWRITE_GLYPH_IMAGE_FORMATS_COLR {
+                let color_analysis = unsafe {
+                    self.components.factory.CreateGlyphRunAnalysis(
+                        &color_run.Base.glyphRun as *const _,
+                        Some(&transform),
+                        DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                        DWRITE_GRID_FIT_MODE_DEFAULT,
+                        DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+                        baseline_origin_x,
+                        baseline_origin_y,
+                    )
+                }?;
+                if let Ok(b) =
+                    unsafe { color_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1) }
+                {
+                    if b.right > b.left && b.bottom > b.top {
+                        union_rect = Some(match union_rect {
+                            None => b,
+                            Some(u) => RECT {
+                                left: u.left.min(b.left),
+                                top: u.top.min(b.top),
+                                right: u.right.max(b.right),
+                                bottom: u.bottom.max(b.bottom),
+                            },
+                        });
+                    }
+                }
+            }
+            let has_next = unsafe { color_enumerator.MoveNext() }
+                .map(|e| e.as_bool())
+                .unwrap_or(false);
+            if !has_next {
+                break;
+            }
+        }
+
+        Ok(union_rect.map(|r| Bounds {
+            origin: point(r.left.into(), r.top.into()),
+            size: size((r.right - r.left).into(), (r.bottom - r.top).into()),
+        }))
     }
 
     fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
