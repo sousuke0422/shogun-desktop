@@ -121,6 +121,21 @@ fn main() {
                 window::TerminalPaste,
                 Some(window::TERMINAL_KEY_CONTEXT),
             ),
+            // Classic terminal copy/paste keys (Windows Terminal binds them
+            // too). Also the escape hatch when a resident app squats
+            // ctrl-shift-c as a global hotkey: RegisterHotKey interception
+            // happens before this app ever sees WM_KEYDOWN, so no in-app
+            // binding can win (observed 2026-07-04).
+            gpui::KeyBinding::new(
+                "ctrl-insert",
+                window::TerminalCopy,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+            gpui::KeyBinding::new(
+                "shift-insert",
+                window::TerminalPaste,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
         ]);
         open_shogun_window(cx);
     });

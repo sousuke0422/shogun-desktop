@@ -93,11 +93,16 @@ Start-Sleep -Milliseconds 800
 $rect = New-Object E2E+RECT
 [E2E]::GetWindowRect($script:hwnd, [ref]$rect) | Out-Null
 
-# Drag across the terminal area: 25%,35% -> 65%,45% of the window.
-$x1 = $rect.Left + [int](($rect.Right - $rect.Left) * 0.25)
+# Drag across the terminal area: 8%,35% -> 90%,55% of the window.
+# Wide on purpose: rows strictly between the endpoints are selected
+# full-width, so any text row inside the band yields non-empty copy text.
+# (A narrow band once landed entirely on blank cells: the highlight showed
+# but the trimmed selection text was empty, so nothing reached the
+# clipboard and the run false-FAILed.)
+$x1 = $rect.Left + [int](($rect.Right - $rect.Left) * 0.08)
 $y1 = $rect.Top  + [int](($rect.Bottom - $rect.Top) * 0.35)
-$x2 = $rect.Left + [int](($rect.Right - $rect.Left) * 0.65)
-$y2 = $rect.Top  + [int](($rect.Bottom - $rect.Top) * 0.45)
+$x2 = $rect.Left + [int](($rect.Right - $rect.Left) * 0.90)
+$y2 = $rect.Top  + [int](($rect.Bottom - $rect.Top) * 0.55)
 Write-Output "DRAG ($x1,$y1) -> ($x2,$y2)"
 
 [E2E]::SetCursorPos($x1, $y1) | Out-Null
@@ -152,12 +157,29 @@ Start-Sleep -Milliseconds 100
 Start-Sleep -Milliseconds 1000
 
 $clip = Get-Clipboard -Raw -ErrorAction SilentlyContinue
+$viaCsc = -not ([string]::IsNullOrWhiteSpace($clip) -or $clip -eq $sentinel)
+
+# Fallback: ctrl+insert (also bound to copy). A resident app can hold
+# ctrl+shift+c as a RegisterHotKey global hotkey, in which case the app
+# never receives the key at all (observed 2026-07-04).
+if (-not $viaCsc) {
+    [E2E]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
+    [E2E]::keybd_event(0x2D, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 100
+    [E2E]::keybd_event(0x2D, 0, 2, [UIntPtr]::Zero)
+    [E2E]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 1000
+    $clip = Get-Clipboard -Raw -ErrorAction SilentlyContinue
+}
 Write-Output "CLIPBOARD>>>$clip<<<END"
 Stop-App
 
 if ([string]::IsNullOrWhiteSpace($clip) -or $clip -eq $sentinel) {
     Write-Output 'FAIL: clipboard did not receive the selection'
     exit 1
+}
+if (-not $viaCsc) {
+    Write-Output 'WARN: ctrl+shift+c was swallowed system-wide (global hotkey?); copy worked via ctrl+insert'
 }
 Write-Output 'PASS'
 exit 0
