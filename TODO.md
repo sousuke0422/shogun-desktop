@@ -68,13 +68,14 @@ Air は 60Hz（ProMotion なし）→ 省電力側の検証機。
 - [x] **push**: 2026-07-04 完了（Windows git で `--force-with-lease`、61c2b38）。
       匿名化履歴（`Users\aki`→`Users\dev`）が origin に反映済み。
       過去メモの旧ハッシュ参照は 2026-07-04 に新ハッシュへ付替済み
-- [ ] **shogun-suite を GitHub に新規作成して push**（remote 未設定のローカル repo。
-      public 推奨 = CI が素の github.token で checkout 可。private なら
-      shogun-desktop 側に `SUITE_CHECKOUT_TOKEN` secret 登録）
-- [ ] CI 緑化確認 → `v0.1.0` タグ → GitHub Release（macOS .app zip + Windows exe 恒久添付）
-- [ ] **MacBook Air 展開**: Release から zip 取得・`xattr -dr com.apple.quarantine`・
-      実機検証（IME/ことえり・cmd 系キー・絵文字 COLRv0・全機能）。参照第一候補は
-      ghostty（MIT）。Zed/cosmic-term ソースは最終手段（GPL 回避）
+- [ ] shogun-suite を GitHub に新規作成して push — **当面棚上げ**（shogun-core は
+      crates/shogun-core に暫定同梱済み・CI 単一 checkout。suite 復活時に two-repo 構成へ戻す）
+- [x] CI 緑化 → Release: **v0.1.0（2026-07-04 初回）→ v0.2.0 → v0.2.1 発行済み**。
+      v0.2.1 = mac アイコン角丸プレート化・正規 iconset・zip 新構造・plist バージョン注入込み
+- [ ] **MacBook Air 展開**: v0.2.1 の zip を取得 → 展開 → `setup.command` を
+      右クリック→開く（quarantine 解除＋起動まで自動）。
+      実機検証: IME/ことえり・cmd 系キー・絵文字 COLRv0（CoreText 側は未検証！）・
+      アイコン見た目・全機能。参照第一候補は ghostty（MIT）、Zed/cosmic-term は最終手段
 - [ ] mac 版 E2E（osascript/CGEvent）— 必要になってから
 - [ ] **Linux 対応時**: gpui 0.2.2 は Linux で FontFallbacks 無視＋emoji 判定が
       NotoColorEmoji 固定 → 上流 PR が本命。Noto に落ちる分には殿許容済み
