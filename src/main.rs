@@ -100,37 +100,16 @@ fn main() {
                 window::TerminalSendBacktab,
                 Some(window::TERMINAL_KEY_CONTEXT),
             ),
-            // Copy the mouse selection. Plain ctrl-c must keep sending SIGINT
-            // to the PTY, so copy lives on the terminal-conventional
-            // ctrl-shift-c (and cmd-c on macOS).
-            gpui::KeyBinding::new(
-                "ctrl-shift-c",
-                window::TerminalCopy,
-                Some(window::TERMINAL_KEY_CONTEXT),
-            ),
-            gpui::KeyBinding::new(
-                "cmd-c",
-                window::TerminalCopy,
-                Some(window::TERMINAL_KEY_CONTEXT),
-            ),
-            // Paste (bracketed when the app enabled ?2004). Plain ctrl-v must
-            // keep sending ^V (shell literal-next), so paste mirrors copy on
-            // ctrl-shift-v (and cmd-v on macOS).
-            gpui::KeyBinding::new(
-                "ctrl-shift-v",
-                window::TerminalPaste,
-                Some(window::TERMINAL_KEY_CONTEXT),
-            ),
-            gpui::KeyBinding::new(
-                "cmd-v",
-                window::TerminalPaste,
-                Some(window::TERMINAL_KEY_CONTEXT),
-            ),
-            // Classic terminal copy/paste keys (Windows Terminal binds them
-            // too). Also the escape hatch when a resident app squats
-            // ctrl-shift-c as a global hotkey: RegisterHotKey interception
-            // happens before this app ever sees WM_KEYDOWN, so no in-app
-            // binding can win (observed 2026-07-04).
+            // Copy / paste bindings. NOTE: later bindings take precedence in
+            // gpui, and UI affordances (the right-click menu) display the
+            // highest-precedence chord — so the conventional ctrl-shift-c /
+            // ctrl-shift-v must be registered LAST.
+            //
+            // ctrl-insert / shift-insert: classic terminal keys (Windows
+            // Terminal binds them too), and the escape hatch when a resident
+            // app squats ctrl-shift-c as a RegisterHotKey global hotkey —
+            // interception happens before this app ever sees WM_KEYDOWN, so
+            // no in-app binding can win (observed 2026-07-04).
             gpui::KeyBinding::new(
                 "ctrl-insert",
                 window::TerminalCopy,
@@ -138,6 +117,46 @@ fn main() {
             ),
             gpui::KeyBinding::new(
                 "shift-insert",
+                window::TerminalPaste,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+            // macOS chords.
+            gpui::KeyBinding::new(
+                "cmd-c",
+                window::TerminalCopy,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+            gpui::KeyBinding::new(
+                "cmd-v",
+                window::TerminalPaste,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+            // Primary chords (displayed in menus). Plain ctrl-c must keep
+            // sending SIGINT and plain ctrl-v must keep sending ^V (shell
+            // literal-next), so copy/paste live on the shifted variants.
+            gpui::KeyBinding::new(
+                "ctrl-shift-c",
+                window::TerminalCopy,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+            gpui::KeyBinding::new(
+                "ctrl-shift-v",
+                window::TerminalPaste,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+        ]);
+        // On macOS the platform-native cmd chords are the ones menus should
+        // display — re-register them after everything else so they take the
+        // highest precedence there.
+        #[cfg(target_os = "macos")]
+        cx.bind_keys([
+            gpui::KeyBinding::new(
+                "cmd-c",
+                window::TerminalCopy,
+                Some(window::TERMINAL_KEY_CONTEXT),
+            ),
+            gpui::KeyBinding::new(
+                "cmd-v",
                 window::TerminalPaste,
                 Some(window::TERMINAL_KEY_CONTEXT),
             ),
