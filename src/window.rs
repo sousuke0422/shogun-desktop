@@ -1133,18 +1133,14 @@ impl Render for ShogunWindow {
             let vp = window.viewport_size();
             // Prefer the pane size the overlay canvas actually painted —
             // exact regardless of chrome heights, borders or DPI rounding.
-            // It is the pane's padding box (`size_full` on an absolute child
-            // resolves against container minus border), so subtract the
-            // padding. The chrome-height estimate only covers the first
-            // frame, before anything has painted.
+            // The overlay is pinned to the pane's content box (inset by the
+            // padding), so the measurement is the grid area directly. The
+            // chrome-height estimate only covers the first frame, before
+            // anything has painted.
             let (mw, mh) = self.pane_measured.get();
-            let content_w = if mw > 0.0 {
-                mw - TERMINAL_PANE_PADDING_PX
-            } else {
-                vp.width / px(1.)
-            };
+            let content_w = if mw > 0.0 { mw } else { vp.width / px(1.) };
             let content_h = if mh > 0.0 {
-                (mh - TERMINAL_PANE_PADDING_PX).max(ch)
+                mh.max(ch)
             } else {
                 ((vp.height / px(1.)) - 104.0 - TERMINAL_PANE_PADDING_PX).max(ch)
             };

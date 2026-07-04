@@ -206,16 +206,13 @@ impl Render for ShellWindow {
         let (cw, ch) = measure_cell_metrics(&cx.text_system(), MONO_FONT, window.scale_factor());
         {
             let vp = window.viewport_size();
-            // Prefer the painted pane size (padding box — subtract the
-            // padding); estimate chrome only for the first, pre-paint frame.
+            // Prefer the painted pane size (the overlay canvas is pinned to
+            // the content box, so this is the grid area directly); estimate
+            // chrome only for the first, pre-paint frame.
             let (mw, mh) = self.pane_measured.get();
-            let content_w = if mw > 0.0 {
-                mw - TERMINAL_PANE_PADDING_PX
-            } else {
-                vp.width / px(1.)
-            };
+            let content_w = if mw > 0.0 { mw } else { vp.width / px(1.) };
             let content_h = if mh > 0.0 {
-                (mh - TERMINAL_PANE_PADDING_PX).max(ch)
+                mh.max(ch)
             } else {
                 ((vp.height / px(1.)) - 24.0 - TERMINAL_PANE_PADDING_PX).max(ch)
             };
@@ -396,8 +393,16 @@ impl Render for ShellWindow {
                             );
                         },
                     )
+                    // Content-box pinned, NOT size_full: taffy counts
+                    // absolute children toward the scroll container's content
+                    // size, and a padding-box-sized overlay made the pane
+                    // permanently scrollable by the padding (micro-scroll).
+                    // See render_terminal_tab for the full story.
                     .absolute()
-                    .size_full(),
+                    .top(px(TERMINAL_PANE_PADDING_PX / 2.0))
+                    .left(px(TERMINAL_PANE_PADDING_PX / 2.0))
+                    .right(px(TERMINAL_PANE_PADDING_PX / 2.0))
+                    .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0)),
                 )
                 .child(render_grid(
                     &snap,

@@ -4,8 +4,8 @@ use crate::terminal::renderer::render_grid;
 use crate::terminal::selection;
 use crate::theme::Colors;
 use crate::window::{
-    ShogunWindow, TERMINAL_KEY_CONTEXT, TerminalCopy, TerminalPaste, TerminalSendBacktab,
-    TerminalSendTab, selection_pane,
+    ShogunWindow, TERMINAL_KEY_CONTEXT, TERMINAL_PANE_PADDING_PX, TerminalCopy, TerminalPaste,
+    TerminalSendBacktab, TerminalSendTab, selection_pane,
 };
 use gpui::{
     App, Context, ElementInputHandler, Entity, FocusHandle, IntoElement, KeyDownEvent,
@@ -178,8 +178,20 @@ pub fn render_terminal_tab(
                         );
                     },
                 )
+                // Pinned to the CONTENT box (inset by the pane padding), NOT
+                // size_full: taffy counts absolute children toward the
+                // scroll container's content size (inflow ⊔ absolute), and a
+                // padding-box-sized overlay plus the re-added padding made
+                // the pane permanently scrollable by 8px — the micro-scroll.
+                // scroll_to_bottom() then pinned that phantom overflow,
+                // clipping the top row and leaving a bottom gap. Bonus: the
+                // overlay origin now coincides with the grid origin, so the
+                // selection pointer→cell mapping loses its 4px skew.
                 .absolute()
-                .size_full(),
+                .top(px(TERMINAL_PANE_PADDING_PX / 2.0))
+                .left(px(TERMINAL_PANE_PADDING_PX / 2.0))
+                .right(px(TERMINAL_PANE_PADDING_PX / 2.0))
+                .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0)),
             )
             .child(render_grid(snap, font, cw, ch, selection, ime_preedit)),
     )
