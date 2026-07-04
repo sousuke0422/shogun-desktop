@@ -84,8 +84,8 @@ pub(crate) struct Run {
     pub bg: ResolvedColor,
     /// Total display-column width of this run (sum of each cell's `display_width`).
     pub width: usize,
-    pub bold: bool,
-    pub underline: bool,
+    /// SGR attributes shared by every cell in this run.
+    pub style: crate::terminal::CellStyle,
     /// True for the single run that sits at the cursor position.
     pub is_cursor: bool,
     /// True when every char in this run is a geometry-rendered box char (U+2500-U+259F).
@@ -105,21 +105,39 @@ pub fn color_to_rgba(color: ResolvedColor) -> Rgba {
     }
 }
 
-/// Resolve the display fg/bg for a [`Run`], applying block-cursor inversion.
+/// Resolve the display fg/bg for a [`Run`], applying SGR inverse/dim and
+/// block-cursor inversion (in that order — the cursor inverts whatever the
+/// cell already displays).
 ///
 /// Returns `(fg, bg_opt)`.  `None` bg means transparent.
 fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
-    let resolved_fg = color_to_rgba(run.fg);
-    let resolved_bg = match run.bg {
+    let mut fg = color_to_rgba(run.fg);
+    let mut bg = match run.bg {
         ResolvedColor::Rgb(r, g, b) => Some(rgba(u32::from_be_bytes([r, g, b, 0xff]))),
         ResolvedColor::Default => None,
     };
+    if run.style.inverse {
+        // SGR 7: swap fg/bg. A transparent default bg swaps in as the pane's
+        // base color so the inverted text stays legible.
+        let new_bg = Some(fg);
+        fg = bg.unwrap_or_else(Colors::shikkoku);
+        bg = new_bg;
+    }
+    if run.style.dim {
+        // SGR 2 (faint): scale the ink toward black, leaving bg untouched.
+        fg = Rgba {
+            r: fg.r * 0.6,
+            g: fg.g * 0.6,
+            b: fg.b * 0.6,
+            a: fg.a,
+        };
+    }
     if run.is_cursor {
-        let cursor_bg = resolved_fg;
-        let cursor_fg = resolved_bg.unwrap_or_else(|| rgba(0x1e1e1eff));
+        let cursor_bg = fg;
+        let cursor_fg = bg.unwrap_or_else(|| rgba(0x1e1e1eff));
         (cursor_fg, Some(cursor_bg))
     } else {
-        (resolved_fg, resolved_bg)
+        (fg, bg)
     }
 }
 
@@ -779,11 +797,20 @@ pub fn render_grid(
                             continue;
                         }
 
+                        // SGR 8 (hidden): bg is painted, ink is not.
+                        if run.style.hidden {
+                            continue;
+                        }
+
                         // Blank runs (all spaces, no decoration) have no ink at
                         // all — bg is already painted above. Most of a terminal
                         // grid is blank, so skipping the shape+paint here is the
                         // single biggest per-frame saving.
-                        if !run.underline && run.text.bytes().all(|b| b == b' ') {
+                        if !run.style.underline
+                            && !run.style.undercurl
+                            && !run.style.strikeout
+                            && run.text.bytes().all(|b| b == b' ')
+                        {
                             continue;
                         }
 
@@ -799,15 +826,26 @@ pub fn render_grid(
                         //     with force_width = width × cw (glyph n of an
                         //     all-wide segment belongs at n × 2cw).
                         let mut run_font = terminal_font(&font_name);
-                        if run.bold {
+                        if run.style.bold {
                             run_font.weight = FontWeight::BOLD;
                         }
+                        if run.style.italic {
+                            // The bundled mono font has no italic face; the
+                            // platform synthesizes an oblique where it can.
+                            run_font.style = gpui::FontStyle::Italic;
+                        }
                         let fg_hsla: gpui::Hsla = fg_rgba.into();
-                        let underline_style = run.underline.then_some(gpui::UnderlineStyle {
-                            color: Some(fg_hsla),
-                            thickness: px(1.),
-                            wavy: false,
-                        });
+                        let underline_style = (run.style.underline || run.style.undercurl)
+                            .then_some(gpui::UnderlineStyle {
+                                color: Some(fg_hsla),
+                                thickness: px(1.),
+                                wavy: run.style.undercurl,
+                            });
+                        let strikethrough_style =
+                            run.style.strikeout.then_some(gpui::StrikethroughStyle {
+                                color: Some(fg_hsla),
+                                thickness: px(1.),
+                            });
 
                         let all_narrow = run.char_widths.iter().all(|&w| w == 1);
                         if all_narrow {
@@ -817,7 +855,7 @@ pub fn render_grid(
                                 color: fg_hsla,
                                 background_color: None,
                                 underline: underline_style,
-                                strikethrough: None,
+                                strikethrough: strikethrough_style,
                             };
                             let line = window.text_system().shape_line(
                                 run.text.into(),
@@ -848,7 +886,7 @@ pub fn render_grid(
                                     color: fg_hsla,
                                     background_color: None,
                                     underline: underline_style,
-                                    strikethrough: None,
+                                    strikethrough: strikethrough_style,
                                 };
                                 let line = window.text_system().shape_line(
                                     std::mem::take(seg).into(),
@@ -943,8 +981,7 @@ pub(crate) fn coalesce_runs(
                 && !last.is_cursor
                 && last.fg == cell.fg
                 && last.bg == cell.bg
-                && last.bold == cell.bold
-                && last.underline == cell.underline
+                && last.style == cell.style
                 && last.use_geom == use_geom
             {
                 last.text.push(cell.c);
@@ -958,8 +995,7 @@ pub(crate) fn coalesce_runs(
             fg: cell.fg,
             bg: cell.bg,
             width: w,
-            bold: cell.bold,
-            underline: cell.underline,
+            style: cell.style,
             is_cursor,
             use_geom,
             char_widths: vec![w as u8],
@@ -971,38 +1007,27 @@ pub(crate) fn coalesce_runs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::{ResolvedColor, SnapshotCell};
+    use crate::terminal::{CellStyle, ResolvedColor, SnapshotCell};
 
     fn cell(c: char) -> SnapshotCell {
         SnapshotCell {
             c,
-            fg: ResolvedColor::Default,
-            bg: ResolvedColor::Default,
-            display_width: 1,
-            bold: false,
-            underline: false,
+            ..SnapshotCell::blank()
         }
     }
 
     fn cell_wide(c: char) -> SnapshotCell {
         SnapshotCell {
             c,
-            fg: ResolvedColor::Default,
-            bg: ResolvedColor::Default,
             display_width: 2,
-            bold: false,
-            underline: false,
+            ..SnapshotCell::blank()
         }
     }
 
     fn cell_spacer() -> SnapshotCell {
         SnapshotCell {
-            c: ' ',
-            fg: ResolvedColor::Default,
-            bg: ResolvedColor::Default,
             display_width: 0,
-            bold: false,
-            underline: false,
+            ..SnapshotCell::blank()
         }
     }
 
@@ -1010,33 +1035,34 @@ mod tests {
         SnapshotCell {
             c,
             fg: ResolvedColor::Rgb(r, g, b),
-            bg: ResolvedColor::Default,
-            display_width: 1,
-            bold: false,
-            underline: false,
+            ..SnapshotCell::blank()
         }
     }
 
     fn cell_bg(c: char, r: u8, g: u8, b: u8) -> SnapshotCell {
         SnapshotCell {
             c,
-            fg: ResolvedColor::Default,
             bg: ResolvedColor::Rgb(r, g, b),
-            display_width: 1,
-            bold: false,
-            underline: false,
+            ..SnapshotCell::blank()
+        }
+    }
+
+    fn cell_styled(c: char, style: CellStyle) -> SnapshotCell {
+        SnapshotCell {
+            c,
+            style,
+            ..SnapshotCell::blank()
         }
     }
 
     fn cell_bold(c: char) -> SnapshotCell {
-        SnapshotCell {
+        cell_styled(
             c,
-            fg: ResolvedColor::Default,
-            bg: ResolvedColor::Default,
-            display_width: 1,
-            bold: true,
-            underline: false,
-        }
+            CellStyle {
+                bold: true,
+                ..CellStyle::default()
+            },
+        )
     }
 
     #[test]
@@ -1076,6 +1102,63 @@ mod tests {
         let cells = [cell('a'), cell_bold('b')];
         let runs: Vec<_> = coalesce_runs(&cells, None).collect();
         assert_eq!(runs.len(), 2);
+    }
+
+    #[test]
+    fn any_style_difference_splits_run() {
+        let italic = CellStyle {
+            italic: true,
+            ..CellStyle::default()
+        };
+        let cells = [cell_styled('a', italic), cell('b'), cell('c')];
+        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
+        assert_eq!(runs.len(), 2);
+        assert!(runs[0].style.italic);
+        assert_eq!(runs[1].text, "bc");
+    }
+
+    fn styled_run(fg: ResolvedColor, bg: ResolvedColor, style: CellStyle) -> Run {
+        Run {
+            text: "x".into(),
+            fg,
+            bg,
+            width: 1,
+            style,
+            is_cursor: false,
+            use_geom: false,
+            char_widths: vec![1],
+        }
+    }
+
+    #[test]
+    fn inverse_swaps_fg_and_bg() {
+        let run = styled_run(
+            ResolvedColor::Rgb(200, 10, 10),
+            ResolvedColor::Default,
+            CellStyle {
+                inverse: true,
+                ..CellStyle::default()
+            },
+        );
+        let (fg, bg) = resolve_run_colors(&run);
+        // fg becomes the pane base color (transparent default bg), bg the ink.
+        assert_eq!(fg, Colors::shikkoku());
+        assert_eq!(bg, Some(rgba(0xc80a0aff)));
+    }
+
+    #[test]
+    fn dim_scales_fg_only() {
+        let run = styled_run(
+            ResolvedColor::Rgb(255, 0, 0),
+            ResolvedColor::Rgb(0, 0, 255),
+            CellStyle {
+                dim: true,
+                ..CellStyle::default()
+            },
+        );
+        let (fg, bg) = resolve_run_colors(&run);
+        assert!((fg.r - 0.6).abs() < 1e-5);
+        assert_eq!(bg, Some(rgba(0x0000ffff)));
     }
 
     #[test]

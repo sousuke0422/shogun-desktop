@@ -218,8 +218,30 @@ pub struct SnapshotCell {
     pub bg: ResolvedColor,
     /// 0 = skip render (wide spacer), 1 = half-width, 2 = wide (Flags::WIDE_CHAR).
     pub display_width: u8,
+    pub style: CellStyle,
+}
+
+/// SGR attributes of a cell, resolved from alacritty's cell flags.
+///
+/// Colors are NOT pre-resolved here: `display_iter` hands out raw flags, and
+/// applying INVERSE / DIM to actual RGB values is the renderer's job
+/// (`resolve_run_colors`), where the default fg/bg are known.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct CellStyle {
     pub bold: bool,
+    pub italic: bool,
+    /// SGR 2 — faint: fg is dimmed toward the background.
+    pub dim: bool,
+    /// SGR 7 — fg/bg swapped at render time.
+    pub inverse: bool,
+    /// SGR 9 — strikethrough.
+    pub strikeout: bool,
+    /// SGR 8 — bg painted, ink skipped.
+    pub hidden: bool,
+    /// Any underline variant (single/double/dotted/dashed all draw single).
     pub underline: bool,
+    /// SGR 4:3 — curly underline, drawn wavy.
+    pub undercurl: bool,
 }
 
 impl SnapshotCell {
@@ -229,8 +251,7 @@ impl SnapshotCell {
             fg: ResolvedColor::Default,
             bg: ResolvedColor::Default,
             display_width: 1,
-            bold: false,
-            underline: false,
+            style: CellStyle::default(),
         }
     }
 }
@@ -342,13 +363,27 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
             } else {
                 1
             };
+            let flags = indexed.flags;
             cells[row][col] = SnapshotCell {
                 c: indexed.c,
                 fg: resolve_color(indexed.fg, content.colors),
                 bg: resolve_color(indexed.bg, content.colors),
                 display_width,
-                bold: indexed.flags.contains(Flags::BOLD),
-                underline: indexed.flags.contains(Flags::UNDERLINE),
+                style: CellStyle {
+                    bold: flags.contains(Flags::BOLD),
+                    italic: flags.contains(Flags::ITALIC),
+                    dim: flags.contains(Flags::DIM),
+                    inverse: flags.contains(Flags::INVERSE),
+                    strikeout: flags.contains(Flags::STRIKEOUT),
+                    hidden: flags.contains(Flags::HIDDEN),
+                    underline: flags.intersects(
+                        Flags::UNDERLINE
+                            | Flags::DOUBLE_UNDERLINE
+                            | Flags::DOTTED_UNDERLINE
+                            | Flags::DASHED_UNDERLINE,
+                    ),
+                    undercurl: flags.contains(Flags::UNDERCURL),
+                },
             };
         }
     }
@@ -478,6 +513,36 @@ mod tests {
         for &byte in bytes {
             parser.advance(term, byte);
         }
+    }
+
+    #[test]
+    fn sgr_attributes_are_captured() {
+        let mut term = make_term(20, 2);
+        // bold, italic, dim, inverse, hidden, strikeout, underline, undercurl
+        advance_bytes(
+            &mut term,
+            b"\x1b[1mB\x1b[0m\x1b[3mI\x1b[0m\x1b[2mD\x1b[0m\x1b[7mR\x1b[0m\x1b[8mH\x1b[0m\x1b[9mS\x1b[0m\x1b[4mU\x1b[0m\x1b[4:3mC\x1b[0m N",
+        );
+        let snap = take_snapshot(&term);
+        let row = &snap.cells[0];
+        assert!(row[0].style.bold);
+        assert!(row[1].style.italic);
+        assert!(row[2].style.dim);
+        assert!(row[3].style.inverse);
+        assert!(row[4].style.hidden);
+        assert!(row[5].style.strikeout);
+        assert!(row[6].style.underline && !row[6].style.undercurl);
+        assert!(row[7].style.undercurl);
+        // Plain cell after resets carries no attributes.
+        assert_eq!(row[9].style, CellStyle::default());
+    }
+
+    #[test]
+    fn sgr_double_underline_maps_to_underline() {
+        let mut term = make_term(10, 1);
+        advance_bytes(&mut term, b"\x1b[4:2mX");
+        let snap = take_snapshot(&term);
+        assert!(snap.cells[0][0].style.underline);
     }
 
     #[test]
