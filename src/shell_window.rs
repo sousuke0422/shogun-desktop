@@ -305,7 +305,6 @@ impl Render for ShellWindow {
             let ime = self.ime.clone();
             let ime_preedit = self.ime.read(cx).marked.clone();
             let view = cx.entity();
-            let scroll_for_overlay = self.scroll_handle.clone();
             let pane_measured = self.pane_measured.clone();
             let grid_rows = snap.rows;
             let grid_cols = snap.cols;
@@ -424,7 +423,6 @@ impl Render for ShellWindow {
                             selection::register_mouse_selection(
                                 window,
                                 view.clone(),
-                                scroll_for_overlay.clone(),
                                 bounds,
                                 0,
                                 cw,

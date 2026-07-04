@@ -46,7 +46,6 @@ pub fn render_terminal_tab(
     cx: &mut Context<ShogunWindow>,
 ) -> impl IntoElement {
     let scroll_handle = scroll_handle.clone();
-    let scroll_for_overlay = scroll_handle.clone();
     let focus_handle = focus_handle.clone();
     let menu_focus = focus_handle.clone();
     let view = cx.entity();
@@ -170,7 +169,6 @@ pub fn render_terminal_tab(
                         selection::register_mouse_selection(
                             window,
                             view.clone(),
-                            scroll_for_overlay.clone(),
                             bounds,
                             selection_pane(is_shogun),
                             cw,

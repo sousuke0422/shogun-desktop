@@ -15,7 +15,7 @@
 use crate::terminal::{GridSnapshot, MouseReport, ReportButton, ReportMods, TerminalSession};
 use gpui::{
     App, Bounds, ClipboardItem, DispatchPhase, Entity, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, Window,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, Window,
 };
 
 /// What a window must provide for the shared mouse-selection listeners.
@@ -146,15 +146,17 @@ impl SelectionState {
 /// Register the three window-level mouse listeners for one terminal pane.
 ///
 /// Call from the pane's overlay-canvas paint closure each frame (listeners
-/// are cleared per frame). `bounds` is the overlay bounds; the pointer is
-/// mapped to a grid cell with the pane's scroll offset read at event time
-/// (the pane keeps auto-scrolling). Cells are clamped to the grid, so
-/// dragging past the edges selects the border cells.
-#[allow(clippy::too_many_arguments)]
+/// are cleared per frame). `bounds` is the overlay's PAINT bounds, which
+/// already include the scroll container's offset — gpui applies
+/// `with_element_offset(scroll_offset)` to every child during prepaint,
+/// absolute ones included. Do NOT subtract the scroll offset again at event
+/// time: that double-counts it, and on a pane whose offset moves while
+/// agents stream output, the reported/selected row drifts vertically during
+/// a purely horizontal drag (家老陣 tmux bug, 2026-07-04). Cells are clamped
+/// to the grid, so dragging past the edges selects the border cells.
 pub fn register_mouse_selection<V: SelectionHost>(
     window: &mut Window,
     view: Entity<V>,
-    scroll: ScrollHandle,
     bounds: Bounds<Pixels>,
     pane: usize,
     cw: f32,
@@ -162,22 +164,20 @@ pub fn register_mouse_selection<V: SelectionHost>(
     grid_rows: usize,
     grid_cols: usize,
 ) {
-    let cell_at = move |scroll: &ScrollHandle, pos: Point<Pixels>| {
-        let off = scroll.offset();
-        let gx = f32::from(pos.x - bounds.origin.x) - f32::from(off.x);
-        let gy = f32::from(pos.y - bounds.origin.y) - f32::from(off.y);
+    let cell_at = move |pos: Point<Pixels>| {
+        let gx = f32::from(pos.x - bounds.origin.x);
+        let gy = f32::from(pos.y - bounds.origin.y);
         let col = ((gx / cw).floor().max(0.0) as usize).min(grid_cols.saturating_sub(1));
         let row = ((gy / ch).floor().max(0.0) as usize).min(grid_rows.saturating_sub(1));
         (row, col)
     };
     window.on_mouse_event({
         let view = view.clone();
-        let scroll = scroll.clone();
         move |ev: &MouseDownEvent, phase, _window, cx| {
             if phase != DispatchPhase::Bubble || !bounds.contains(&ev.position) {
                 return;
             }
-            let (row, col) = cell_at(&scroll, ev.position);
+            let (row, col) = cell_at(ev.position);
             view.update(cx, |this, cx| {
                 // Mouse reporting first: apps that asked (btop, claude code
                 // menus, tmux `mouse on`) get the click. Shift is the
@@ -208,12 +208,11 @@ pub fn register_mouse_selection<V: SelectionHost>(
     });
     window.on_mouse_event({
         let view = view.clone();
-        let scroll = scroll.clone();
         move |ev: &MouseMoveEvent, phase, _window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;
             }
-            let (row, col) = cell_at(&scroll, ev.position);
+            let (row, col) = cell_at(ev.position);
             view.update(cx, |this, cx| {
                 // Reported drag in flight: forward motion per cell change.
                 if let Some(drag) = this.selection_state().report
@@ -258,12 +257,11 @@ pub fn register_mouse_selection<V: SelectionHost>(
         }
     });
     window.on_mouse_event({
-        let scroll = scroll.clone();
         move |ev: &MouseUpEvent, phase, _window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;
             }
-            let (row, col) = cell_at(&scroll, ev.position);
+            let (row, col) = cell_at(ev.position);
             view.update(cx, |this, cx| {
                 // Pair the release with a forwarded press, even if the app
                 // dropped reporting mid-drag (mouse_to_pty then no-ops).
