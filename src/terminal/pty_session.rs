@@ -269,8 +269,17 @@ fn build_terminal_session(
     });
 
     let listener = ClipboardListener { tx: cb_tx };
+    // OSC 52: alacritty's default is OnlyCopy — store works but load (the
+    // clipboard *read* query, e.g. vim's "+p over SSH) is silently denied,
+    // so the ClipboardEvent::Load path never fired. CopyPaste enables both.
+    // Tradeoff: a remote app can read the host clipboard; acceptable for a
+    // tool that only connects to our own infrastructure.
+    let config = Config {
+        osc52: alacritty_terminal::term::Osc52::CopyPaste,
+        ..Config::default()
+    };
     let term = Arc::new(FairMutex::new(Term::new(
-        Config::default(),
+        config,
         &TermSize::new(cols as usize, rows as usize),
         listener,
     )));
