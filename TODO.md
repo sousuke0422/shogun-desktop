@@ -21,9 +21,10 @@
 - [ ] Ctrl+Shift+V ペースト（claude code へ複数行貼り→ 1行ずつ実行されないこと）
 - [ ] shell window の選択コピー・IME（前回実装分の目視）
 - [ ] tailscale アイドル後の入力引っかかり解消（keepalive + 非同期書込）
-- [ ] e2e/ スクリプト再実行 — `pwsh.exe -NoProfile -File` で呼ぶこと（ポリシーは
-      RemoteSigned で問題なし。壊れているのは powershell.exe 5.1 側 = PSModulePath 汚染で
-      v7 の Security モジュールを誤ロード→TypeData 衝突。Bypass フラグは不要）
+- [x] e2e/ スクリプト再実行 — **2026-07-04 PASS**（drag-copy + scan-highlight とも）。
+      `pwsh.exe -NoProfile -File` で呼ぶ（powershell.exe 5.1 は PSModulePath 汚染で不可）。
+      注意: この機では常駐アプリが Ctrl+Shift+C をグローバルホットキー占有しており
+      アプリに届かない → コピーは Ctrl+Insert（1790008 で正式バインド）。犯人特定は未了
 
 ## 2. 未実装 — ターミナル機能（優先順）
 
