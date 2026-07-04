@@ -9,6 +9,9 @@ gpui-component = "0.5.1"
 alacritty_terminal = "0.24"
 portable-pty = "0.9"
 anyhow = "1"
+# Already in-tree via gpui; used to race PTY wakeups against the SGR-blink
+# phase timer in the terminal refresh tasks.
+futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_yml = "0.0.12"
 toml = "1"

@@ -159,28 +159,41 @@ impl ShellWindow {
         };
         let generation = std::sync::Arc::clone(&session.generation);
         let notify = std::sync::Arc::clone(&session.notify);
+        let snapshot = std::sync::Arc::clone(&session.snapshot);
         let scroll = self.scroll_handle.clone();
 
         cx.spawn(async move |this, cx| {
             let mut last = generation.load(Ordering::Relaxed);
             loop {
-                notify.notified().await;
+                // Race the PTY wakeup against the SGR-blink phase timer while
+                // blink cells are on screen (see ShogunWindow's refresh task).
+                let blink = snapshot.lock().has_blink;
+                if blink {
+                    let timer = cx.background_executor().timer(Duration::from_millis(300));
+                    futures::future::select(Box::pin(notify.notified()), Box::pin(timer)).await;
+                } else {
+                    notify.notified().await;
+                }
                 // Coalesce a burst of PTY chunks into a single frame.
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
 
                 let cur = generation.load(Ordering::Relaxed);
-                if cur == last {
+                let data_changed = cur != last;
+                if !data_changed && !blink {
                     continue;
                 }
                 last = cur;
                 let alive = this.update(cx, |view, cx| {
-                    view.last_gen = cur;
-                    if !view.scroll_locked {
-                        scroll.scroll_to_bottom();
+                    // Blink-only ticks repaint without touching the scroll.
+                    if data_changed {
+                        view.last_gen = cur;
+                        if !view.scroll_locked {
+                            scroll.scroll_to_bottom();
+                        }
+                        view.prev_offset_y = scroll.offset().y / px(1.);
                     }
-                    view.prev_offset_y = scroll.offset().y / px(1.);
                     cx.notify();
                 });
                 if alive.is_err() {

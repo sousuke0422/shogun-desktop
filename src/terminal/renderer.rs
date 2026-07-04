@@ -4,7 +4,7 @@ use gpui::{
 };
 use gpui_component::v_flex;
 
-use crate::terminal::{GridSnapshot, ResolvedColor, SnapshotCell};
+use crate::terminal::{GridSnapshot, ResolvedColor, SnapshotCell, UnderlineKind};
 use crate::theme::Colors;
 
 /// Fixed cell width in pixels for the default font (Moralerspace Neon HW @ 13pt).
@@ -736,6 +736,14 @@ pub fn render_grid(
     let (cursor_row, cursor_col) = snap.cursor;
     let grid_cols = snap.cols;
     let font_name = font.to_string();
+    // SGR blink phase from the wall clock (600ms on / 600ms off), so the
+    // renderer stays stateless. The refresh task repaints on a timer while
+    // the snapshot carries blink cells (see GridSnapshot::has_blink).
+    let blink_off = snap.has_blink
+        && std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| (d.as_millis() / 600) % 2 == 1)
+            .unwrap_or(false);
     v_flex()
         .font_family(font.to_string())
         .text_size(px(13.))
@@ -797,8 +805,9 @@ pub fn render_grid(
                             continue;
                         }
 
-                        // SGR 8 (hidden): bg is painted, ink is not.
-                        if run.style.hidden {
+                        // SGR 8 (hidden) / SGR 5-6 blink off-phase: bg is
+                        // painted, ink is not.
+                        if run.style.hidden || (run.style.blink && blink_off) {
                             continue;
                         }
 
@@ -806,8 +815,7 @@ pub fn render_grid(
                         // all — bg is already painted above. Most of a terminal
                         // grid is blank, so skipping the shape+paint here is the
                         // single biggest per-frame saving.
-                        if !run.style.underline
-                            && !run.style.undercurl
+                        if run.style.underline == UnderlineKind::None
                             && !run.style.strikeout
                             && run.text.bytes().all(|b| b == b' ')
                         {
@@ -835,12 +843,27 @@ pub fn render_grid(
                             run_font.style = gpui::FontStyle::Italic;
                         }
                         let fg_hsla: gpui::Hsla = fg_rgba.into();
-                        let underline_style = (run.style.underline || run.style.undercurl)
-                            .then_some(gpui::UnderlineStyle {
-                                color: Some(fg_hsla),
-                                thickness: px(1.),
-                                wavy: run.style.undercurl,
-                            });
+                        // SGR 58 underline color; defaults to the (post-
+                        // inverse/dim) fg so decorations track the ink.
+                        let ul_rgba = run
+                            .style
+                            .underline_color
+                            .map(color_to_rgba)
+                            .unwrap_or(fg_rgba);
+                        let ul_hsla: gpui::Hsla = ul_rgba.into();
+                        // Single & undercurl go through the shaper's underline
+                        // (metrics-accurate position, wavy support). Double /
+                        // dotted / dashed have no gpui equivalent and are
+                        // painted as quads after the text (below).
+                        let underline_style = matches!(
+                            run.style.underline,
+                            UnderlineKind::Single | UnderlineKind::Undercurl
+                        )
+                        .then_some(gpui::UnderlineStyle {
+                            color: Some(ul_hsla),
+                            thickness: px(1.),
+                            wavy: run.style.underline == UnderlineKind::Undercurl,
+                        });
                         let strikethrough_style =
                             run.style.strikeout.then_some(gpui::StrikethroughStyle {
                                 color: Some(fg_hsla),
@@ -906,6 +929,54 @@ pub fn render_grid(
                                 seg.push(c);
                             }
                             flush(&mut seg, seg_w, &mut x_off, window, cx);
+                        }
+
+                        // ── Double / dotted / dashed underlines ──────────────
+                        // gpui's UnderlineStyle only knows straight and wavy, so
+                        // these variants are painted as quads along the run's
+                        // full span, in the cell's bottom band.
+                        let span = run.width as f32 * cw;
+                        match run.style.underline {
+                            UnderlineKind::Double => {
+                                for dy in [4.0, 2.0] {
+                                    window.paint_quad(fill(
+                                        Bounds {
+                                            origin: point(px(x), px(oy + ch - dy)),
+                                            size: size(px(span), px(1.)),
+                                        },
+                                        ul_rgba,
+                                    ));
+                                }
+                            }
+                            UnderlineKind::Dotted => {
+                                let y = oy + ch - 2.0;
+                                let mut dx = 0.0;
+                                while dx < span {
+                                    window.paint_quad(fill(
+                                        Bounds {
+                                            origin: point(px(x + dx), px(y)),
+                                            size: size(px((span - dx).min(1.5)), px(1.)),
+                                        },
+                                        ul_rgba,
+                                    ));
+                                    dx += 3.0;
+                                }
+                            }
+                            UnderlineKind::Dashed => {
+                                let y = oy + ch - 2.0;
+                                let mut dx = 0.0;
+                                while dx < span {
+                                    window.paint_quad(fill(
+                                        Bounds {
+                                            origin: point(px(x + dx), px(y)),
+                                            size: size(px((span - dx).min(4.0)), px(1.)),
+                                        },
+                                        ul_rgba,
+                                    ));
+                                    dx += 7.0;
+                                }
+                            }
+                            _ => {}
                         }
                     }
 

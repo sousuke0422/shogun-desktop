@@ -6294,6 +6294,7 @@ dependencies = [
  "arboard",
  "chrono",
  "dirs 6.0.0",
+ "futures",
  "gpui",
  "gpui-component",
  "parking_lot",

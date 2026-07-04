@@ -197,6 +197,9 @@ pub struct GridSnapshot {
     pub cursor: (usize, usize),
     /// Lines scrolled back into history (0 = live view at the bottom).
     pub display_offset: usize,
+    /// Any visible cell carries SGR blink — the refresh task adds a phase
+    /// timer only while this is set, keeping idle wakeups at zero otherwise.
+    pub has_blink: bool,
 }
 
 impl GridSnapshot {
@@ -207,6 +210,7 @@ impl GridSnapshot {
             cells: vec![vec![SnapshotCell::blank(); cols]; rows],
             cursor: (0, 0),
             display_offset: 0,
+            has_blink: false,
         }
     }
 }
@@ -238,10 +242,25 @@ pub struct CellStyle {
     pub strikeout: bool,
     /// SGR 8 — bg painted, ink skipped.
     pub hidden: bool,
-    /// Any underline variant (single/double/dotted/dashed all draw single).
-    pub underline: bool,
-    /// SGR 4:3 — curly underline, drawn wavy.
-    pub undercurl: bool,
+    /// SGR 5/6 — ink hidden during the off phase (slow/rapid draw the same;
+    /// vendored alacritty patch, upstream drops blink entirely).
+    pub blink: bool,
+    pub underline: UnderlineKind,
+    /// SGR 58 — underline color; `None` follows the (post-inverse/dim) fg.
+    pub underline_color: Option<ResolvedColor>,
+}
+
+/// Underline variant (SGR 4, 4:0-4:5, 21). Mutually exclusive per cell.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum UnderlineKind {
+    #[default]
+    None,
+    Single,
+    Double,
+    /// 4:3 — curly, drawn wavy.
+    Undercurl,
+    Dotted,
+    Dashed,
 }
 
 impl SnapshotCell {
@@ -256,7 +275,7 @@ impl SnapshotCell {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResolvedColor {
     Default,
     Rgb(u8, u8, u8),
@@ -348,6 +367,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     let cols = term.columns();
     let rows = term.screen_lines();
     let mut cells = vec![vec![SnapshotCell::blank(); cols]; rows];
+    let mut has_blink = false;
 
     for indexed in content.display_iter {
         let row = indexed.point.line.0 as usize;
@@ -364,6 +384,8 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
                 1
             };
             let flags = indexed.flags;
+            let blink = flags.contains(Flags::BLINK);
+            has_blink |= blink;
             cells[row][col] = SnapshotCell {
                 c: indexed.c,
                 fg: resolve_color(indexed.fg, content.colors),
@@ -376,13 +398,23 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
                     inverse: flags.contains(Flags::INVERSE),
                     strikeout: flags.contains(Flags::STRIKEOUT),
                     hidden: flags.contains(Flags::HIDDEN),
-                    underline: flags.intersects(
-                        Flags::UNDERLINE
-                            | Flags::DOUBLE_UNDERLINE
-                            | Flags::DOTTED_UNDERLINE
-                            | Flags::DASHED_UNDERLINE,
-                    ),
-                    undercurl: flags.contains(Flags::UNDERCURL),
+                    blink,
+                    underline: if flags.contains(Flags::UNDERCURL) {
+                        UnderlineKind::Undercurl
+                    } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
+                        UnderlineKind::Double
+                    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+                        UnderlineKind::Dotted
+                    } else if flags.contains(Flags::DASHED_UNDERLINE) {
+                        UnderlineKind::Dashed
+                    } else if flags.contains(Flags::UNDERLINE) {
+                        UnderlineKind::Single
+                    } else {
+                        UnderlineKind::None
+                    },
+                    underline_color: indexed
+                        .underline_color()
+                        .map(|c| resolve_color(c, content.colors)),
                 },
             };
         }
@@ -395,6 +427,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         cells,
         cursor: (cur.line.0 as usize, cur.column.0),
         display_offset: term.grid().display_offset(),
+        has_blink,
     }
 }
 
@@ -531,18 +564,50 @@ mod tests {
         assert!(row[3].style.inverse);
         assert!(row[4].style.hidden);
         assert!(row[5].style.strikeout);
-        assert!(row[6].style.underline && !row[6].style.undercurl);
-        assert!(row[7].style.undercurl);
+        assert_eq!(row[6].style.underline, UnderlineKind::Single);
+        assert_eq!(row[7].style.underline, UnderlineKind::Undercurl);
         // Plain cell after resets carries no attributes.
         assert_eq!(row[9].style, CellStyle::default());
     }
 
     #[test]
-    fn sgr_double_underline_maps_to_underline() {
+    fn sgr_underline_variants_are_distinguished() {
         let mut term = make_term(10, 1);
-        advance_bytes(&mut term, b"\x1b[4:2mX");
+        // double, dotted, dashed
+        advance_bytes(&mut term, b"\x1b[4:2mD\x1b[0m\x1b[4:4mO\x1b[0m\x1b[4:5mA");
         let snap = take_snapshot(&term);
-        assert!(snap.cells[0][0].style.underline);
+        let row = &snap.cells[0];
+        assert_eq!(row[0].style.underline, UnderlineKind::Double);
+        assert_eq!(row[1].style.underline, UnderlineKind::Dotted);
+        assert_eq!(row[2].style.underline, UnderlineKind::Dashed);
+    }
+
+    #[test]
+    fn sgr_underline_color_is_captured() {
+        let mut term = make_term(10, 1);
+        // SGR 58;2;r;g;b = direct-color underline, 59 = reset to fg-follow.
+        advance_bytes(&mut term, b"\x1b[4;58;2;10;20;30mU\x1b[59mV");
+        let snap = take_snapshot(&term);
+        let row = &snap.cells[0];
+        assert_eq!(
+            row[0].style.underline_color,
+            Some(ResolvedColor::Rgb(10, 20, 30))
+        );
+        assert_eq!(row[1].style.underline_color, None);
+    }
+
+    #[test]
+    fn sgr_blink_is_captured_and_flagged() {
+        let mut term = make_term(10, 1);
+        advance_bytes(&mut term, b"\x1b[5mB\x1b[25m \x1b[6mR");
+        let snap = take_snapshot(&term);
+        assert!(snap.cells[0][0].style.blink);
+        assert!(!snap.cells[0][1].style.blink);
+        assert!(snap.cells[0][2].style.blink); // rapid maps to the same flag
+        assert!(snap.has_blink);
+
+        let plain = make_term(10, 1);
+        assert!(!take_snapshot(&plain).has_blink);
     }
 
     #[test]

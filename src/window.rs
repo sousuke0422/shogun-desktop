@@ -584,6 +584,7 @@ impl ShogunWindow {
         };
         let generation = Arc::clone(&session.generation);
         let notify = Arc::clone(&session.notify);
+        let snapshot = Arc::clone(&session.snapshot);
         let scroll = if is_shogun {
             self.shogun_scroll_handle.clone()
         } else {
@@ -593,14 +594,25 @@ impl ShogunWindow {
         cx.spawn(async move |this, cx| {
             let mut last = generation.load(Ordering::Relaxed);
             loop {
-                notify.notified().await;
+                // While SGR-blink cells are on screen, race the PTY wakeup
+                // against the blink phase timer so the on/off flip repaints
+                // even with no output. Otherwise park purely on notify —
+                // zero wakeups while idle.
+                let blink = snapshot.lock().has_blink;
+                if blink {
+                    let timer = cx.background_executor().timer(Duration::from_millis(300));
+                    futures::future::select(Box::pin(notify.notified()), Box::pin(timer)).await;
+                } else {
+                    notify.notified().await;
+                }
                 // Coalesce a burst of PTY chunks into a single frame.
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
 
                 let cur = generation.load(Ordering::Relaxed);
-                if cur == last {
+                let data_changed = cur != last;
+                if !data_changed && !blink {
                     continue;
                 }
                 last = cur;
@@ -618,18 +630,22 @@ impl ShogunWindow {
                     if !owned {
                         return false;
                     }
-                    if is_shogun {
-                        view.shogun_last_gen = cur;
-                        if !view.shogun_scroll_locked {
-                            scroll.scroll_to_bottom();
+                    // Blink-only ticks repaint but must not touch the scroll
+                    // position — that would fight the user's scrollback.
+                    if data_changed {
+                        if is_shogun {
+                            view.shogun_last_gen = cur;
+                            if !view.shogun_scroll_locked {
+                                scroll.scroll_to_bottom();
+                            }
+                            view.shogun_prev_offset_y = scroll.offset().y / px(1.);
+                        } else {
+                            view.multiagent_last_gen = cur;
+                            if !view.multiagent_scroll_locked {
+                                scroll.scroll_to_bottom();
+                            }
+                            view.multiagent_prev_offset_y = scroll.offset().y / px(1.);
                         }
-                        view.shogun_prev_offset_y = scroll.offset().y / px(1.);
-                    } else {
-                        view.multiagent_last_gen = cur;
-                        if !view.multiagent_scroll_locked {
-                            scroll.scroll_to_bottom();
-                        }
-                        view.multiagent_prev_offset_y = scroll.offset().y / px(1.);
                     }
                     cx.notify();
                     true
