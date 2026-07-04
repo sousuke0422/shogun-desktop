@@ -850,20 +850,14 @@ pub fn render_grid(
                             .underline_color
                             .map(color_to_rgba)
                             .unwrap_or(fg_rgba);
-                        let ul_hsla: gpui::Hsla = ul_rgba.into();
-                        // Single & undercurl go through the shaper's underline
-                        // (metrics-accurate position, wavy support). Double /
-                        // dotted / dashed have no gpui equivalent and are
-                        // painted as quads after the text (below).
-                        let underline_style = matches!(
-                            run.style.underline,
-                            UnderlineKind::Single | UnderlineKind::Undercurl
-                        )
-                        .then_some(gpui::UnderlineStyle {
-                            color: Some(ul_hsla),
-                            thickness: px(1.),
-                            wavy: run.style.underline == UnderlineKind::Undercurl,
-                        });
+                        // ALL underline variants are painted as quads after the
+                        // text (below), never via the shaper's UnderlineStyle:
+                        // the shaper sizes its decoration to the natural advance
+                        // sum, but glyphs here are re-pinned to `n × cw` (cw is
+                        // ceil-snapped past the natural advance), so a shaper
+                        // underline falls short by the accumulated difference —
+                        // visibly missing under the run's last character.
+                        let underline_style: Option<gpui::UnderlineStyle> = None;
                         let strikethrough_style =
                             run.style.strikeout.then_some(gpui::StrikethroughStyle {
                                 color: Some(fg_hsla),
@@ -931,12 +925,41 @@ pub fn render_grid(
                             flush(&mut seg, seg_w, &mut x_off, window, cx);
                         }
 
-                        // ── Double / dotted / dashed underlines ──────────────
-                        // gpui's UnderlineStyle only knows straight and wavy, so
-                        // these variants are painted as quads along the run's
-                        // full span, in the cell's bottom band.
+                        // ── Underlines (all variants) ────────────────────────
+                        // Painted as quads along the run's exact grid span
+                        // (`width × cw`), in the cell's bottom band. See the
+                        // underline_style note above for why the shaper's own
+                        // decoration cannot be used.
                         let span = run.width as f32 * cw;
                         match run.style.underline {
+                            UnderlineKind::Single => {
+                                window.paint_quad(fill(
+                                    Bounds {
+                                        origin: point(px(x), px(oy + ch - 2.0)),
+                                        size: size(px(span), px(1.)),
+                                    },
+                                    ul_rgba,
+                                ));
+                            }
+                            UnderlineKind::Undercurl => {
+                                // 1px dots tracing a sine (period 6px, ±1.2px
+                                // around the single-underline baseline). Dot
+                                // height 1.5px bridges the step between
+                                // neighboring samples on the steep flanks.
+                                let base = oy + ch - 2.5;
+                                let mut dx = 0.0;
+                                while dx < span {
+                                    let phase = dx / 6.0 * std::f32::consts::TAU;
+                                    window.paint_quad(fill(
+                                        Bounds {
+                                            origin: point(px(x + dx), px(base + 1.2 * phase.sin())),
+                                            size: size(px((span - dx).min(1.0)), px(1.5)),
+                                        },
+                                        ul_rgba,
+                                    ));
+                                    dx += 1.0;
+                                }
+                            }
                             UnderlineKind::Double => {
                                 for dy in [4.0, 2.0] {
                                     window.paint_quad(fill(
@@ -976,7 +999,7 @@ pub fn render_grid(
                                     dx += 7.0;
                                 }
                             }
-                            _ => {}
+                            UnderlineKind::None => {}
                         }
                     }
 
