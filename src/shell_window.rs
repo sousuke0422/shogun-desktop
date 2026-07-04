@@ -17,6 +17,7 @@ use gpui::{
     ParentElement, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement,
     Styled, Window, WindowBounds, WindowOptions, canvas, div, prelude::*, px, size,
 };
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{Root, v_flex};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -261,6 +262,7 @@ impl Render for ShellWindow {
 
         let terminal_body: gpui::AnyElement = if let Some(snap) = snap_opt {
             let focus_handle = self.terminal_focus.clone();
+            let menu_focus = focus_handle.clone();
             let ime = self.ime.clone();
             let ime_preedit = self.ime.read(cx).marked.clone();
             let view = cx.entity();
@@ -412,6 +414,13 @@ impl Render for ShellWindow {
                     self.selection.range_for(0),
                     ime_preedit,
                 ))
+                // Right-click menu dispatching the same actions as the
+                // keyboard shortcuts (see render_terminal_tab).
+                .context_menu(move |menu, _window, _cx| {
+                    menu.action_context(menu_focus.clone())
+                        .menu("コピー", Box::new(TerminalCopy))
+                        .menu("ペースト", Box::new(TerminalPaste))
+                })
                 .into_any_element()
         } else {
             div()

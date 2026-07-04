@@ -12,6 +12,7 @@ use gpui::{
     ParentElement, ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled,
     canvas, div, prelude::*, px,
 };
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::v_flex;
 
 const SCROLL_OFFSET_EPSILON: f32 = 0.01;
@@ -47,6 +48,7 @@ pub fn render_terminal_tab(
     let scroll_handle = scroll_handle.clone();
     let scroll_for_overlay = scroll_handle.clone();
     let focus_handle = focus_handle.clone();
+    let menu_focus = focus_handle.clone();
     let view = cx.entity();
     let grid_rows = snap.rows;
     let grid_cols = snap.cols;
@@ -193,7 +195,15 @@ pub fn render_terminal_tab(
                 .right(px(TERMINAL_PANE_PADDING_PX / 2.0))
                 .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0)),
             )
-            .child(render_grid(snap, font, cw, ch, selection, ime_preedit)),
+            .child(render_grid(snap, font, cw, ch, selection, ime_preedit))
+            // Right-click menu: dispatches the same actions as the keyboard
+            // shortcuts. action_context routes them to the terminal focus
+            // handle, i.e. the pane's TERMINAL_KEY_CONTEXT on_action handlers.
+            .context_menu(move |menu, _window, _cx| {
+                menu.action_context(menu_focus.clone())
+                    .menu("コピー", Box::new(TerminalCopy))
+                    .menu("ペースト", Box::new(TerminalPaste))
+            }),
     )
 }
 
