@@ -201,7 +201,13 @@ fn selection_text(snap: &GridSnapshot, start: (usize, usize), end: (usize, usize
         if row < start.0 || row > end.0 {
             continue;
         }
-        let c0 = if row == start.0 { start.1 } else { 0 };
+        let mut c0 = if row == start.0 { start.1 } else { 0 };
+        // Selection anchored on the spacer half of a wide glyph (CJK/emoji)
+        // must still copy the glyph — pull back to its base cell, matching
+        // the highlight snap in renderer::selection_cols_for_row.
+        while c0 > 0 && cells.get(c0).is_some_and(|c| c.display_width == 0) {
+            c0 -= 1;
+        }
         let c1 = if row == end.0 { end.1 + 1 } else { cells.len() };
         let mut line = String::new();
         for (col, cell) in cells.iter().enumerate() {
@@ -264,6 +270,24 @@ mod tests {
         };
         snap.cells[0][2].c = 'x';
         assert_eq!(selection_text(&snap, (0, 0), (0, 2)), "あx");
+    }
+
+    #[test]
+    fn selection_text_start_on_wide_spacer_includes_the_glyph() {
+        let mut snap = GridSnapshot::blank(4, 1);
+        snap.cells[0][0] = SnapshotCell {
+            c: 'あ',
+            display_width: 2,
+            ..SnapshotCell::blank()
+        };
+        snap.cells[0][1] = SnapshotCell {
+            c: ' ',
+            display_width: 0,
+            ..SnapshotCell::blank()
+        };
+        snap.cells[0][2].c = 'x';
+        // Anchor on the spacer half (col 1): the wide glyph is still copied.
+        assert_eq!(selection_text(&snap, (0, 1), (0, 2)), "あx");
     }
 
     #[test]

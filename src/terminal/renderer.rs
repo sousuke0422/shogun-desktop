@@ -669,21 +669,36 @@ const SELECTION_RGBA: u32 = 0x3465a480;
 /// Compute the selected column span of one row for an inclusive, linear
 /// (reading-order) selection. Rows strictly between the endpoints are selected
 /// full-width. Returns `None` when the row is outside the selection.
+///
+/// The span is snapped to whole characters: wide glyphs (CJK, emoji) occupy a
+/// base cell plus a `display_width == 0` spacer, and a pointer landing on
+/// either half must select the entire glyph. Without the snap the highlight
+/// starts or ends mid-glyph and disagrees with the copied text.
 pub(crate) fn selection_cols_for_row(
     selection: Option<((usize, usize), (usize, usize))>,
     row: usize,
     grid_cols: usize,
+    cells: &[crate::terminal::SnapshotCell],
 ) -> Option<(usize, usize)> {
     let (start, end) = selection?;
     if row < start.0 || row > end.0 {
         return None;
     }
-    let c0 = if row == start.0 { start.1 } else { 0 };
-    let c1 = if row == end.0 {
+    let mut c0 = if row == start.0 { start.1 } else { 0 };
+    let mut c1 = if row == end.0 {
         (end.1 + 1).min(grid_cols)
     } else {
         grid_cols
     };
+    // Start on a spacer → pull back to the wide glyph's base cell.
+    while c0 > 0 && cells.get(c0).is_some_and(|c| c.display_width == 0) {
+        c0 -= 1;
+    }
+    // Cell just past the end is a spacer → the end cell is a wide base whose
+    // right half would be left unhighlighted; extend over the spacer.
+    while c1 < grid_cols && cells.get(c1).is_some_and(|c| c.display_width == 0) {
+        c1 += 1;
+    }
     (c0 < c1).then_some((c0, c1))
 }
 
@@ -721,7 +736,7 @@ pub fn render_grid(
             // has no such accumulation.
             let runs: Vec<Run> = coalesce_runs(row, cur_col).collect();
             let total_cols: usize = runs.iter().map(|r| r.width).sum();
-            let sel_cols = selection_cols_for_row(selection, row_idx, grid_cols);
+            let sel_cols = selection_cols_for_row(selection, row_idx, grid_cols, row);
             let preedit = if row_idx == cursor_row {
                 ime_preedit.clone().filter(|s| !s.is_empty())
             } else {
@@ -1161,31 +1176,82 @@ mod tests {
         assert!(is_geom_box_char('█')); // U+2588
     }
 
+    fn narrow_row(cols: usize) -> Vec<crate::terminal::SnapshotCell> {
+        vec![crate::terminal::SnapshotCell::blank(); cols]
+    }
+
+    /// Row where the cell at `base` holds a wide glyph (display_width 2)
+    /// followed by its spacer (display_width 0).
+    fn wide_row(cols: usize, base: usize) -> Vec<crate::terminal::SnapshotCell> {
+        let mut row = narrow_row(cols);
+        row[base].c = 'あ';
+        row[base].display_width = 2;
+        row[base + 1].display_width = 0;
+        row
+    }
+
     #[test]
     fn selection_cols_none_when_no_selection() {
-        assert_eq!(selection_cols_for_row(None, 3, 80), None);
+        assert_eq!(selection_cols_for_row(None, 3, 80, &narrow_row(80)), None);
     }
 
     #[test]
     fn selection_cols_single_row() {
         let sel = Some(((5, 10), (5, 20)));
-        assert_eq!(selection_cols_for_row(sel, 5, 80), Some((10, 21)));
-        assert_eq!(selection_cols_for_row(sel, 4, 80), None);
-        assert_eq!(selection_cols_for_row(sel, 6, 80), None);
+        assert_eq!(
+            selection_cols_for_row(sel, 5, 80, &narrow_row(80)),
+            Some((10, 21))
+        );
+        assert_eq!(selection_cols_for_row(sel, 4, 80, &narrow_row(80)), None);
+        assert_eq!(selection_cols_for_row(sel, 6, 80, &narrow_row(80)), None);
     }
 
     #[test]
     fn selection_cols_multi_row_middle_is_full_width() {
         let sel = Some(((2, 30), (4, 10)));
-        assert_eq!(selection_cols_for_row(sel, 2, 80), Some((30, 80)));
-        assert_eq!(selection_cols_for_row(sel, 3, 80), Some((0, 80)));
-        assert_eq!(selection_cols_for_row(sel, 4, 80), Some((0, 11)));
+        assert_eq!(
+            selection_cols_for_row(sel, 2, 80, &narrow_row(80)),
+            Some((30, 80))
+        );
+        assert_eq!(
+            selection_cols_for_row(sel, 3, 80, &narrow_row(80)),
+            Some((0, 80))
+        );
+        assert_eq!(
+            selection_cols_for_row(sel, 4, 80, &narrow_row(80)),
+            Some((0, 11))
+        );
     }
 
     #[test]
     fn selection_cols_end_clamped_to_grid_width() {
         let sel = Some(((0, 0), (0, 200)));
-        assert_eq!(selection_cols_for_row(sel, 0, 80), Some((0, 80)));
+        assert_eq!(
+            selection_cols_for_row(sel, 0, 80, &narrow_row(80)),
+            Some((0, 80))
+        );
+    }
+
+    #[test]
+    fn selection_cols_start_on_wide_spacer_snaps_to_base() {
+        // Wide glyph at col 10 (spacer at 11); anchoring on the spacer must
+        // highlight from the base cell.
+        let sel = Some(((0, 11), (0, 20)));
+        assert_eq!(
+            selection_cols_for_row(sel, 0, 80, &wide_row(80, 10)),
+            Some((10, 21))
+        );
+    }
+
+    #[test]
+    fn selection_cols_end_on_wide_base_extends_over_spacer() {
+        // Selection ends ON the wide base at col 10 → the highlight must
+        // cover its spacer too, or the glyph looks half-selected.
+        let sel = Some(((0, 2), (0, 10)));
+        assert_eq!(
+            selection_cols_for_row(sel, 0, 80, &wide_row(80, 10)),
+            Some((2, 12))
+        );
     }
 
     #[test]
