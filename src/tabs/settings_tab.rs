@@ -184,7 +184,11 @@ pub fn render_settings_tab(
     }
 
     v_flex()
-        .flex_1()
+        // size_full (percent of the parent's definite size), NOT flex_1: a
+        // flex item's automatic min-height is its content height, so with
+        // flex_1 this column grew past the viewport, the action bar fell off
+        // screen and the inner scroll area never scrolled.
+        .size_full()
         .bg(Colors::shikkoku())
         .child(
             v_flex()

@@ -78,6 +78,11 @@ fn main() {
             .add_fonts(fonts)
             .expect("Failed to load fonts");
         gpui_component::init(cx);
+        // The app is a fixed dark palette (crate::theme::Colors); force the
+        // component theme to match instead of following the OS appearance.
+        // Otherwise on a light-mode OS the inputs/radios/switches render
+        // light on first paint until something re-syncs the theme.
+        gpui_component::theme::Theme::change(gpui_component::theme::ThemeMode::Dark, None, cx);
         // Reclaim tab / shift-tab for the terminal. gpui dispatches action
         // bindings BEFORE key listeners, so gpui_component's Root bindings
         // (tab → focus_next) would otherwise consume Tab and the terminal's
