@@ -452,7 +452,7 @@ impl Render for ShellWindow {
                         self.session
                             .as_ref()
                             .and_then(|s| s.progress.get())
-                            .map(crate::window::render_progress_bar),
+                            .map(|p| crate::window::render_progress_bar("shell-progress", p)),
                     ),
             )
             .child(div().flex_1().overflow_hidden().child(terminal_body))

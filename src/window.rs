@@ -1107,7 +1107,7 @@ impl ShogunWindow {
                         Colors::muted()
                     })
                     .child(TAB_LABELS[index])
-                    .children(progress.map(render_progress_bar))
+                    .children(progress.map(|p| render_progress_bar(("tab-progress", index), p)))
                     .on_click(cx.listener(move |this, event, window, cx| {
                         if index != 4 {
                             this.select_tab(index, event, window, cx);
@@ -1117,22 +1117,58 @@ impl ShogunWindow {
     }
 }
 
+/// Segment count of the rainbow fill — enough for a smooth spectrum at tab
+/// width without meaningfully increasing quad count.
+const PROGRESS_RAINBOW_SEGMENTS: usize = 16;
+
 /// Thin OSC 9;4 progress bar pinned to its parent's bottom edge (the parent
 /// must be `.relative()`). Used on the terminal tabs and the shell window's
 /// status bar.
 ///
-/// Colors follow the taskbar conventions: normal=松葉 (green), error=紅,
-/// warning/paused=金箔, indeterminate=full-width muted (no meaningful value).
+/// Normal progress fills to the percentage with a scrolling rainbow
+/// (ゲーミング仕様 — a static green was too easy to miss); indeterminate is
+/// the same rainbow across the full width (no meaningful value). Error=紅 and
+/// warning=金箔 stay static so their semantics remain readable at a glance.
+///
+/// The rainbow uses gpui's `with_animation`, which only requests frames while
+/// the element is actually rendered — when progress is removed the loop stops
+/// and idle CPU stays at zero.
 pub fn render_progress_bar(
+    id: impl Into<gpui::ElementId>,
     (state, percent): (crate::terminal::progress::ProgressState, u8),
-) -> gpui::Div {
+) -> gpui::AnyElement {
     use crate::terminal::progress::ProgressState;
-    let (color, fraction) = match state {
-        ProgressState::Normal => (Colors::matsuba(), percent as f32 / 100.0),
-        ProgressState::Error => (Colors::kurenai(), (percent as f32 / 100.0).max(0.05)),
-        ProgressState::Warning => (Colors::kinpaku(), (percent as f32 / 100.0).max(0.05)),
-        ProgressState::Indeterminate => (Colors::muted(), 1.0),
+    use gpui::AnimationExt as _;
+
+    let fraction = match state {
+        ProgressState::Normal => percent as f32 / 100.0,
+        ProgressState::Indeterminate => 1.0,
+        // Keep a visible sliver even at 0% so the state itself shows.
+        ProgressState::Error | ProgressState::Warning => (percent as f32 / 100.0).max(0.05),
     };
+    let fill = div().h_full().w(gpui::relative(fraction.clamp(0.0, 1.0)));
+    let fill: gpui::AnyElement =
+        match state {
+            ProgressState::Error => fill.bg(Colors::kurenai()).into_any_element(),
+            ProgressState::Warning => fill.bg(Colors::kinpaku()).into_any_element(),
+            ProgressState::Normal | ProgressState::Indeterminate => fill
+                .with_animation(
+                    id,
+                    gpui::Animation::new(Duration::from_secs(2)).repeat(),
+                    |bar, delta| {
+                        // Scrolling spectrum: each segment's hue is offset by its
+                        // position, and the whole ramp slides with the frame delta.
+                        bar.child(h_flex().size_full().children(
+                            (0..PROGRESS_RAINBOW_SEGMENTS).map(move |i| {
+                                let hue = (i as f32 / PROGRESS_RAINBOW_SEGMENTS as f32 - delta)
+                                    .rem_euclid(1.0);
+                                div().flex_1().h_full().bg(gpui::hsla(hue, 0.9, 0.55, 1.0))
+                            }),
+                        ))
+                    },
+                )
+                .into_any_element(),
+        };
     div()
         .absolute()
         .bottom_0()
@@ -1140,12 +1176,8 @@ pub fn render_progress_bar(
         .right_0()
         .h(px(3.))
         .bg(Colors::raised())
-        .child(
-            div()
-                .h_full()
-                .w(gpui::relative(fraction.clamp(0.0, 1.0)))
-                .bg(color),
-        )
+        .child(fill)
+        .into_any_element()
 }
 
 impl Render for ShogunWindow {
