@@ -189,6 +189,10 @@ pub fn render_settings_tab(
         .child(
             v_flex()
                 .flex_1()
+                // Flex items default to min-height:auto (= content height);
+                // without this the scroll area grows to fit the cards, never
+                // scrolls, and pushes the action bar off-screen.
+                .min_h(px(0.))
                 .overflow_y_scrollbar()
                 .gap_4()
                 .p_4()
