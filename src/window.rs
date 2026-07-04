@@ -1158,11 +1158,23 @@ pub fn render_progress_bar(
                     |bar, delta| {
                         // Scrolling spectrum: each segment's hue is offset by its
                         // position, and the whole ramp slides with the frame delta.
+                        // Each segment is a gradient from its own hue to the next
+                        // segment's, so the spectrum is seamless instead of a
+                        // 16-step color bar. Lightness sits at 0.42 — bright
+                        // enough to read on the raised track, dim enough to not
+                        // sear the eyes while it scrolls.
+                        let seg_hue = move |i: usize| {
+                            let hue = (i as f32 / PROGRESS_RAINBOW_SEGMENTS as f32 - delta)
+                                .rem_euclid(1.0);
+                            gpui::hsla(hue, 0.75, 0.42, 1.0)
+                        };
                         bar.child(h_flex().size_full().children(
                             (0..PROGRESS_RAINBOW_SEGMENTS).map(move |i| {
-                                let hue = (i as f32 / PROGRESS_RAINBOW_SEGMENTS as f32 - delta)
-                                    .rem_euclid(1.0);
-                                div().flex_1().h_full().bg(gpui::hsla(hue, 0.9, 0.55, 1.0))
+                                div().flex_1().h_full().bg(gpui::linear_gradient(
+                                    90.,
+                                    gpui::linear_color_stop(seg_hue(i), 0.),
+                                    gpui::linear_color_stop(seg_hue(i + 1), 1.),
+                                ))
                             }),
                         ))
                     },
