@@ -18,11 +18,11 @@
 - [ ] shell window: Shift+PageUp/PageDown ページング
 - [ ] btop でホイールがアプリ側スクロールになるか（マウスレポーティング転送）
 - [ ] less / man でホイールが効くか（alternate scroll → 矢印変換）
-- [ ] 絵文字が Twemoji 絵柄で出るか・セル幅 2 に収まるか（`echo 😀🍣🚀`）—
-      AddFontResourceExW 案は不発（fontprobe 実証）→ 44b69fd で gpui を vendored patch
-      （custom collection 検索 + AddMapping へ collection 明示、crates/gpui）。
-      fontprobe では mono/segoe 両 base で Twemoji 解決を確認済み。要実機目視（UI/グリッド）。
-      gpui 上流 PR ネタ×2: 本件 + Linux FontFallbacks 無視
+- [x] 絵文字 Twemoji 統一 — **2026-07-04 実機確認済み**。gpui バグ 2 連: ①fallback を
+      system collection でしか解決しない（44b69fd: custom 検索 + AddMapping へ collection
+      明示）②raster_bounds がベースグリフのみ解析 → COLR ベース空の Twemoji が 0×0 で
+      消滅（6f5f9ae: COLR レイヤー bounds の union）。vendored gpui (crates/gpui) に実装。
+      gpui 上流 PR ネタ×3: 上記2件 + Linux FontFallbacks 無視。診断は src/bin/fontprobe.rs
 - [ ] Ctrl+Shift+V ペースト（claude code へ複数行貼り→ 1行ずつ実行されないこと）
 - [ ] shell window の選択コピー・IME（前回実装分の目視）
 - [ ] tailscale アイドル後の入力引っかかり解消（keepalive + 非同期書込）
