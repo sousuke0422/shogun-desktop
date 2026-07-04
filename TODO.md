@@ -43,8 +43,9 @@
 - [ ] マウス click/drag のレポーティング転送（現状ホイールのみ。btop のクリック操作等）
 - [x] **OSC 9;4 進捗表示** — 2026-07-04 実装。PTY reader の受動スキャナ
       (`terminal/progress.rs`、vte は 9;4 を捨てるため素通し監視) → タブ下端 +
-      shell window ステータスバー下端に 3px バー（通常=松葉/エラー=紅/警告=金箔/
-      不定=muted 全幅）。実機確認待ち: `printf '\e]9;4;1;50\a'`
+      shell window ステータスバー下端に 3px バー（通常=虹色スクロール・ゲーミング仕様/
+      エラー=紅/警告=金箔/不定=全幅虹色。with_animation なので表示中のみフレーム駆動）。
+      実機確認待ち: `printf '\e]9;4;1;50\a'`
   - [ ] Phase 2: Windows タスクバー進捗 (ITaskbarList3::SetProgressValue)。
         HWND は vendored gpui に accessor を足すか EnumWindows+PID で取得
 - [ ] OSC 8 ハイパーリンクのクリック（パース済み・snapshot が捨てている）
