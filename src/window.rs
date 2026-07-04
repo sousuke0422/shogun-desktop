@@ -22,7 +22,10 @@ use gpui::{
 use gpui_component::{
     Disableable, Root, Sizable,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    h_flex,
+    radio::{Radio, RadioGroup},
+    switch::Switch,
+    v_flex,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -880,16 +883,6 @@ impl ShogunWindow {
         cx.notify();
     }
 
-    fn toggle_accept_all_host_keys(
-        &mut self,
-        _: &ClickEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings_tab.accept_all_host_keys = !self.settings_tab.accept_all_host_keys;
-        cx.notify();
-    }
-
     pub fn save_settings(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings_tab.collect(cx);
         self.terminal_font = settings.terminal.font.clone();
@@ -1206,29 +1199,28 @@ impl Render for ShogunWindow {
                             crate::shell_window::open_shell_window(cx);
                         }));
                 let backend = self.settings_tab.connection_backend.clone();
-                let connection_backend_selector = h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("conn-backend-native")
-                            .label("Native (russh)")
-                            .when(backend == ConnectionBackend::Native, |b| b.primary())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.set_connection_backend(ConnectionBackend::Native, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("conn-backend-system")
-                            .label("System (ssh.exe)")
-                            .when(backend == ConnectionBackend::System, |b| b.primary())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.set_connection_backend(ConnectionBackend::System, cx);
-                            })),
-                    );
+                let connection_backend_selector = RadioGroup::horizontal("conn-backend")
+                    .selected_index(Some(match backend {
+                        ConnectionBackend::Native => 0,
+                        ConnectionBackend::System => 1,
+                    }))
+                    .child(Radio::new("conn-backend-native").label("Native (russh)"))
+                    .child(Radio::new("conn-backend-system").label("System (ssh.exe)"))
+                    .on_click(cx.listener(|this, index: &usize, _, cx| {
+                        let backend = match index {
+                            0 => ConnectionBackend::Native,
+                            _ => ConnectionBackend::System,
+                        };
+                        this.set_connection_backend(backend, cx);
+                    }));
                 let accept_all = self.settings_tab.accept_all_host_keys;
-                let accept_all_host_keys_toggle = Button::new("accept-all-host-keys")
+                let accept_all_host_keys_toggle = Switch::new("accept-all-host-keys")
+                    .checked(accept_all)
                     .label("ホスト鍵を常に受け入れる（known_hosts スキップ）")
-                    .when(accept_all, |b| b.primary())
-                    .on_click(cx.listener(Self::toggle_accept_all_host_keys));
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.settings_tab.accept_all_host_keys = *checked;
+                        cx.notify();
+                    }));
                 let font_preset_buttons = h_flex()
                     .gap_2()
                     .child(
@@ -1248,32 +1240,25 @@ impl Render for ShogunWindow {
                 #[cfg(windows)]
                 let control_path_selector = {
                     let current = self.settings_tab.control_path.clone();
-                    h_flex()
-                        .gap_2()
+                    RadioGroup::horizontal("ctrl-path")
+                        .selected_index(Some(match current {
+                            ControlPathType::Socket => 0,
+                            ControlPathType::NamedPipe => 1,
+                            ControlPathType::None => 2,
+                        }))
+                        .child(Radio::new("ctrl-path-socket").label("Socket（%TEMP% ファイル）"))
                         .child(
-                            Button::new("ctrl-path-socket")
-                                .label("Socket（%TEMP% ファイル）")
-                                .when(current == ControlPathType::Socket, |b| b.primary())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_control_path(ControlPathType::Socket, cx);
-                                })),
+                            Radio::new("ctrl-path-named-pipe").label("Named Pipe（\\\\.\\pipe\\）"),
                         )
-                        .child(
-                            Button::new("ctrl-path-named-pipe")
-                                .label("Named Pipe（\\\\.\\pipe\\）")
-                                .when(current == ControlPathType::NamedPipe, |b| b.primary())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_control_path(ControlPathType::NamedPipe, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("ctrl-path-none")
-                                .label("無効（毎回新規接続）")
-                                .when(current == ControlPathType::None, |b| b.primary())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_control_path(ControlPathType::None, cx);
-                                })),
-                        )
+                        .child(Radio::new("ctrl-path-none").label("無効（毎回新規接続）"))
+                        .on_click(cx.listener(|this, index: &usize, _, cx| {
+                            let path = match index {
+                                0 => ControlPathType::Socket,
+                                1 => ControlPathType::NamedPipe,
+                                _ => ControlPathType::None,
+                            };
+                            this.set_control_path(path, cx);
+                        }))
                 };
                 render_settings_tab(
                     &self.settings_tab,
