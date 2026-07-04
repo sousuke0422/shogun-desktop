@@ -15,7 +15,10 @@ mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 
 cp "$BINARY"               "$APP/Contents/MacOS/shogun-desktop"
-cp "$REPO_ROOT/assets/Info.plist"   "$APP/Contents/Info.plist"
+# Inject the crate version into the bundle plist (the asset file carries a
+# placeholder so the two can never drift apart).
+VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
+sed "s/__VERSION__/${VERSION}/g" "$REPO_ROOT/assets/Info.plist" > "$APP/Contents/Info.plist"
 
 if [ -f "$REPO_ROOT/assets/icon.icns" ]; then
     cp "$REPO_ROOT/assets/icon.icns" "$APP/Contents/Resources/shogun-desktop.icns"

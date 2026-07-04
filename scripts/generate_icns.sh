@@ -1,32 +1,30 @@
 #!/usr/bin/env bash
 # scripts/generate_icns.sh
-# icon.svg から macOS 用 .icns を生成する
+# icon_macos.svg から macOS 用 .icns を生成する
 # 依存: ImageMagick (magick), iconutil (macOS 標準)
 # CI: brew install imagemagick  で magick を導入すること
-
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SVG="$REPO_ROOT/assets/icon.svg"
+# macOS-specific artwork: dark rounded-square plate per platform convention
+# (the bare-glyph icon.svg is for the Windows titlebar / exe resource).
+SVG="$REPO_ROOT/assets/icon_macos.svg"
 ICNS="$REPO_ROOT/assets/icon.icns"
 TMP_DIR="$(mktemp -d)"
 ICONSET="$TMP_DIR/shogun.iconset"
 mkdir -p "$ICONSET"
 
-# ImageMagick で各サイズの PNG を生成
-# -density 300: 高解像度でラスタライズしてから resize（品質向上）
-# -background none: 透過を保持
-for SIZE in 16 32 64 128 256 512 1024; do
-    magick -density 300 -background none "$SVG" \
-        -resize "${SIZE}x${SIZE}" \
-        "$ICONSET/icon_${SIZE}x${SIZE}.png"
-done
+render() { # size, output name
+    magick -density 300 -background none "$SVG" -resize "$1x$1" "$ICONSET/$2"
+}
 
-# @2x バリアント（HiDPI）
-cp "$ICONSET/icon_32x32.png"     "$ICONSET/icon_16x16@2x.png"
-cp "$ICONSET/icon_64x64.png"     "$ICONSET/icon_32x32@2x.png"
-cp "$ICONSET/icon_256x256.png"   "$ICONSET/icon_128x128@2x.png"
-cp "$ICONSET/icon_512x512.png"   "$ICONSET/icon_256x256@2x.png"
-cp "$ICONSET/icon_1024x1024.png" "$ICONSET/icon_512x512@2x.png"
+# Apple's iconset member names are fixed: icon_<pt>x<pt>[@2x].png with
+# pt ∈ {16,32,128,256,512}. Anything else (icon_64x64.png,
+# icon_1024x1024.png) is not a valid member and gets dropped by iconutil,
+# leaving the icns with missing representations.
+for PT in 16 32 128 256 512; do
+    render "$PT" "icon_${PT}x${PT}.png"
+    render "$((PT * 2))" "icon_${PT}x${PT}@2x.png"
+done
 
 iconutil -c icns "$ICONSET" -o "$ICNS"
 rm -rf "$TMP_DIR"
