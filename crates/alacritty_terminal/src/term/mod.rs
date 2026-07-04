@@ -1937,6 +1937,9 @@ impl<T: EventListener> Handler for Term<T> {
             // PATCHED (shogun-desktop): honor SGR 5/6/25 via Flags::BLINK.
             Attr::BlinkSlow | Attr::BlinkFast => cursor.template.flags.insert(Flags::BLINK),
             Attr::CancelBlink => cursor.template.flags.remove(Flags::BLINK),
+            // The blink arms above make this match exhaustive today; keep the
+            // wildcard for future vte Attr variants.
+            #[allow(unreachable_patterns)]
             _ => {
                 debug!("Term got unhandled attr: {:?}", attr);
             },
