@@ -510,6 +510,9 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     // links past the cap keep the last slot rather than panicking.
     let mut links: Vec<String> = Vec::new();
     let mut link_ids: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
+    // Soft-wrap flags per screen row (WRAPLINE sits on the row's last cell),
+    // so bare-URL detection can join continuation rows.
+    let mut wrapped = vec![false; rows];
 
     for indexed in content.display_iter {
         let row = (indexed.point.line.0 + display_offset) as usize;
@@ -528,15 +531,10 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
             let flags = indexed.flags;
             let blink = flags.contains(Flags::BLINK);
             has_blink |= blink;
-            let link = indexed.hyperlink().map(|h| {
-                *link_ids.entry(h.uri().to_string()).or_insert_with(|| {
-                    let idx = links.len().min(u16::MAX as usize) as u16;
-                    if links.len() <= u16::MAX as usize {
-                        links.push(h.uri().to_string());
-                    }
-                    idx
-                })
-            });
+            wrapped[row] |= flags.contains(Flags::WRAPLINE);
+            let link = indexed
+                .hyperlink()
+                .map(|h| intern_link(&mut links, &mut link_ids, h.uri()));
             cells[row][col] = SnapshotCell {
                 c: indexed.c,
                 fg: resolve_color(indexed.fg, content.colors),
@@ -572,6 +570,22 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         }
     }
 
+    detect_implicit_links(&mut cells, &wrapped, &mut links, &mut link_ids);
+
+    // SGR-applied affordance: every linked cell without an underline of its
+    // own gets a dotted accent underline, so click targets are visible
+    // before any hover. Rides the existing run machinery (underline kind +
+    // SGR 58 color are already per-cell style); ctrl-hover then paints the
+    // solid line on top.
+    for row in &mut cells {
+        for cell in row {
+            if cell.link.is_some() && cell.style.underline == UnderlineKind::None {
+                cell.style.underline = UnderlineKind::Dotted;
+                cell.style.underline_color = Some(LINK_UNDERLINE_COLOR);
+            }
+        }
+    }
+
     let cur = content.cursor.point;
     GridSnapshot {
         cols,
@@ -584,6 +598,134 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         has_blink,
         links,
     }
+}
+
+/// Accent for the always-on dotted underline under hyperlink cells.
+const LINK_UNDERLINE_COLOR: ResolvedColor = ResolvedColor::Rgb(0x58, 0xa6, 0xff);
+
+/// Intern `uri` into the snapshot's link table, deduplicated.
+fn intern_link(
+    links: &mut Vec<String>,
+    ids: &mut std::collections::HashMap<String, u16>,
+    uri: &str,
+) -> u16 {
+    *ids.entry(uri.to_string()).or_insert_with(|| {
+        let idx = links.len().min(u16::MAX as usize) as u16;
+        if links.len() <= u16::MAX as usize {
+            links.push(uri.to_string());
+        }
+        idx
+    })
+}
+
+/// Detect bare `http(s)://` URLs in the viewport text and link their cells,
+/// like Ghostty/wt do without any OSC 8 markup. Soft-wrapped rows are joined
+/// (via the WRAPLINE flags) so a URL broken across lines stays one link.
+/// Explicit OSC 8 always wins: spans touching an already-linked cell are
+/// skipped.
+fn detect_implicit_links(
+    cells: &mut [Vec<SnapshotCell>],
+    wrapped: &[bool],
+    links: &mut Vec<String>,
+    link_ids: &mut std::collections::HashMap<String, u16>,
+) {
+    let rows = cells.len();
+    let mut r = 0;
+    while r < rows {
+        let mut last = r;
+        while last + 1 < rows && wrapped[last] {
+            last += 1;
+        }
+        // The joined row group as chars, with each char's home cell.
+        let mut chars: Vec<char> = Vec::new();
+        let mut pos: Vec<(usize, usize, u8)> = Vec::new();
+        for row in r..=last {
+            for (col, cell) in cells[row].iter().enumerate() {
+                if cell.display_width == 0 {
+                    continue;
+                }
+                chars.push(cell.c);
+                pos.push((row, col, cell.display_width));
+            }
+        }
+        for (start, end, uri) in detect_urls(&chars) {
+            if pos[start..end]
+                .iter()
+                .any(|&(row, col, _)| cells[row][col].link.is_some())
+            {
+                continue;
+            }
+            let idx = intern_link(links, link_ids, &uri);
+            for &(row, col, width) in &pos[start..end] {
+                cells[row][col].link = Some(idx);
+                // Wide glyph: link the spacer half too, so hit-testing on
+                // either half of the character finds the link.
+                if width == 2 && col + 1 < cells[row].len() {
+                    cells[row][col + 1].link = Some(idx);
+                }
+            }
+        }
+        r = last + 1;
+    }
+}
+
+/// `[start, end)` char spans of bare URLs in `chars`, with the URI text.
+fn detect_urls(chars: &[char]) -> Vec<(usize, usize, String)> {
+    fn is_url_char(c: char) -> bool {
+        c.is_ascii_graphic() && !matches!(c, '"' | '\'' | '<' | '>' | '`')
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let lower_eq = |off: usize, pat: &str| {
+            chars.len() >= i + off + pat.len()
+                && pat
+                    .chars()
+                    .zip(&chars[i + off..])
+                    .all(|(p, &c)| c.to_ascii_lowercase() == p)
+        };
+        let scheme = if lower_eq(0, "https://") {
+            8
+        } else if lower_eq(0, "http://") {
+            7
+        } else {
+            i += 1;
+            continue;
+        };
+        let mut j = i + scheme;
+        while j < chars.len() && is_url_char(chars[j]) {
+            j += 1;
+        }
+        // Trim trailing prose punctuation, and a closing paren/bracket only
+        // when unbalanced — "https://en.wikipedia.org/wiki/Rust_(language)"
+        // keeps its paren, "(see https://example.com)" loses it.
+        let mut end = j;
+        while end > i + scheme {
+            match chars[end - 1] {
+                '.' | ',' | ';' | ':' | '!' | '?' => end -= 1,
+                ')' | ']' => {
+                    let (open, close) = match chars[end - 1] {
+                        ')' => ('(', ')'),
+                        _ => ('[', ']'),
+                    };
+                    let span = &chars[i..end];
+                    let opens = span.iter().filter(|&&c| c == open).count();
+                    let closes = span.iter().filter(|&&c| c == close).count();
+                    if closes > opens {
+                        end -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        if end > i + scheme {
+            out.push((i, end, chars[i..end].iter().collect()));
+        }
+        i = j.max(i + 1);
+    }
+    out
 }
 
 fn resolve_color(
@@ -763,6 +905,85 @@ mod tests {
         assert_eq!(b, Some(1));
         assert_eq!(snap.links[0], "https://a.example/");
         assert_eq!(snap.links[1], "https://b.example/");
+    }
+
+    #[test]
+    fn implicit_bare_url_is_detected_and_styled() {
+        let mut term = make_term(40, 2);
+        advance_bytes(&mut term, b"see https://example.com/x now");
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.links, vec!["https://example.com/x".to_string()]);
+        // "see " unlinked, the URL linked, " now" unlinked.
+        assert_eq!(snap.cells[0][3].link, None);
+        for col in 4..25 {
+            assert_eq!(snap.cells[0][col].link, Some(0), "col {col}");
+        }
+        assert_eq!(snap.cells[0][25].link, None);
+        // The SGR affordance: dotted accent underline on link cells only.
+        assert_eq!(snap.cells[0][4].style.underline, UnderlineKind::Dotted);
+        assert_eq!(
+            snap.cells[0][4].style.underline_color,
+            Some(LINK_UNDERLINE_COLOR)
+        );
+        assert_eq!(snap.cells[0][3].style.underline, UnderlineKind::None);
+    }
+
+    #[test]
+    fn implicit_url_joins_soft_wrapped_rows() {
+        let mut term = make_term(10, 3);
+        // 16 chars into a 10-col row: soft-wraps onto row 1.
+        advance_bytes(&mut term, b"https://e.com/ab");
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.links, vec!["https://e.com/ab".to_string()]);
+        assert_eq!(snap.cells[0][9].link, Some(0));
+        assert_eq!(snap.cells[1][5].link, Some(0));
+        assert_eq!(snap.cells[1][6].link, None);
+    }
+
+    #[test]
+    fn osc8_wins_over_implicit_detection() {
+        let mut term = make_term(40, 2);
+        // The visible text looks like a URL, but OSC 8 says it points
+        // elsewhere — the explicit target must win.
+        advance_bytes(
+            &mut term,
+            b"\x1b]8;;https://real.example/\x1b\\https://shown.example/\x1b]8;;\x1b\\",
+        );
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.links, vec!["https://real.example/".to_string()]);
+        assert_eq!(snap.cells[0][0].link, Some(0));
+    }
+
+    #[test]
+    fn detect_urls_trims_prose_punctuation_and_balances_parens() {
+        let find = |s: &str| {
+            let chars: Vec<char> = s.chars().collect();
+            detect_urls(&chars)
+                .into_iter()
+                .map(|(_, _, uri)| uri)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            find("go to https://a.example/x."),
+            vec!["https://a.example/x"]
+        );
+        assert_eq!(find("(https://a.example/x)"), vec!["https://a.example/x"]);
+        assert_eq!(
+            find("https://en.wikipedia.org/wiki/Rust_(language)"),
+            vec!["https://en.wikipedia.org/wiki/Rust_(language)"]
+        );
+        assert_eq!(
+            find("HTTPS://UPPER.example/ and http://b.example/,"),
+            vec!["HTTPS://UPPER.example/", "http://b.example/"]
+        );
+        // Bare scheme with nothing after it is not a link.
+        assert_eq!(find("https:// nothing"), Vec::<String>::new());
+        assert_eq!(find("no urls here"), Vec::<String>::new());
+        // Quotes terminate.
+        assert_eq!(
+            find("\"https://a.example/x\" q"),
+            vec!["https://a.example/x"]
+        );
     }
 
     #[test]

@@ -172,7 +172,18 @@ fn link_at<V: SelectionHost>(
 ) -> Option<(u16, String)> {
     let session = this.pane_session(pane)?;
     let snap = session.snapshot.lock();
-    let idx = snap.cells.get(row)?.get(col)?.link?;
+    let cells = snap.cells.get(row)?;
+    // Pointer on the spacer half of a wide glyph: the link lives on the base
+    // cell to its left (OSC 8 spacers carry no link of their own).
+    let mut col = col;
+    while col > 0
+        && cells
+            .get(col)
+            .is_some_and(|c| c.display_width == 0 && c.link.is_none())
+    {
+        col -= 1;
+    }
+    let idx = cells.get(col)?.link?;
     let uri = snap.links.get(idx as usize)?.clone();
     Some((idx, uri))
 }
