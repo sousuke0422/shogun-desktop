@@ -225,6 +225,10 @@ pub struct GridSnapshot {
     /// Any visible cell carries SGR blink — the refresh task adds a phase
     /// timer only while this is set, keeping idle wakeups at zero otherwise.
     pub has_blink: bool,
+    /// Deduplicated OSC 8 hyperlink URIs; cells refer in via
+    /// [`SnapshotCell::link`]. alacritty parses the sequences, we only
+    /// collect what `display_iter` hands out.
+    pub links: Vec<String>,
 }
 
 impl GridSnapshot {
@@ -236,6 +240,7 @@ impl GridSnapshot {
             cursor: (0, 0),
             display_offset: 0,
             has_blink: false,
+            links: Vec::new(),
         }
     }
 }
@@ -248,6 +253,9 @@ pub struct SnapshotCell {
     /// 0 = skip render (wide spacer), 1 = half-width, 2 = wide (Flags::WIDE_CHAR).
     pub display_width: u8,
     pub style: CellStyle,
+    /// Index into [`GridSnapshot::links`] when the cell belongs to an OSC 8
+    /// hyperlink. Cells sharing an index underline together on ctrl-hover.
+    pub link: Option<u16>,
 }
 
 /// SGR attributes of a cell, resolved from alacritty's cell flags.
@@ -296,6 +304,7 @@ impl SnapshotCell {
             bg: ResolvedColor::Default,
             display_width: 1,
             style: CellStyle::default(),
+            link: None,
         }
     }
 }
@@ -497,6 +506,10 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     let display_offset = content.display_offset as i32;
     let mut cells = vec![vec![SnapshotCell::blank(); cols]; rows];
     let mut has_blink = false;
+    // OSC 8 hyperlinks, deduplicated by URI. u16 is plenty for one viewport;
+    // links past the cap keep the last slot rather than panicking.
+    let mut links: Vec<String> = Vec::new();
+    let mut link_ids: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
 
     for indexed in content.display_iter {
         let row = (indexed.point.line.0 + display_offset) as usize;
@@ -515,6 +528,15 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
             let flags = indexed.flags;
             let blink = flags.contains(Flags::BLINK);
             has_blink |= blink;
+            let link = indexed.hyperlink().map(|h| {
+                *link_ids.entry(h.uri().to_string()).or_insert_with(|| {
+                    let idx = links.len().min(u16::MAX as usize) as u16;
+                    if links.len() <= u16::MAX as usize {
+                        links.push(h.uri().to_string());
+                    }
+                    idx
+                })
+            });
             cells[row][col] = SnapshotCell {
                 c: indexed.c,
                 fg: resolve_color(indexed.fg, content.colors),
@@ -545,6 +567,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
                         .underline_color()
                         .map(|c| resolve_color(c, content.colors)),
                 },
+                link,
             };
         }
     }
@@ -559,6 +582,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         cursor: ((cur.line.0 + display_offset) as usize, cur.column.0),
         display_offset: term.grid().display_offset(),
         has_blink,
+        links,
     }
 }
 
@@ -704,6 +728,41 @@ mod tests {
         let snap = take_snapshot(&term);
         assert_eq!(snap.cells[0][0].c, '1');
         assert_eq!(snap.cells[1][0].c, '2');
+    }
+
+    #[test]
+    fn snapshot_collects_osc8_hyperlinks() {
+        let mut term = make_term(20, 2);
+        // "click me" wrapped in OSC 8, then a plain word, then a second link
+        // reusing the SAME uri — it must dedupe onto index 0.
+        advance_bytes(
+            &mut term,
+            b"\x1b]8;;https://example.com/\x1b\\click\x1b]8;;\x1b\\ x \x1b]8;;https://example.com/\x1b\\me\x1b]8;;\x1b\\",
+        );
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.links, vec!["https://example.com/".to_string()]);
+        for col in 0..5 {
+            assert_eq!(snap.cells[0][col].link, Some(0), "col {col}");
+        }
+        assert_eq!(snap.cells[0][5].link, None); // the " x " gap
+        assert_eq!(snap.cells[0][8].link, Some(0)); // "me", same uri
+        assert_eq!(snap.cells[1][0].link, None);
+    }
+
+    #[test]
+    fn snapshot_distinct_uris_get_distinct_indices() {
+        let mut term = make_term(30, 2);
+        advance_bytes(
+            &mut term,
+            b"\x1b]8;;https://a.example/\x1b\\A\x1b]8;;https://b.example/\x1b\\B\x1b]8;;\x1b\\",
+        );
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.links.len(), 2);
+        let (a, b) = (snap.cells[0][0].link, snap.cells[0][1].link);
+        assert_eq!(a, Some(0));
+        assert_eq!(b, Some(1));
+        assert_eq!(snap.links[0], "https://a.example/");
+        assert_eq!(snap.links[1], "https://b.example/");
     }
 
     #[test]

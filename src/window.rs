@@ -793,6 +793,7 @@ impl ShogunWindow {
                     self.ime.clone(),
                     self.ime.read(cx).marked.clone(),
                     self.selection.range_for(selection_pane(is_shogun)),
+                    self.selection.hover_link_for(selection_pane(is_shogun)),
                     is_shogun,
                     &self.terminal_font,
                     cw,

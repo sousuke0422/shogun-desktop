@@ -34,6 +34,8 @@ pub fn render_terminal_tab(
     ime_preedit: Option<String>,
     // Normalized inclusive (start, end) cell range of the mouse selection.
     selection: Option<((usize, usize), (usize, usize))>,
+    // Ctrl-hovered OSC 8 hyperlink index for the hover underline.
+    hover_link: Option<u16>,
     is_shogun: bool,
     font: &str,
     // Cell width in logical pixels — measured via `TextSystem::ch_advance`.
@@ -193,7 +195,15 @@ pub fn render_terminal_tab(
                 .right(px(TERMINAL_PANE_PADDING_PX / 2.0))
                 .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0)),
             )
-            .child(render_grid(snap, font, cw, ch, selection, ime_preedit))
+            .child(render_grid(
+                snap,
+                font,
+                cw,
+                ch,
+                selection,
+                hover_link,
+                ime_preedit,
+            ))
             // Right-click menu: dispatches the same actions as the keyboard
             // shortcuts. action_context routes them to the terminal focus
             // handle, i.e. the pane's TERMINAL_KEY_CONTEXT on_action handlers.

@@ -431,6 +431,7 @@ impl Render for ShellWindow {
                     cw,
                     ch,
                     self.selection.range_for(0),
+                    self.selection.hover_link_for(0),
                     ime_preedit,
                 ))
                 // Right-click menu dispatching the same actions as the

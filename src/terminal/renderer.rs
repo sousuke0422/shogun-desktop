@@ -684,6 +684,9 @@ fn paint_box_char(
 /// ink, so the selected text stays legible underneath.
 const SELECTION_RGBA: u32 = 0x3465a480;
 
+/// Ctrl-hover underline for OSC 8 hyperlinks: opaque accent blue.
+const LINK_HOVER_RGBA: u32 = 0x58a6ffff;
+
 /// Compute the selected column span of one row for an inclusive, linear
 /// (reading-order) selection. Rows strictly between the endpoints are selected
 /// full-width. Returns `None` when the row is outside the selection.
@@ -720,6 +723,34 @@ pub(crate) fn selection_cols_for_row(
     (c0 < c1).then_some((c0, c1))
 }
 
+/// Contiguous `[c0, c1)` column spans of `row` whose cells belong to
+/// hyperlink `link` — the ctrl-hover underline. Spans, not single cells, so
+/// one quad covers a whole link run.
+pub(crate) fn link_cols_for_row(
+    cells: &[crate::terminal::SnapshotCell],
+    link: u16,
+) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start = None;
+    for (col, cell) in cells.iter().enumerate() {
+        // Spacer halves of wide glyphs carry no link; treat them as part of
+        // the neighboring linked cell so CJK link text underlines unbroken.
+        let linked = cell.link == Some(link) || (cell.display_width == 0 && start.is_some());
+        match (linked, start) {
+            (true, None) => start = Some(col),
+            (false, Some(s)) => {
+                spans.push((s, col));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        spans.push((s, cells.len()));
+    }
+    spans
+}
+
 pub fn render_grid(
     snap: &GridSnapshot,
     font: &str,
@@ -727,6 +758,9 @@ pub fn render_grid(
     ch: f32,
     // Normalized inclusive (start, end) cell range of the mouse selection.
     selection: Option<((usize, usize), (usize, usize))>,
+    // Hyperlink index (into `snap.links`) under a ctrl-hover, if any — every
+    // cell of that link gets an underline so the click target is visible.
+    hover_link: Option<u16>,
     // IME composition (preedit) text, drawn inline at the terminal cursor.
     // Painted here — in the cursor row's canvas — because paint calls issued
     // from the absolute viewport-overlay canvas never reach the screen
@@ -763,6 +797,9 @@ pub fn render_grid(
             let runs: Vec<Run> = coalesce_runs(row, cur_col).collect();
             let total_cols: usize = runs.iter().map(|r| r.width).sum();
             let sel_cols = selection_cols_for_row(selection, row_idx, grid_cols, row);
+            let link_spans: Vec<(usize, usize)> = hover_link
+                .map(|idx| link_cols_for_row(row, idx))
+                .unwrap_or_default();
             let preedit = if row_idx == cursor_row {
                 ime_preedit.clone().filter(|s| !s.is_empty())
             } else {
@@ -1015,6 +1052,19 @@ pub fn render_grid(
                                 size: size(px((c1 - c0) as f32 * cw), px(ch)),
                             },
                             rgba(SELECTION_RGBA),
+                        ));
+                    }
+
+                    // Ctrl-hovered OSC 8 hyperlink: underline every cell of
+                    // the link (all its spans in this row) in the accent
+                    // color, marking the ctrl-click target.
+                    for &(c0, c1) in &link_spans {
+                        window.paint_quad(fill(
+                            Bounds {
+                                origin: point(px(ox + c0 as f32 * cw), px(oy + ch - 2.0)),
+                                size: size(px((c1 - c0) as f32 * cw), px(1.)),
+                            },
+                            rgba(LINK_HOVER_RGBA),
                         ));
                     }
 
@@ -1436,5 +1486,44 @@ mod tests {
         assert_eq!(cell_width_for_font("Cica"), 6.5);
         assert_eq!(cell_width_for_font("Moralerspace Neon HW"), CELL_W);
         assert_eq!(cell_width_for_font("unknown"), CELL_W);
+    }
+
+    fn cell_link(c: char, link: u16) -> SnapshotCell {
+        SnapshotCell {
+            c,
+            link: Some(link),
+            ..SnapshotCell::blank()
+        }
+    }
+
+    #[test]
+    fn link_cols_spans_contiguous_runs() {
+        // link0 link0 gap link1 link0 → hovering link 0 gives two spans.
+        let row = vec![
+            cell_link('a', 0),
+            cell_link('b', 0),
+            cell(' '),
+            cell_link('c', 1),
+            cell_link('d', 0),
+        ];
+        assert_eq!(link_cols_for_row(&row, 0), vec![(0, 2), (4, 5)]);
+        assert_eq!(link_cols_for_row(&row, 1), vec![(3, 4)]);
+        assert_eq!(link_cols_for_row(&row, 2), Vec::<(usize, usize)>::new());
+    }
+
+    #[test]
+    fn link_cols_bridge_wide_char_spacers() {
+        // Wide glyph inside a link: its spacer half (link: None) must not
+        // split the underline.
+        let mut wide = cell_wide('あ');
+        wide.link = Some(0);
+        let row = vec![cell_link('a', 0), wide, cell_spacer(), cell_link('b', 0)];
+        assert_eq!(link_cols_for_row(&row, 0), vec![(0, 4)]);
+    }
+
+    #[test]
+    fn link_cols_span_reaching_row_end_closes() {
+        let row = vec![cell(' '), cell_link('x', 3)];
+        assert_eq!(link_cols_for_row(&row, 3), vec![(1, 2)]);
     }
 }

@@ -90,6 +90,9 @@ pub struct SelectionState {
     report: Option<ReportDrag>,
     /// Last hover cell reported under `?1003` (all-motion), for dedup.
     hover_cell: Option<(usize, usize)>,
+    /// OSC 8 hyperlink currently under a ctrl-hover: `(pane, link index)`.
+    /// The renderer underlines that link's cells; ctrl-click opens it.
+    hover_link: Option<(usize, u16)>,
 }
 
 impl SelectionState {
@@ -141,6 +144,37 @@ impl SelectionState {
         let (sel_pane, start, end) = self.selected()?;
         (sel_pane == pane).then_some((start, end))
     }
+
+    /// The ctrl-hovered hyperlink index when it belongs to `pane` — the shape
+    /// `render_grid` takes for the hover underline.
+    pub fn hover_link_for(&self, pane: usize) -> Option<u16> {
+        let (link_pane, idx) = self.hover_link?;
+        (link_pane == pane).then_some(idx)
+    }
+}
+
+/// Schemes ctrl-click will hand to the OS. Anything else in an OSC 8 URI
+/// (`vscode:`, custom app handlers, …) is ignored — a terminal escape written
+/// by whatever program runs in the shell must not launch arbitrary handlers.
+fn openable_link(uri: &str) -> bool {
+    let lower = uri.to_ascii_lowercase();
+    ["http://", "https://", "mailto:"]
+        .iter()
+        .any(|p| lower.starts_with(p))
+}
+
+/// The hyperlink under `(row, col)` of `pane`, if any: `(index, uri)`.
+fn link_at<V: SelectionHost>(
+    this: &V,
+    pane: usize,
+    row: usize,
+    col: usize,
+) -> Option<(u16, String)> {
+    let session = this.pane_session(pane)?;
+    let snap = session.snapshot.lock();
+    let idx = snap.cells.get(row)?.get(col)?.link?;
+    let uri = snap.links.get(idx as usize)?.clone();
+    Some((idx, uri))
 }
 
 /// Register the three window-level mouse listeners for one terminal pane.
@@ -179,6 +213,20 @@ pub fn register_mouse_selection<V: SelectionHost>(
             }
             let (row, col) = cell_at(ev.position);
             view.update(cx, |this, cx| {
+                // Ctrl-click on an OSC 8 hyperlink opens it (wt/VSCode
+                // convention — a plain click stays with mouse reporting and
+                // selection). Takes precedence over reporting: the ctrl-hover
+                // underline promised this exact click would open the link.
+                if ev.button == MouseButton::Left
+                    && ev.modifiers.control
+                    && !ev.modifiers.shift
+                    && let Some((_, uri)) = link_at(this, pane, row, col)
+                {
+                    if openable_link(&uri) {
+                        cx.open_url(&uri);
+                    }
+                    return;
+                }
                 // Mouse reporting first: apps that asked (btop, claude code
                 // menus, tmux `mouse on`) get the click. Shift is the
                 // universal bypass — hold it to select locally regardless.
@@ -214,6 +262,23 @@ pub fn register_mouse_selection<V: SelectionHost>(
             }
             let (row, col) = cell_at(ev.position);
             view.update(cx, |this, cx| {
+                // Ctrl-hover hyperlink tracking, before any early return so
+                // the underline clears when ctrl lifts or the pointer moves
+                // off the link. Only this pane's listener may set the state;
+                // clearing is allowed only for a link it owns, otherwise the
+                // other pane's listener (same window event) wipes it.
+                let hovered = (bounds.contains(&ev.position)
+                    && ev.modifiers.control
+                    && ev.pressed_button.is_none())
+                .then(|| link_at(this, pane, row, col).map(|(idx, _)| (pane, idx)))
+                .flatten();
+                let current = this.selection_state().hover_link;
+                if current != hovered
+                    && (hovered.is_some() || current.is_some_and(|(p, _)| p == pane))
+                {
+                    this.selection_state().hover_link = hovered;
+                    cx.notify();
+                }
                 // Reported drag in flight: forward motion per cell change.
                 if let Some(drag) = this.selection_state().report
                     && drag.pane == pane
@@ -426,5 +491,27 @@ mod tests {
         state.begin(0, 2, 3);
         assert!(state.end_drag());
         assert_eq!(state.selected(), None);
+    }
+
+    #[test]
+    fn hover_link_is_pane_scoped() {
+        let mut state = SelectionState::default();
+        assert_eq!(state.hover_link_for(0), None);
+        state.hover_link = Some((1, 7));
+        assert_eq!(state.hover_link_for(1), Some(7));
+        assert_eq!(state.hover_link_for(0), None);
+    }
+
+    #[test]
+    fn openable_link_allows_web_and_mail_only() {
+        assert!(openable_link("https://example.com/x"));
+        assert!(openable_link("HTTP://EXAMPLE.COM"));
+        assert!(openable_link("mailto:lord@example.com"));
+        // Custom app handlers / local files from a terminal escape must not
+        // launch anything.
+        assert!(!openable_link("vscode://file/etc/passwd"));
+        assert!(!openable_link("file:///etc/passwd"));
+        assert!(!openable_link("javascript:alert(1)"));
+        assert!(!openable_link("ftp://example.com"));
     }
 }
