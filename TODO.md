@@ -42,6 +42,10 @@
       ついでにレガシー側も拡充: F1-F12・Insert・修飾付き矢印/Home/End/PgUp/PgDn
       (CSI 1;m X / n;m ~)・Alt=ESC prefix。実機確認: `kitten show-key -m kitty` 相当か
       claude code / opencode で矢印・Esc・ctrl+英字の挙動
+- [ ] マウスレポーティングの残ギャップ（2026-07-05 opus 監査で列挙。Ghostty 比で
+      核心経路=SGR click/drag/hover は**バイト単位一致**と判定済み。ホイール修飾ビットと
+      X10>223 drop は同日適用済み）: 水平ホイール (btn 66/67)・?1005 UTF-8・
+      ?1015 urxvt・?1016 SGR-pixels・shift-capture (kitty 系)。いずれも低優先
 - [ ] **ssh/tmux ペインの履歴スクロール** — tmux は alternate screen 故サーバ側履歴。
       tmux `mouse on` なら `wheel_pty_bytes` を本窓ペインに配線するだけで動く見込み。
       copy-mode 中継 / capture-pane 方式はその後

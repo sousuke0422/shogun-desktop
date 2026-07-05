@@ -110,9 +110,9 @@ impl TerminalSession {
     /// Route a wheel event to the PTY when the running application asked for
     /// it. Returns `false` when the wheel should scroll the local scrollback
     /// instead (plain primary-screen shell). See [`wheel_pty_bytes`].
-    pub fn wheel_to_pty(&self, lines: i32, col: usize, row: usize) -> bool {
+    pub fn wheel_to_pty(&self, lines: i32, col: usize, row: usize, mods: ReportMods) -> bool {
         let mode = *self.term.lock().mode();
-        match wheel_pty_bytes(mode, lines, col, row) {
+        match wheel_pty_bytes(mode, lines, col, row, mods) {
             Some(buf) => {
                 if !buf.is_empty() {
                     self.send_bytes(&buf);
@@ -333,29 +333,24 @@ pub fn paste_pty_bytes(mode: alacritty_terminal::term::TermMode, text: &str) -> 
 ///   DECCKM application-cursor mode (less, vim without mouse).
 ///
 /// `lines > 0` = wheel up. `col`/`row` are 0-based grid coordinates.
+/// `mods` follows Ghostty/xterm: ctrl/alt bits are ORed into the wheel
+/// button code so apps see ctrl+scroll (zoom) etc.
 pub fn wheel_pty_bytes(
     mode: alacritty_terminal::term::TermMode,
     lines: i32,
     col: usize,
     row: usize,
+    mods: ReportMods,
 ) -> Option<Vec<u8>> {
     use alacritty_terminal::term::TermMode;
     if mode.intersects(TermMode::MOUSE_MODE) {
-        let btn: u32 = if lines > 0 { 64 } else { 65 };
+        let btn: u32 = if lines > 0 { 64 } else { 65 } + mods.bits();
         let mut buf = Vec::new();
         for _ in 0..lines.unsigned_abs() {
             if mode.contains(TermMode::SGR_MOUSE) {
                 buf.extend_from_slice(format!("\x1b[<{btn};{};{}M", col + 1, row + 1).as_bytes());
-            } else {
-                // X10 encoding caps coordinates at 223 (255 - 32).
-                buf.extend_from_slice(&[
-                    0x1b,
-                    b'[',
-                    b'M',
-                    (32 + btn) as u8,
-                    (32 + (col + 1).min(223)) as u8,
-                    (32 + (row + 1).min(223)) as u8,
-                ]);
+            } else if let Some(seq) = x10_bytes(btn, col, row) {
+                buf.extend_from_slice(&seq);
             }
         }
         Some(buf)
@@ -374,6 +369,24 @@ pub fn wheel_pty_bytes(
     } else {
         None
     }
+}
+
+/// X10 mouse encoding: `ESC [ M cb+32 x+32 y+32` with 1-based coordinates.
+/// Coordinates past 223 (255 − 32) cannot be represented; like Ghostty and
+/// xterm the event is dropped rather than clamped to a fabricated cell.
+fn x10_bytes(cb: u32, col: usize, row: usize) -> Option<[u8; 6]> {
+    let (x, y) = (col + 1, row + 1);
+    if x > 223 || y > 223 {
+        return None;
+    }
+    Some([
+        0x1b,
+        b'[',
+        b'M',
+        (32 + cb).min(255) as u8,
+        (32 + x) as u8,
+        (32 + y) as u8,
+    ])
 }
 
 /// Mouse buttons that participate in click/drag reporting. The numeric value
@@ -455,14 +468,7 @@ pub fn mouse_pty_bytes(
     } else {
         // X10: release is always button 3, coordinates cap at 223 (255 - 32).
         let cb = if release { 3 + mods.bits() } else { cb };
-        Some(vec![
-            0x1b,
-            b'[',
-            b'M',
-            (32 + cb).min(255) as u8,
-            (32 + (col + 1).min(223)) as u8,
-            (32 + (row + 1).min(223)) as u8,
-        ])
+        x10_bytes(cb, col, row).map(|b| b.to_vec())
     }
 }
 
@@ -744,7 +750,10 @@ mod tests {
     #[test]
     fn wheel_plain_shell_scrolls_local_history() {
         let term = make_term(80, 24);
-        assert_eq!(wheel_pty_bytes(*term.mode(), 1, 0, 0), None);
+        assert_eq!(
+            wheel_pty_bytes(*term.mode(), 1, 0, 0, ReportMods::default()),
+            None
+        );
     }
 
     #[test]
@@ -752,9 +761,11 @@ mod tests {
         let mut term = make_term(80, 24);
         // ?1002h = mouse drag reporting, ?1006h = SGR encoding (btop's setup).
         advance_bytes(&mut term, b"\x1b[?1002h\x1b[?1006h");
-        let up = wheel_pty_bytes(*term.mode(), 2, 5, 3).expect("routed to pty");
+        let up =
+            wheel_pty_bytes(*term.mode(), 2, 5, 3, ReportMods::default()).expect("routed to pty");
         assert_eq!(up, b"\x1b[<64;6;4M\x1b[<64;6;4M");
-        let down = wheel_pty_bytes(*term.mode(), -1, 0, 0).expect("routed to pty");
+        let down =
+            wheel_pty_bytes(*term.mode(), -1, 0, 0, ReportMods::default()).expect("routed to pty");
         assert_eq!(down, b"\x1b[<65;1;1M");
     }
 
@@ -762,7 +773,8 @@ mod tests {
     fn wheel_x10_mouse_reporting_without_sgr() {
         let mut term = make_term(80, 24);
         advance_bytes(&mut term, b"\x1b[?1000h");
-        let up = wheel_pty_bytes(*term.mode(), 1, 5, 3).expect("routed to pty");
+        let up =
+            wheel_pty_bytes(*term.mode(), 1, 5, 3, ReportMods::default()).expect("routed to pty");
         assert_eq!(up, &[0x1b, b'[', b'M', 32 + 64, 32 + 6, 32 + 4]);
     }
 
@@ -771,11 +783,13 @@ mod tests {
         let mut term = make_term(80, 24);
         // ?1049h = alt screen, ?1007h = alternate scroll (less-style).
         advance_bytes(&mut term, b"\x1b[?1049h\x1b[?1007h");
-        let up = wheel_pty_bytes(*term.mode(), 2, 0, 0).expect("routed to pty");
+        let up =
+            wheel_pty_bytes(*term.mode(), 2, 0, 0, ReportMods::default()).expect("routed to pty");
         assert_eq!(up, b"\x1b[A\x1b[A");
         // DECCKM application cursor mode switches to SS3 arrows.
         advance_bytes(&mut term, b"\x1b[?1h");
-        let down = wheel_pty_bytes(*term.mode(), -1, 0, 0).expect("routed to pty");
+        let down =
+            wheel_pty_bytes(*term.mode(), -1, 0, 0, ReportMods::default()).expect("routed to pty");
         assert_eq!(down, b"\x1bOB");
     }
 
@@ -786,12 +800,15 @@ mod tests {
         // alt screen alone already routes the wheel as arrow keys…
         advance_bytes(&mut term, b"\x1b[?1049h");
         assert_eq!(
-            wheel_pty_bytes(*term.mode(), 1, 0, 0),
+            wheel_pty_bytes(*term.mode(), 1, 0, 0, ReportMods::default()),
             Some(b"\x1b[A".to_vec())
         );
         // …until the app opts out with ?1007l.
         advance_bytes(&mut term, b"\x1b[?1007l");
-        assert_eq!(wheel_pty_bytes(*term.mode(), 1, 0, 0), None);
+        assert_eq!(
+            wheel_pty_bytes(*term.mode(), 1, 0, 0, ReportMods::default()),
+            None
+        );
     }
 
     #[test]
@@ -885,6 +902,41 @@ mod tests {
             mouse_pty_bytes(*term.mode(), hover, mods, 2, 1).unwrap(),
             b"\x1b[<35;3;2M"
         );
+    }
+
+    #[test]
+    fn wheel_carries_modifier_bits() {
+        let mut term = make_term(80, 24);
+        advance_bytes(&mut term, b"\x1b[?1000h\x1b[?1006h");
+        let mods = ReportMods {
+            alt: false,
+            ctrl: true,
+        };
+        // 64 (wheel up) + 16 (ctrl) = 80, like Ghostty/xterm.
+        assert_eq!(
+            wheel_pty_bytes(*term.mode(), 1, 0, 0, mods).unwrap(),
+            b"\x1b[<80;1;1M"
+        );
+    }
+
+    #[test]
+    fn x10_coordinates_past_223_are_dropped_not_clamped() {
+        let mut term = make_term(300, 24);
+        advance_bytes(&mut term, b"\x1b[?1000h");
+        let mods = ReportMods::default();
+        // Ghostty/xterm emit nothing for unrepresentable coordinates.
+        assert_eq!(
+            mouse_pty_bytes(
+                *term.mode(),
+                MouseReport::Press(ReportButton::Left),
+                mods,
+                250,
+                3
+            ),
+            None
+        );
+        // Wheel: the event is consumed (app owns the mouse) but no bytes go out.
+        assert_eq!(wheel_pty_bytes(*term.mode(), 1, 250, 3, mods).unwrap(), b"");
     }
 
     #[test]

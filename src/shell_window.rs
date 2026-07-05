@@ -386,7 +386,11 @@ impl Render for ShellWindow {
                                 let row = ((((event.position.y / px(1.)) - pad) / ch).max(0.0)
                                     as usize)
                                     .min(rows - 1);
-                                if !s.wheel_to_pty(whole, col, row) {
+                                let mods = crate::terminal::ReportMods {
+                                    alt: event.modifiers.alt,
+                                    ctrl: event.modifiers.control,
+                                };
+                                if !s.wheel_to_pty(whole, col, row, mods) {
                                     s.scroll_display(whole);
                                 }
                             }
