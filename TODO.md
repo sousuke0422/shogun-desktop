@@ -102,6 +102,15 @@
       同一URL複数箇所の全点灯を修正済み）、Ctrl+クリックで開く（http/https/mailto
       限定 — 端末エスケープ由来 URI に任意ハンドラを起動させない）。
       素クリックは mouse reporting/選択のまま（wt/VSCode 流）
+- [x] **Kitty graphics protocol（画像表示・yazi 等）** — 2026-07-06 実装、**実機確認待ち**。
+      Unicode placeholder 方式限定（U+10EEEE＋合字 row/col・fg 色=画像ID）: placeholder は
+      通常セルとして grid を流れるため scrollback/alt-screen/リサイズ追従がタダ。
+      `terminal/kitty_graphics.rs` = APC 受動スキャナ（progress.rs と同型・vte は APC を
+      握り潰すため手前観測）＋ t=d/f=24/32/100/o=z/チャンク/a=q 応答/a=d。画像 store は
+      256MiB 上限 LRU。renderer は placement 全体を行 mask で clip して paint_image。
+      カーソル固定の古典 placement・Sixel・iTerm2 は未対応（需要が出たら）。
+      TIOCGWINSZ ピクセル寸法も resize 経路に配管済み（yazi の解像度計算用）。
+      検証: yazi が kgp を選ばぬ場合は `TERM=xterm-kitty` で誘導して確認
 - [ ] **Synchronized output (DEC ?2026)** — 新規 (2026-07-04)。CC 2.1.191 は更新を 100ms に
       合体するなど高頻度書換方向。begin/end synchronized update の間は描画を保留して
       チラつき根絶。WT/Ghostty/kitty 対応済みの現代標準。alacritty_terminal がパース済みなら

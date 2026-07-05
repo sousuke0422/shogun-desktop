@@ -19,7 +19,8 @@ use crate::ssh::{SshClient, SystemSshClient};
 use crate::terminal::notify;
 use crate::terminal::progress::{OscEvent, OscScanner, Progress};
 use crate::terminal::{
-    ClipboardEvent, ClipboardListener, GridSnapshot, PtyResizer, TerminalSession, take_snapshot,
+    ClipboardEvent, ClipboardListener, GridSnapshot, PtyResizer, TerminalSession, kitty_graphics,
+    take_snapshot,
 };
 
 // ── system-SSH resizer ────────────────────────────────────────────────────────
@@ -42,12 +43,12 @@ struct SystemResizer {
 }
 
 impl PtyResizer for SystemResizer {
-    fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
+    fn resize(&self, cols: u16, rows: u16, pixel_width: u16, pixel_height: u16) -> anyhow::Result<()> {
         self.master.lock().0.resize(PtySize {
             rows,
             cols,
-            pixel_width: 0,
-            pixel_height: 0,
+            pixel_width,
+            pixel_height,
         })?;
         Ok(())
     }
@@ -298,6 +299,7 @@ fn build_terminal_session(
     let error: Arc<FairMutex<Option<String>>> = Arc::new(FairMutex::new(None));
     let progress = Arc::new(Progress::default());
     let notifications: notify::NotificationQueue = Default::default();
+    let images = Arc::new(kitty_graphics::KittyImageStore::default());
 
     {
         let term2 = Arc::clone(&term);
@@ -308,6 +310,8 @@ fn build_terminal_session(
         let err2 = Arc::clone(&error);
         let progress2 = Arc::clone(&progress);
         let notifications2 = Arc::clone(&notifications);
+        let images2 = Arc::clone(&images);
+        let writer2 = Arc::clone(&writer);
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = [0u8; 4096];
@@ -316,6 +320,11 @@ fn build_terminal_session(
             // sequences, so a passive side-scanner extracts progress and
             // desktop notifications (see terminal::progress / notify).
             let mut osc = OscScanner::new();
+            // Kitty graphics: APC observer (vte swallows APC too) + protocol
+            // driver. Responses (query replies, transmission ACKs) go back
+            // to the PTY writer. See terminal::kitty_graphics.
+            let mut apc = kitty_graphics::ApcScanner::new();
+            let mut kitty = kitty_graphics::KittyGraphics::new(images2);
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
@@ -329,15 +338,32 @@ fn build_terminal_session(
                     }
                     Ok(n) => {
                         let mut t = term2.lock();
+                        let mut responses: Vec<Vec<u8>> = Vec::new();
                         for &byte in &buf[..n] {
                             match osc.advance(byte) {
                                 Some(OscEvent::Progress(update)) => progress2.apply(update),
                                 Some(OscEvent::Notify(note)) => notify::push(&notifications2, note),
                                 None => {}
                             }
+                            if let Some(payload) = apc.advance(byte)
+                                && let Some(resp) = kitty.apply(&payload)
+                            {
+                                responses.push(resp);
+                            }
                             parser.advance(&mut *t, byte);
                         }
                         *snap2.lock() = take_snapshot(&t);
+                        drop(t);
+                        // Written only after releasing the term lock, so the
+                        // UI input path (which also takes the writer lock)
+                        // never waits behind parsing + snapshotting.
+                        if !responses.is_empty() {
+                            let mut w = writer2.lock();
+                            for resp in responses {
+                                let _ = w.write_all(&resp);
+                            }
+                            let _ = w.flush();
+                        }
                         gen2.fetch_add(1, Ordering::Relaxed);
                         notify2.notify_one();
                     }
@@ -356,6 +382,7 @@ fn build_terminal_session(
         error,
         progress,
         notifications,
+        images,
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         resizer,

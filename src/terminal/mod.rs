@@ -1,5 +1,6 @@
 pub mod ime;
 pub mod keys;
+pub mod kitty_graphics;
 pub mod notify;
 pub mod progress;
 pub mod pty_session;
@@ -62,7 +63,11 @@ impl EventListener for ClipboardListener {
 /// Implementors must be `Send + Sync` so the resizer can be stored in an `Arc`
 /// and called from any thread (including GPUI's render/event thread).
 pub trait PtyResizer: Send + Sync {
-    fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()>;
+    /// Pixel dimensions accompany the cell grid so applications reading
+    /// `TIOCGWINSZ` (yazi et al.) can derive the cell size in pixels — the
+    /// kitty graphics protocol sizes images with it. `(0, 0)` when unknown.
+    fn resize(&self, cols: u16, rows: u16, pixel_width: u16, pixel_height: u16)
+    -> anyhow::Result<()>;
 }
 
 /// No-op resizer used as a fallback when the backend provides no resize channel.
@@ -70,7 +75,7 @@ pub trait PtyResizer: Send + Sync {
 pub struct NoopResizer;
 
 impl PtyResizer for NoopResizer {
-    fn resize(&self, _cols: u16, _rows: u16) -> anyhow::Result<()> {
+    fn resize(&self, _cols: u16, _rows: u16, _pw: u16, _ph: u16) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -95,6 +100,10 @@ pub struct TerminalSession {
     /// drained by the UI watcher, which applies Ghostty-style focus
     /// suppression. See [`notify`].
     pub notifications: notify::NotificationQueue,
+    /// Kitty-graphics images transmitted by applications in this session
+    /// (written by the PTY reader thread, painted by the renderer for
+    /// placeholder cells). See [`kitty_graphics`].
+    pub images: Arc<kitty_graphics::KittyImageStore>,
     /// Current terminal width in columns (updated by `resize`).
     pub cols: AtomicU16,
     /// Current terminal height in rows (updated by `resize`).
@@ -195,7 +204,10 @@ impl TerminalSession {
     /// This updates the internal `alacritty_terminal::Term` geometry **and**
     /// notifies the backing PTY / SSH channel so that remote applications
     /// (e.g. tmux) can reflow their layout accordingly.
-    pub fn resize(&self, cols: u16, rows: u16) {
+    /// `cell_px` is the renderer's cell size in logical pixels; it rides
+    /// along so PTY consumers see real `TIOCGWINSZ` pixel dimensions (kitty
+    /// graphics clients size images with them).
+    pub fn resize(&self, cols: u16, rows: u16, cell_px: (f32, f32)) {
         use alacritty_terminal::term::test::TermSize;
         // 1. Resize the in-process term emulator.
         {
@@ -207,7 +219,9 @@ impl TerminalSession {
         self.cols.store(cols, Ordering::Relaxed);
         self.rows.store(rows, Ordering::Relaxed);
         // 3. Tell the OS PTY / SSH channel.
-        let _ = self.resizer.resize(cols, rows);
+        let px_w = (f32::from(cols) * cell_px.0).round() as u16;
+        let px_h = (f32::from(rows) * cell_px.1).round() as u16;
+        let _ = self.resizer.resize(cols, rows, px_w, px_h);
     }
 }
 
@@ -229,6 +243,10 @@ pub struct GridSnapshot {
     /// [`SnapshotCell::link`]. alacritty parses the sequences, we only
     /// collect what `display_iter` hands out.
     pub links: Vec<String>,
+    /// Any visible cell is a kitty-graphics placeholder — lets the renderer
+    /// skip the per-row image scan entirely otherwise (same pattern as
+    /// `has_blink`).
+    pub has_images: bool,
 }
 
 impl GridSnapshot {
@@ -241,6 +259,7 @@ impl GridSnapshot {
             display_offset: 0,
             has_blink: false,
             links: Vec::new(),
+            has_images: false,
         }
     }
 }
@@ -256,6 +275,11 @@ pub struct SnapshotCell {
     /// Index into [`GridSnapshot::links`] when the cell belongs to an OSC 8
     /// hyperlink. Cells sharing an index underline together on ctrl-hover.
     pub link: Option<u16>,
+    /// Kitty-graphics Unicode placeholder: this cell shows one tile of a
+    /// transmitted image (see [`kitty_graphics`]). The renderer paints the
+    /// tile from the session's image store; `c` is blanked to keep the
+    /// undefined placeholder glyph from rendering as tofu.
+    pub image: Option<kitty_graphics::PlaceholderCell>,
 }
 
 /// SGR attributes of a cell, resolved from alacritty's cell flags.
@@ -305,6 +329,7 @@ impl SnapshotCell {
             display_width: 1,
             style: CellStyle::default(),
             link: None,
+            image: None,
         }
     }
 }
@@ -506,6 +531,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     let display_offset = content.display_offset as i32;
     let mut cells = vec![vec![SnapshotCell::blank(); cols]; rows];
     let mut has_blink = false;
+    let mut has_images = false;
     // OSC 8 hyperlinks, deduplicated by URI. u16 is plenty for one viewport;
     // links past the cap keep the last slot rather than panicking.
     let mut links: Vec<String> = Vec::new();
@@ -535,8 +561,28 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
             let link = indexed
                 .hyperlink()
                 .map(|h| intern_link(&mut links, &mut link_ids, h.uri()));
+            // Kitty-graphics placeholder: tile coordinates ride the cell's
+            // combining diacritics, the image id rides the RAW fg color
+            // (a palette index IS an id — resolving it through the palette
+            // would corrupt it). Runs with omitted diacritics continue from
+            // the left neighbor, already decoded (display_iter is row-major).
+            let image = if indexed.c == kitty_graphics::PLACEHOLDER {
+                let prev = col
+                    .checked_sub(1)
+                    .and_then(|pc| cells[row][pc].image);
+                kitty_graphics::decode_placeholder(
+                    raw_color24(indexed.fg),
+                    indexed.zerowidth().unwrap_or(&[]),
+                    prev,
+                )
+            } else {
+                None
+            };
+            has_images |= image.is_some();
             cells[row][col] = SnapshotCell {
-                c: indexed.c,
+                // Blank the undefined placeholder glyph (tofu); the image
+                // tile is painted by the renderer instead.
+                c: if image.is_some() { ' ' } else { indexed.c },
                 fg: resolve_color(indexed.fg, content.colors),
                 bg: resolve_color(indexed.bg, content.colors),
                 display_width,
@@ -566,6 +612,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
                         .map(|c| resolve_color(c, content.colors)),
                 },
                 link,
+                image,
             };
         }
     }
@@ -598,6 +645,21 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         display_offset: term.grid().display_offset(),
         has_blink,
         links,
+        has_images,
+    }
+}
+
+/// Raw 24-bit value of a cell fg color, for kitty-graphics placeholder ids:
+/// `Spec` packs to RGB, `Indexed(n)` IS the id `n` (SGR 38;5;n for ids
+/// < 256), named colors carry no id.
+fn raw_color24(color: alacritty_terminal::vte::ansi::Color) -> u32 {
+    use alacritty_terminal::vte::ansi::Color;
+    match color {
+        Color::Spec(rgb) => {
+            (u32::from(rgb.r) << 16) | (u32::from(rgb.g) << 8) | u32::from(rgb.b)
+        }
+        Color::Indexed(n) => u32::from(n),
+        Color::Named(_) => 0,
     }
 }
 
@@ -917,6 +979,48 @@ mod tests {
         let snap = take_snapshot(&term);
         assert_eq!(snap.cells[0][0].c, '1');
         assert_eq!(snap.cells[1][0].c, '2');
+    }
+
+    #[test]
+    fn snapshot_decodes_kitty_placeholder_cells() {
+        let mut term = make_term(10, 2);
+        // fg = 256-color index 42 (the image id), then two placeholder cells:
+        // explicit (row 0, col 0) diacritics, then a bare continuation.
+        // U+0305 = diacritic #0.
+        advance_bytes(
+            &mut term,
+            "\x1b[38;5;42m\u{10EEEE}\u{0305}\u{0305}\u{10EEEE}\x1b[0m".as_bytes(),
+        );
+        let snap = take_snapshot(&term);
+        assert!(snap.has_images);
+        use kitty_graphics::PlaceholderCell;
+        assert_eq!(
+            snap.cells[0][0].image,
+            Some(PlaceholderCell { id: 42, row: 0, col: 0 })
+        );
+        assert_eq!(
+            snap.cells[0][1].image,
+            Some(PlaceholderCell { id: 42, row: 0, col: 1 })
+        );
+        // The undefined placeholder glyph must not reach the shaper (tofu).
+        assert_eq!(snap.cells[0][0].c, ' ');
+        assert!(snap.cells[0][2].image.is_none());
+    }
+
+    #[test]
+    fn snapshot_kitty_placeholder_rgb_fg_carries_24bit_id() {
+        let mut term = make_term(10, 2);
+        // fg = direct RGB 0x010203 → image id 0x010203; row diacritic #1
+        // (U+030D), col diacritic #2 (U+030E).
+        advance_bytes(
+            &mut term,
+            "\x1b[38;2;1;2;3m\u{10EEEE}\u{030D}\u{030E}\x1b[0m".as_bytes(),
+        );
+        let snap = take_snapshot(&term);
+        assert_eq!(
+            snap.cells[0][0].image,
+            Some(kitty_graphics::PlaceholderCell { id: 0x010203, row: 1, col: 2 })
+        );
     }
 
     #[test]

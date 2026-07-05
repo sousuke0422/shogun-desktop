@@ -21,6 +21,11 @@ russh = { version = "0.61", default-features = false, features = ["ring"] }
 # russh-keys deferred to Phase 2 (pins home=0.5.5, conflicts with gpui ^0.5.9)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "io-util", "time", "net", "macros", "process"] }
 unicode-width = "0.2"
+# Kitty graphics protocol (terminal/kitty_graphics.rs): PNG decode + base64
+# payloads + optional zlib (o=z). All three already in-tree via gpui's deps.
+image = "0.25"
+base64 = "0.22"
+flate2 = "1"
 parking_lot = "0.12"
 arboard = "3"
 rfd = "0.15"

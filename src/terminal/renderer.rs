@@ -751,6 +751,55 @@ pub(crate) fn link_cols_for_row(
     spans
 }
 
+/// One contiguous row-span of kitty-graphics placeholder cells showing tiles
+/// of the same image placement. `c0..c1` are grid columns (end-exclusive);
+/// `(prow, pcol0)` locate `c0`'s tile within the placement grid.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct ImageRun {
+    pub c0: usize,
+    pub c1: usize,
+    pub id: u32,
+    pub prow: u16,
+    pub pcol0: u16,
+}
+
+/// Contiguous placeholder runs of a row. A run breaks when the image id or
+/// placement row changes, or the tile column skips (two placements of the
+/// same image side by side stay distinct).
+pub(crate) fn image_runs_for_row(cells: &[SnapshotCell]) -> Vec<ImageRun> {
+    let mut runs = Vec::new();
+    let mut cur: Option<ImageRun> = None;
+    let mut last_pcol = 0u16;
+    for (i, cell) in cells.iter().enumerate() {
+        if let (Some(run), Some(ph)) = (&mut cur, cell.image)
+            && run.id == ph.id
+            && run.prow == ph.row
+            && ph.col == last_pcol + 1
+        {
+            run.c1 = i + 1;
+            last_pcol = ph.col;
+            continue;
+        }
+        if let Some(done) = cur.take() {
+            runs.push(done);
+        }
+        if let Some(ph) = cell.image {
+            cur = Some(ImageRun {
+                c0: i,
+                c1: i + 1,
+                id: ph.id,
+                prow: ph.row,
+                pcol0: ph.col,
+            });
+            last_pcol = ph.col;
+        }
+    }
+    if let Some(done) = cur {
+        runs.push(done);
+    }
+    runs
+}
+
 pub fn render_grid(
     snap: &GridSnapshot,
     font: &str,
@@ -761,6 +810,10 @@ pub fn render_grid(
     // Hyperlink index (into `snap.links`) under a ctrl-hover, if any — every
     // cell of that link gets an underline so the click target is visible.
     hover_link: Option<u16>,
+    // Kitty-graphics image store of the session whose grid this is; tiles
+    // for placeholder cells are painted from here. `None` for grids that
+    // can never carry images (e.g. previews).
+    images: Option<&crate::terminal::kitty_graphics::KittyImageStore>,
     // IME composition (preedit) text, drawn inline at the terminal cursor.
     // Painted here — in the cursor row's canvas — because paint calls issued
     // from the absolute viewport-overlay canvas never reach the screen
@@ -800,6 +853,23 @@ pub fn render_grid(
             let link_spans: Vec<(usize, usize)> = hover_link
                 .map(|idx| link_cols_for_row(row, idx))
                 .unwrap_or_default();
+            // Kitty-graphics tiles in this row, resolved against the store
+            // up front (Arc clones) so the paint closure stays lock-free.
+            // Placements without size info (`c=`/`r=` never arrived) cannot
+            // be scaled and are skipped.
+            let image_runs: Vec<(ImageRun, crate::terminal::kitty_graphics::StoredImage)> =
+                match images.filter(|_| snap.has_images) {
+                    Some(store) => image_runs_for_row(row)
+                        .into_iter()
+                        .filter_map(|r| {
+                            store
+                                .get(r.id)
+                                .filter(|img| img.cols > 0 && img.rows > 0)
+                                .map(|img| (r, img))
+                        })
+                        .collect(),
+                    None => Vec::new(),
+                };
             let preedit = if row_idx == cursor_row {
                 ime_preedit.clone().filter(|s| !s.is_empty())
             } else {
@@ -1045,6 +1115,37 @@ pub fn render_grid(
                     // by cell backgrounds and the text stays readable. Painted
                     // here rather than in the viewport overlay because the row
                     // canvas already lives in grid coordinates.
+                    // Kitty-graphics tiles: the whole placement is painted
+                    // scaled to its `cols × rows` cell box, clipped to this
+                    // row's span — each row redraws its own slice, so partial
+                    // visibility (scrolling, top/bottom of screen) is just
+                    // the mask doing its job. Painted before the selection
+                    // quad so a selection stays visible over an image.
+                    for (irun, img) in &image_runs {
+                        let placement = Bounds {
+                            origin: point(
+                                px(ox + (irun.c0 as f32 - irun.pcol0 as f32) * cw),
+                                px(oy - irun.prow as f32 * ch),
+                            ),
+                            size: size(px(img.cols as f32 * cw), px(img.rows as f32 * ch)),
+                        };
+                        let mask = gpui::ContentMask {
+                            bounds: Bounds {
+                                origin: point(px(ox + irun.c0 as f32 * cw), px(oy)),
+                                size: size(px((irun.c1 - irun.c0) as f32 * cw), px(ch)),
+                            },
+                        };
+                        window.with_content_mask(Some(mask), |window| {
+                            let _ = window.paint_image(
+                                placement,
+                                gpui::Corners::default(),
+                                img.image.clone(),
+                                0,
+                                false,
+                            );
+                        });
+                    }
+
                     if let Some((c0, c1)) = sel_cols {
                         window.paint_quad(fill(
                             Bounds {
@@ -1494,6 +1595,57 @@ mod tests {
             link: Some(link),
             ..SnapshotCell::blank()
         }
+    }
+
+    fn cell_image(id: u32, prow: u16, pcol: u16) -> SnapshotCell {
+        SnapshotCell {
+            image: Some(crate::terminal::kitty_graphics::PlaceholderCell {
+                id,
+                row: prow,
+                col: pcol,
+            }),
+            ..SnapshotCell::blank()
+        }
+    }
+
+    #[test]
+    fn image_runs_group_contiguous_tiles() {
+        let row = vec![
+            cell(' '),
+            cell_image(7, 1, 0),
+            cell_image(7, 1, 1),
+            cell_image(7, 1, 2),
+            cell('x'),
+            cell_image(7, 1, 4),
+        ];
+        assert_eq!(
+            image_runs_for_row(&row),
+            vec![
+                ImageRun { c0: 1, c1: 4, id: 7, prow: 1, pcol0: 0 },
+                ImageRun { c0: 5, c1: 6, id: 7, prow: 1, pcol0: 4 },
+            ]
+        );
+    }
+
+    #[test]
+    fn image_runs_break_on_id_row_or_tile_skip() {
+        // Different image, different placement row, and a tile-column skip
+        // (two side-by-side placements of the same image) all break the run.
+        let row = vec![
+            cell_image(7, 0, 0),
+            cell_image(8, 0, 1),
+            cell_image(8, 1, 2),
+            cell_image(8, 1, 0),
+        ];
+        assert_eq!(
+            image_runs_for_row(&row),
+            vec![
+                ImageRun { c0: 0, c1: 1, id: 7, prow: 0, pcol0: 0 },
+                ImageRun { c0: 1, c1: 2, id: 8, prow: 0, pcol0: 1 },
+                ImageRun { c0: 2, c1: 3, id: 8, prow: 1, pcol0: 2 },
+                ImageRun { c0: 3, c1: 4, id: 8, prow: 1, pcol0: 0 },
+            ]
+        );
     }
 
     #[test]

@@ -36,6 +36,8 @@ pub fn render_terminal_tab(
     selection: Option<((usize, usize), (usize, usize))>,
     // Ctrl-hovered OSC 8 hyperlink index for the hover underline.
     hover_link: Option<u16>,
+    // Kitty-graphics image store of the session shown in this pane.
+    images: Option<&crate::terminal::kitty_graphics::KittyImageStore>,
     is_shogun: bool,
     font: &str,
     // Cell width in logical pixels — measured via `TextSystem::ch_advance`.
@@ -202,6 +204,7 @@ pub fn render_terminal_tab(
                 ch,
                 selection,
                 hover_link,
+                images,
                 ime_preedit,
             ))
             // Right-click menu: dispatches the same actions as the keyboard

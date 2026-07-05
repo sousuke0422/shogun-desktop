@@ -794,6 +794,7 @@ impl ShogunWindow {
                     self.ime.read(cx).marked.clone(),
                     self.selection.range_for(selection_pane(is_shogun)),
                     self.selection.hover_link_for(selection_pane(is_shogun)),
+                    Some(&session.images),
                     is_shogun,
                     &self.terminal_font,
                     cw,
@@ -1334,11 +1335,13 @@ impl Render for ShogunWindow {
             {
                 self.terminal_cols = new_cols;
                 self.terminal_rows = new_rows;
+                // TIOCGWINSZ pixel fields carry device pixels, hence × scale.
+                let cell_px = (cw * window.scale_factor(), ch * window.scale_factor());
                 if let Some(s) = &self.shogun_session {
-                    s.resize(new_cols, new_rows);
+                    s.resize(new_cols, new_rows, cell_px);
                 }
                 if let Some(s) = &self.multiagent_session {
-                    s.resize(new_cols, new_rows);
+                    s.resize(new_cols, new_rows, cell_px);
                 }
             }
         }

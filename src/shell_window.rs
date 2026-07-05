@@ -299,8 +299,10 @@ impl Render for ShellWindow {
             {
                 self.terminal_cols = new_cols;
                 self.terminal_rows = new_rows;
+                // TIOCGWINSZ pixel fields carry device pixels, hence × scale.
+                let cell_px = (cw * window.scale_factor(), ch * window.scale_factor());
                 if let Some(s) = &self.session {
-                    s.resize(new_cols, new_rows);
+                    s.resize(new_cols, new_rows, cell_px);
                 }
             }
         }
@@ -328,6 +330,10 @@ impl Render for ShellWindow {
         };
 
         let terminal_body: gpui::AnyElement = if let Some(snap) = snap_opt {
+            let images = self
+                .session
+                .as_ref()
+                .map(|s| std::sync::Arc::clone(&s.images));
             let focus_handle = self.terminal_focus.clone();
             let menu_focus = focus_handle.clone();
             let ime = self.ime.clone();
@@ -432,6 +438,7 @@ impl Render for ShellWindow {
                     ch,
                     self.selection.range_for(0),
                     self.selection.hover_link_for(0),
+                    images.as_deref(),
                     ime_preedit,
                 ))
                 // Right-click menu dispatching the same actions as the
