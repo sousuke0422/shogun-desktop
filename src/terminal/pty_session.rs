@@ -318,9 +318,30 @@ fn build_terminal_session(
         let notifications2 = Arc::clone(&notifications);
         let images2 = Arc::clone(&images);
         let writer2 = Arc::clone(&writer);
+        // The blocking `Read` lives on its own IO thread so the parse thread
+        // can wait with a deadline: synchronized updates (CSI ? 2026, DEC
+        // "Synchronized Output") buffer PTY bytes inside the vte Processor
+        // until ESU arrives — if the application dies mid-update, only a
+        // timeout can flush the buffer, and a thread parked in `read()`
+        // would never fire one.
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    // Dropping the sender signals EOF to the parse thread.
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if chunk_tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        std::thread::spawn(move || {
+            use std::sync::mpsc::RecvTimeoutError;
             let mut parser = Processor::<StdSyncHandler>::new();
             // OSC 9 / 9;4 / 777 observer — the vte stack drops these
             // sequences, so a passive side-scanner extracts progress and
@@ -332,8 +353,36 @@ fn build_terminal_session(
             let mut apc = kitty_graphics::ApcScanner::new();
             let mut kitty = kitty_graphics::KittyGraphics::new(images2);
             loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => {
+                // While a synchronized update is pending, wait only until its
+                // deadline so an unterminated BSU can't freeze the screen.
+                let chunk = match parser.sync_timeout().sync_timeout() {
+                    Some(deadline) => {
+                        let wait = deadline.saturating_duration_since(std::time::Instant::now());
+                        match chunk_rx.recv_timeout(wait) {
+                            Ok(chunk) => Some(chunk),
+                            Err(RecvTimeoutError::Timeout) => {
+                                let mut t = term2.lock();
+                                parser.stop_sync(&mut *t);
+                                *snap2.lock() = take_snapshot(&t);
+                                drop(t);
+                                gen2.fetch_add(1, Ordering::Relaxed);
+                                notify2.notify_one();
+                                continue;
+                            }
+                            Err(RecvTimeoutError::Disconnected) => None,
+                        }
+                    }
+                    None => chunk_rx.recv().ok(),
+                };
+                match chunk {
+                    None => {
+                        // Flush any bytes still held by an open synchronized
+                        // update so final output isn't lost on disconnect.
+                        if parser.sync_timeout().sync_timeout().is_some() {
+                            let mut t = term2.lock();
+                            parser.stop_sync(&mut *t);
+                            *snap2.lock() = take_snapshot(&t);
+                        }
                         conn2.store(false, Ordering::Relaxed);
                         *err2.lock() = Some("PTY接続が切断されました".into());
                         // Bump + signal so the UI repaints the disconnected
@@ -342,10 +391,10 @@ fn build_terminal_session(
                         notify2.notify_one();
                         break;
                     }
-                    Ok(n) => {
+                    Some(chunk) => {
                         let mut t = term2.lock();
                         let mut responses: Vec<Vec<u8>> = Vec::new();
-                        for &byte in &buf[..n] {
+                        for &byte in &chunk {
                             match osc.advance(byte) {
                                 Some(OscEvent::Progress(update)) => progress2.apply(update),
                                 Some(OscEvent::Notify(note)) => notify::push(&notifications2, note),
@@ -457,5 +506,77 @@ mod tests {
                 col: 0
             })
         );
+    }
+
+    fn wait_for_eof(session: &TerminalSession) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while session.is_connected() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!session.is_connected(), "reader thread must reach EOF");
+    }
+
+    fn row0_text(session: &TerminalSession) -> String {
+        let snap = session.snapshot.lock();
+        snap.cells[0].iter().map(|c| c.c).collect::<String>()
+    }
+
+    /// CSI ? 2026: bytes inside BSU/ESU are buffered by the vte Processor and
+    /// applied atomically when ESU arrives.
+    #[test]
+    fn sync_update_esu_applies_buffered_bytes() {
+        let script = b"\x1b[?2026hhi\x1b[?2026l".to_vec();
+        let session = build_test_session_with_output(10, 2, script);
+        wait_for_eof(&session);
+        assert!(row0_text(&session).starts_with("hi"));
+    }
+
+    /// A synchronized update left open at EOF must still be flushed so the
+    /// application's final output isn't lost.
+    #[test]
+    fn sync_update_open_at_eof_is_flushed() {
+        let script = b"\x1b[?2026hhi".to_vec();
+        let session = build_test_session_with_output(10, 2, script);
+        wait_for_eof(&session);
+        assert!(row0_text(&session).starts_with("hi"));
+    }
+
+    /// An unterminated BSU on a silent-but-alive PTY must be flushed by the
+    /// sync deadline (the parse thread's recv_timeout path), not frozen.
+    #[test]
+    fn sync_update_timeout_flushes_buffer() {
+        use crate::terminal::NoopResizer;
+
+        /// Yields one canned chunk, then blocks forever (PTY stays open).
+        struct StallingReader(Option<Vec<u8>>);
+        impl Read for StallingReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.0.take() {
+                    Some(bytes) => {
+                        buf[..bytes.len()].copy_from_slice(&bytes);
+                        Ok(bytes.len())
+                    }
+                    None => loop {
+                        std::thread::park();
+                    },
+                }
+            }
+        }
+
+        let writer: Arc<FairMutex<Box<dyn Write + Send>>> =
+            Arc::new(FairMutex::new(Box::new(std::io::sink())));
+        let reader: Box<dyn Read + Send> =
+            Box::new(StallingReader(Some(b"\x1b[?2026hhi".to_vec())));
+        let session = build_terminal_session(10, 2, reader, writer, Arc::new(NoopResizer)).unwrap();
+
+        // vte's sync deadline is 150ms; poll well past it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if row0_text(&session).starts_with("hi") {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("buffered sync output was never flushed by the deadline");
     }
 }

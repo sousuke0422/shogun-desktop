@@ -125,10 +125,14 @@
       配置追跡が必要 — kitty で回避した宿題がここで来る）。
       検出はアプリが DA1 応答の `4` を見る — vendored alacritty の DA1 応答への
       capability 追加パッチも必要
-- [ ] **Synchronized output (DEC ?2026)** — 新規 (2026-07-04)。CC 2.1.191 は更新を 100ms に
-      合体するなど高頻度書換方向。begin/end synchronized update の間は描画を保留して
-      チラつき根絶。WT/Ghostty/kitty 対応済みの現代標準。alacritty_terminal がパース済みなら
-      renderer 側でフラグを見るだけの可能性。高リフレッシュ構想 §3 の dirty batch 境界にも流用可
+- [x] **Synchronized output (DEC ?2026)** — **2026-07-06 実装**。vte 0.13 の Processor が
+      BSU/ESU バッファリングを内蔵（BSU 後のバイトは grid に触れず buffer、ESU/満杯で
+      一括適用）＋ DECRQM 2026 応答も vendored term が既対応 — 残っていた宿題は
+      **タイムアウト駆動**のみ。ブロッキング read のままでは ESU 不達＋PTY 沈黙で
+      画面が凍るため、reader を IO スレッド（read→チャネル送出）と parse スレッド
+      （sync 保留中は `recv_timeout(deadline)`、期限切れで `stop_sync` flush）に分割。
+      EOF 時も開きっぱなしの sync を flush。回帰テスト 3 本（ESU 適用・EOF flush・
+      timeout flush、StallingReader で沈黙 PTY を再現）
 - [ ] **Focus reporting (?1004)** — 新規 (2026-07-04)。focus in/out で `CSI I`/`CSI O`。
       CC 2.1.181 の presence 検知（在席中は mobile push 抑止）の標準経路。vim/tmux も使う。数十行
 - [ ] OSC 0/2 ウィンドウタイトル反映（実害小）
