@@ -23,9 +23,8 @@ pub struct SettingsTab {
     shogun_session: Entity<InputState>,
     multiagent_session: Entity<InputState>,
     terminal_font: Entity<InputState>,
-    /// No UI yet — carried through save so hand-edited values survive.
-    desktop_notifications: bool,
-    desktop_notifications_multiagent: bool,
+    pub desktop_notifications: bool,
+    pub desktop_notifications_multiagent: bool,
     agents: Vec<String>,
 }
 
@@ -166,6 +165,7 @@ pub fn render_settings_tab(
     connection_backend_selector: impl IntoElement,
     accept_all_host_keys_toggle: impl IntoElement,
     font_preset_buttons: impl IntoElement,
+    notification_toggles: impl IntoElement,
     control_path_selector: Option<impl IntoElement>,
 ) -> impl IntoElement {
     let mut advanced = section_card(
@@ -232,7 +232,13 @@ pub fn render_settings_tab(
                     section_card("ターミナル", None)
                         .child(labeled_input("フォント名", &tab.terminal_font))
                         .child(font_preset_buttons)
-                        .child(hint("システムにインストール済みの等幅フォント名を指定")),
+                        .child(hint("システムにインストール済みの等幅フォント名を指定"))
+                        .child(field_label("デスクトップ通知（OSC 9 / 777）"))
+                        .child(notification_toggles)
+                        .child(hint(
+                            "見ているタブの通知は出ない（Ghostty と同じフォーカス抑止）。\
+                             家老陣は多エージェントで鳴りやすいため既定オフ",
+                        )),
                 )
                 .child(
                     section_card(

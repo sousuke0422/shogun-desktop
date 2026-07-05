@@ -1398,6 +1398,30 @@ impl Render for ShogunWindow {
                         this.settings_tab.accept_all_host_keys = *checked;
                         cx.notify();
                     }));
+                // Toggles apply to the live watcher immediately; the 保存
+                // button persists them (same lifecycle as the other fields).
+                let notification_toggles = v_flex()
+                    .gap_2()
+                    .child(
+                        Switch::new("desktop-notifications")
+                            .checked(self.settings_tab.desktop_notifications)
+                            .label("デスクトップ通知を出す")
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.settings_tab.desktop_notifications = *checked;
+                                this.desktop_notifications = *checked;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Switch::new("desktop-notifications-multiagent")
+                            .checked(self.settings_tab.desktop_notifications_multiagent)
+                            .label("家老陣タブも通知する")
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.settings_tab.desktop_notifications_multiagent = *checked;
+                                this.desktop_notifications_multiagent = *checked;
+                                cx.notify();
+                            })),
+                    );
                 let font_preset_buttons = h_flex()
                     .gap_2()
                     .child(
@@ -1446,6 +1470,7 @@ impl Render for ShogunWindow {
                     connection_backend_selector,
                     accept_all_host_keys_toggle,
                     font_preset_buttons,
+                    notification_toggles,
                     #[cfg(windows)]
                     Some(control_path_selector),
                     #[cfg(not(windows))]

@@ -88,7 +88,8 @@
       「将軍デスクトップ」名義・失敗時 PowerShell AUMID フォールバック。
       設定 `terminal.desktop_notifications`（既定 on）＋
       `terminal.desktop_notifications_multiagent`（**家老陣 tab は既定で握りつぶし**。
-      多エージェント常時発報のため。マスターと AND）。いずれも UI 未作成・TOML 手編集。
+      多エージェント常時発報のため。マスターと AND）。設定タブ「ターミナル」節に
+      Switch UI あり（切替は即時反映・保存で永続化）。
       CC 側は `preferredNotifChannel` で「足軽完了→トースト」成立。
       実機確認待ち: 別窓フォーカス中に `sleep 2; printf '\e]9;test\a'` →トースト、
       フォーカス中は出ない、`\e]777;notify;題;本文\a` で題名付き。mac 配送は未実装
