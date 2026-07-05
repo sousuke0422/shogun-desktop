@@ -571,6 +571,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     }
 
     detect_implicit_links(&mut cells, &wrapped, &mut links, &mut link_ids);
+    let links = assign_link_occurrences(&mut cells, &wrapped, &links);
 
     // SGR-applied affordance: every linked cell without an underline of its
     // own gets a dotted accent underline, so click targets are visible
@@ -667,6 +668,52 @@ fn detect_implicit_links(
         }
         r = last + 1;
     }
+}
+
+/// Split the URI-deduplicated link indices into per-OCCURRENCE indices:
+/// hovering one occurrence of a URL must not underline every other place the
+/// same URL appears on screen (殿 feedback 2026-07-06). An occurrence is a
+/// contiguous cell run — wide-glyph spacers never break one, and it continues
+/// onto the next row only across a soft wrap. Returns the occurrence-indexed
+/// URI table (duplicates now allowed) and remaps every cell in place.
+fn assign_link_occurrences(
+    cells: &mut [Vec<SnapshotCell>],
+    wrapped: &[bool],
+    uris: &[String],
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    // The open occurrence: (uri index it continues, its new index).
+    let mut current: Option<(u16, u16)> = None;
+    for (r, row) in cells.iter_mut().enumerate() {
+        for cell in row.iter_mut() {
+            if cell.display_width == 0 {
+                // Spacer half of a wide glyph: rides its base cell's
+                // occurrence, never opens or closes one.
+                if cell.link.is_some()
+                    && let Some((_, new)) = current
+                {
+                    cell.link = Some(new);
+                }
+                continue;
+            }
+            match (cell.link, current) {
+                (Some(old), Some((cur_old, new))) if old == cur_old => cell.link = Some(new),
+                (Some(old), _) => {
+                    let new = out.len().min(u16::MAX as usize) as u16;
+                    if out.len() <= u16::MAX as usize {
+                        out.push(uris[old as usize].clone());
+                    }
+                    current = Some((old, new));
+                    cell.link = Some(new);
+                }
+                (None, _) => current = None,
+            }
+        }
+        if !wrapped.get(r).copied().unwrap_or(false) {
+            current = None;
+        }
+    }
+    out
 }
 
 /// `[start, end)` char spans of bare URLs in `chars`, with the URI text.
@@ -876,18 +923,25 @@ mod tests {
     fn snapshot_collects_osc8_hyperlinks() {
         let mut term = make_term(20, 2);
         // "click me" wrapped in OSC 8, then a plain word, then a second link
-        // reusing the SAME uri — it must dedupe onto index 0.
+        // with the SAME uri — separate occurrences get separate indices, so
+        // ctrl-hovering one does not underline the other (殿 feedback).
         advance_bytes(
             &mut term,
             b"\x1b]8;;https://example.com/\x1b\\click\x1b]8;;\x1b\\ x \x1b]8;;https://example.com/\x1b\\me\x1b]8;;\x1b\\",
         );
         let snap = take_snapshot(&term);
-        assert_eq!(snap.links, vec!["https://example.com/".to_string()]);
+        assert_eq!(
+            snap.links,
+            vec![
+                "https://example.com/".to_string(),
+                "https://example.com/".to_string()
+            ]
+        );
         for col in 0..5 {
             assert_eq!(snap.cells[0][col].link, Some(0), "col {col}");
         }
         assert_eq!(snap.cells[0][5].link, None); // the " x " gap
-        assert_eq!(snap.cells[0][8].link, Some(0)); // "me", same uri
+        assert_eq!(snap.cells[0][8].link, Some(1)); // "me": same uri, own occurrence
         assert_eq!(snap.cells[1][0].link, None);
     }
 
