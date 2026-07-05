@@ -861,12 +861,7 @@ pub fn render_grid(
                 match images.filter(|_| snap.has_images) {
                     Some(store) => image_runs_for_row(row)
                         .into_iter()
-                        .filter_map(|r| {
-                            store
-                                .get(r.id)
-                                .filter(|img| img.cols > 0 && img.rows > 0)
-                                .map(|img| (r, img))
-                        })
+                        .filter_map(|r| store.get(r.id).map(|img| (r, img)))
                         .collect(),
                     None => Vec::new(),
                 };
@@ -1122,12 +1117,27 @@ pub fn render_grid(
                     // the mask doing its job. Painted before the selection
                     // quad so a selection stays visible over an image.
                     for (irun, img) in &image_runs {
+                        // Placement size: `c=`/`r=` cells when the client
+                        // sent them; otherwise kitty's default applies — the
+                        // image at its natural pixel size (yazi pre-scales
+                        // using the TIOCGWINSZ cell size and omits c/r).
+                        // Image pixels are device pixels, hence ÷ scale.
+                        let (box_w, box_h) = if img.cols > 0 && img.rows > 0 {
+                            (img.cols as f32 * cw, img.rows as f32 * ch)
+                        } else {
+                            let sf = window.scale_factor();
+                            let sz = img.image.size(0);
+                            (
+                                u32::from(sz.width) as f32 / sf,
+                                u32::from(sz.height) as f32 / sf,
+                            )
+                        };
                         let placement = Bounds {
                             origin: point(
                                 px(ox + (irun.c0 as f32 - irun.pcol0 as f32) * cw),
                                 px(oy - irun.prow as f32 * ch),
                             ),
-                            size: size(px(img.cols as f32 * cw), px(img.rows as f32 * ch)),
+                            size: size(px(box_w), px(box_h)),
                         };
                         let mask = gpui::ContentMask {
                             bounds: Bounds {
