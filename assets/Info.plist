@@ -6,7 +6,7 @@
     <key>CFBundleExecutable</key>
     <string>shogun-desktop</string>
     <key>CFBundleIdentifier</key>
-    <string>com.aki.shogun-desktop</string>
+    <string>app.rikkalab.shogun-desktop</string>
     <key>CFBundleName</key>
     <string>Shogun Desktop</string>
     <key>CFBundleDisplayName</key>

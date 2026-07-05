@@ -77,7 +77,7 @@ pub fn show(title: &str, body: &str) {
     let body = body.to_owned();
     std::thread::spawn(move || {
         APP.call_once(|| {
-            let _ = mac_notification_sys::set_application("com.aki.shogun-desktop");
+            let _ = mac_notification_sys::set_application("app.rikkalab.shogun-desktop");
         });
         let _ = mac_notification_sys::Notification::default()
             .title(&title)
