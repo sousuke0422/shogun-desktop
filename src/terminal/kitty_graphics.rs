@@ -354,8 +354,6 @@ struct GCmd {
     delete: u8,
     /// `o=z` — payload is zlib-compressed.
     zlib: bool,
-    /// Any key was present at all (distinguishes bare continuation chunks).
-    saw_key_other_than_m: bool,
 }
 
 fn parse_controls(controls: &str) -> GCmd {
@@ -364,9 +362,6 @@ fn parse_controls(controls: &str) -> GCmd {
         let Some((k, v)) = kv.split_once('=') else { continue };
         let int = || v.parse::<u32>().unwrap_or(0);
         let byte = || v.bytes().next().unwrap_or(0);
-        if k != "m" {
-            cmd.saw_key_other_than_m = true;
-        }
         match k {
             "a" => cmd.action = byte(),
             "f" => cmd.format = int(),
@@ -416,11 +411,13 @@ impl KittyGraphics {
         };
         let cmd = parse_controls(std::str::from_utf8(controls).ok()?);
 
-        // Continuation chunk of an in-flight chunked transmission: the spec
-        // sends only `m=` (and optionally q/i) on chunks after the first.
+        // Continuation chunk of an in-flight chunked transmission. The spec
+        // says later chunks SHOULD carry only `m=`, but real clients also
+        // repeat i/q/a — so accept any chunk that doesn't contradict the
+        // pending transmission (different action or different image id).
         if let Some(pending) = &mut self.pending
             && (cmd.action == 0 || cmd.action == pending.cmd.action)
-            && !cmd.saw_key_other_than_m
+            && (cmd.id == 0 || cmd.id == pending.cmd.id)
         {
             if pending.b64.len() + data.len() > MAX_TRANSMISSION_BYTES {
                 self.pending = None;
@@ -621,6 +618,24 @@ mod tests {
             img.image.as_bytes(0).unwrap(),
             &[0, 0, 255, 255, 0, 255, 0, 255]
         );
+    }
+
+    #[test]
+    fn continuation_chunks_may_repeat_keys() {
+        // The spec says later chunks SHOULD carry only m=, but real clients
+        // repeat a/i/q — must still be treated as continuations.
+        let store = Arc::new(KittyImageStore::default());
+        let mut kg = KittyGraphics::new(Arc::clone(&store));
+        let data = [255u8, 0, 0, 255];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+        let (head, tail) = b64.split_at(4);
+        assert!(
+            kg.apply(format!("Ga=T,i=7,f=32,s=1,v=1,m=1;{head}").as_bytes())
+                .is_none()
+        );
+        let resp = kg.apply(format!("Ga=T,i=7,m=0;{tail}").as_bytes()).unwrap();
+        assert_eq!(resp, b"\x1b_Gi=7;OK\x1b\\".to_vec());
+        assert!(store.get(7).is_some());
     }
 
     #[test]
