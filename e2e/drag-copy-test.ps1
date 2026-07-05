@@ -24,7 +24,12 @@ param(
     [string]$ExePath = "$PSScriptRoot\..\target\release\shogun-desktop.exe",
     [string]$ScreenshotPath = "$env:TEMP\shogun-e2e-sel.png",
     # Seconds to wait for the SSH/tmux session to connect and render.
-    [int]$ConnectWaitSec = 12
+    [int]$ConnectWaitSec = 12,
+    # Hold shift during the drag: the local-selection bypass. Without it a
+    # mouse-reporting app in the pane (claude code, opencode...) receives the
+    # drag instead, no blue highlight appears, and scan-highlight.ps1 fails
+    # even though the clipboard test can still pass via the app's own OSC 52.
+    [switch]$ShiftDrag
 )
 
 $ErrorActionPreference = 'Stop'
@@ -107,6 +112,7 @@ Write-Output "DRAG ($x1,$y1) -> ($x2,$y2)"
 
 [E2E]::SetCursorPos($x1, $y1) | Out-Null
 Start-Sleep -Milliseconds 300
+if ($ShiftDrag) { [E2E]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero) }  # SHIFT down
 [E2E]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)  # LEFTDOWN
 Start-Sleep -Milliseconds 120
 for ($i = 1; $i -le 10; $i++) {
@@ -116,6 +122,7 @@ for ($i = 1; $i -le 10; $i++) {
     Start-Sleep -Milliseconds 40
 }
 [E2E]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)  # LEFTUP
+if ($ShiftDrag) { [E2E]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero) }  # SHIFT up
 Start-Sleep -Milliseconds 400
 
 # Screenshot while the highlight is on screen (verify with scan-highlight.ps1).

@@ -33,7 +33,18 @@
 - [x] shell window の選択コピー・IME（前回実装分の目視）
       — **2026-07-05 実機確認済み**（殿確認）
 - [ ] tailscale アイドル後の入力引っかかり解消（keepalive + 非同期書込）
+- [x] **リサイズでグリッドが追従しない（殿報告 2026-07-05）** — 根治済み。真因は
+      bce57db の overlay content-box 化の副作用: スクロールコンテナ内の absolute 子は
+      taffy が **コンテンツサイズ**に合わせるため、overlay 高さ = グリッド行数×セル高で
+      固定 → 行数計算が overlay 高さ依存 → **循環参照で行数がspawn時から不変**
+      （幅は追従、高さのみ死亡）。修正: overlay canvas をスクロールコンテナ外の
+      relative ラッパー兄弟へ移設（shell + 本窓両方）。offset は常時0のため選択/IME
+      座標系は不変。計装並行インスタンス+MoveWindow 自動試験で 33→21→41行の追従を確認、
+      shift-drag e2e で選択ハイライトも PASS
 - [x] e2e/ スクリプト再実行 — **2026-07-04 PASS**（drag-copy + scan-highlight とも）。
+      **2026-07-05 注意**: マウスレポーティング転送実装後は素のドラッグはアプリ側へ
+      転送され青ハイライトが出ない → `-ShiftDrag` オプション（ローカル選択バイパス）で
+      実行すること。素のドラッグ+scan-highlight FAIL は仕様であり回帰ではない。
       `pwsh.exe -NoProfile -File` で呼ぶ（powershell.exe 5.1 は PSModulePath 汚染で不可）。
       注意: この機では常駐アプリが Ctrl+Shift+C をグローバルホットキー占有しており
       アプリに届かない → コピーは Ctrl+Insert（1790008 で正式バインド）。犯人特定は未了

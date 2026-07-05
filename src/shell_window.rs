@@ -336,10 +336,9 @@ impl Render for ShellWindow {
             let pane_measured = self.pane_measured.clone();
             let grid_rows = snap.rows;
             let grid_cols = snap.cols;
-            div()
+            let pane = div()
                 .id("shell-pane")
-                .flex_1()
-                .w_full()
+                .size_full()
                 .track_scroll(&self.scroll_handle)
                 .overflow_y_scroll()
                 // track_focus binds OUR FocusHandle so the IME input handler
@@ -426,14 +425,38 @@ impl Render for ShellWindow {
                     }),
                 )
                 .p_1()
-                // Overlay: registers the IME input handler (GPUI only routes
-                // WM_CHAR / IME composition to a registered handler) and the
-                // shared mouse-selection listeners. Nothing may be *drawn*
-                // from this canvas — paint calls issued here never reach the
-                // screen (verified 2026-07-03); the preedit and selection
-                // highlight are painted by render_grid.
-                .child(
-                    canvas(
+                .child(render_grid(
+                    &snap,
+                    MONO_FONT,
+                    cw,
+                    ch,
+                    self.selection.range_for(0),
+                    ime_preedit,
+                ))
+                // Right-click menu dispatching the same actions as the
+                // keyboard shortcuts (see render_terminal_tab).
+                .context_menu(move |menu, _window, _cx| {
+                    menu.action_context(menu_focus.clone())
+                        .menu("コピー", Box::new(TerminalCopy))
+                        .menu("ペースト", Box::new(TerminalPaste))
+                });
+
+            // Overlay: registers the IME input handler (GPUI only routes
+            // WM_CHAR / IME composition to a registered handler) and the
+            // shared mouse-selection listeners, and reports the pane size for
+            // PTY resize. Nothing may be *drawn* from this canvas — paint
+            // calls issued here never reach the screen (verified 2026-07-03);
+            // the preedit and selection highlight are painted by render_grid.
+            //
+            // The canvas lives OUTSIDE the scroll container, as a sibling in
+            // a relative wrapper: taffy sizes absolute children of a scroll
+            // container to its CONTENT box, so inside the pane the overlay's
+            // height tracked the grid (rows × cell) instead of the viewport —
+            // rows could then never shrink or grow past the spawn size (the
+            // resize-never-fires bug, found 2026-07-05). The wrapper's box IS
+            // the pane's border box, and the pane never scrolls (the grid
+            // always fits exactly), so the overlay geometry is identical.
+            let overlay = canvas(
                         |_bounds, _window, _cx| (),
                         move |bounds, (), window, cx: &mut App| {
                             // Report the painted pane size back to the view
@@ -464,32 +487,19 @@ impl Render for ShellWindow {
                             );
                         },
                     )
-                    // Content-box pinned, NOT size_full: taffy counts
-                    // absolute children toward the scroll container's content
-                    // size, and a padding-box-sized overlay made the pane
-                    // permanently scrollable by the padding (micro-scroll).
-                    // See render_terminal_tab for the full story.
+                    // Pinned to the pane's content box (border box minus the
+                    // pane's p_1 padding) via the relative wrapper.
                     .absolute()
                     .top(px(TERMINAL_PANE_PADDING_PX / 2.0))
                     .left(px(TERMINAL_PANE_PADDING_PX / 2.0))
                     .right(px(TERMINAL_PANE_PADDING_PX / 2.0))
-                    .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0)),
-                )
-                .child(render_grid(
-                    &snap,
-                    MONO_FONT,
-                    cw,
-                    ch,
-                    self.selection.range_for(0),
-                    ime_preedit,
-                ))
-                // Right-click menu dispatching the same actions as the
-                // keyboard shortcuts (see render_terminal_tab).
-                .context_menu(move |menu, _window, _cx| {
-                    menu.action_context(menu_focus.clone())
-                        .menu("コピー", Box::new(TerminalCopy))
-                        .menu("ペースト", Box::new(TerminalPaste))
-                })
+                    .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0));
+
+            div()
+                .relative()
+                .size_full()
+                .child(pane)
+                .child(overlay)
                 .into_any_element()
         } else {
             div()
