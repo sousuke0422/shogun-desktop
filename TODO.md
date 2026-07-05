@@ -159,3 +159,10 @@ Air は 60Hz（ProMotion なし）→ 省電力側の検証機。
 - [ ] mac 版 E2E（osascript/CGEvent）— 必要になってから
 - [ ] **Linux 対応時**: gpui 0.2.2 は Linux で FontFallbacks 無視＋emoji 判定が
       NotoColorEmoji 固定 → 上流 PR が本命。Noto に落ちる分には殿許容済み
+- [x] **WSLg 実機スモーク（2026-07-05・CI artifact 直行）**: Wayland は即死
+      — gpui は `xdg_wm_base` v2+ 要求、WSLg Weston は v1 のみ
+      （wayland/client.rs:151 `wm_base` bind unwrap panic）。
+      回避 = `WAYLAND_DISPLAY= ./shogun-desktop` で X11(Xwayland) に落とす。
+      結果: 起動 OK・日本語含め表示 OK・**ウィンドウタイトルのみ豆腐**（別要因、
+      X11 タイトルはコンポジタ側フォント描画 — アプリ側では直せない可能性大）。
+      絵文字は未テスト。予想（FontFallbacks 全滅で本文豆腐）より大幅に良好
