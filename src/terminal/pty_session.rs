@@ -332,9 +332,7 @@ fn build_terminal_session(
                         for &byte in &buf[..n] {
                             match osc.advance(byte) {
                                 Some(OscEvent::Progress(update)) => progress2.apply(update),
-                                Some(OscEvent::Notify(note)) => {
-                                    notify::push(&notifications2, note)
-                                }
+                                Some(OscEvent::Notify(note)) => notify::push(&notifications2, note),
                                 None => {}
                             }
                             parser.advance(&mut *t, byte);

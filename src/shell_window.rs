@@ -457,43 +457,43 @@ impl Render for ShellWindow {
             // the pane's border box, and the pane never scrolls (the grid
             // always fits exactly), so the overlay geometry is identical.
             let overlay = canvas(
-                        |_bounds, _window, _cx| (),
-                        move |bounds, (), window, cx: &mut App| {
-                            // Report the painted pane size back to the view
-                            // (deferred notify — we are inside paint) so the
-                            // PTY is resized to the true fit.
-                            let painted = (bounds.size.width / px(1.), bounds.size.height / px(1.));
-                            let (pw, ph) = pane_measured.get();
-                            if (pw - painted.0).abs() > 0.5 || (ph - painted.1).abs() > 0.5 {
-                                pane_measured.set(painted);
-                                let view = view.clone();
-                                cx.defer(move |cx| view.update(cx, |_, cx| cx.notify()));
-                            }
+                |_bounds, _window, _cx| (),
+                move |bounds, (), window, cx: &mut App| {
+                    // Report the painted pane size back to the view
+                    // (deferred notify — we are inside paint) so the
+                    // PTY is resized to the true fit.
+                    let painted = (bounds.size.width / px(1.), bounds.size.height / px(1.));
+                    let (pw, ph) = pane_measured.get();
+                    if (pw - painted.0).abs() > 0.5 || (ph - painted.1).abs() > 0.5 {
+                        pane_measured.set(painted);
+                        let view = view.clone();
+                        cx.defer(move |cx| view.update(cx, |_, cx| cx.notify()));
+                    }
 
-                            window.handle_input(
-                                &focus_handle,
-                                ElementInputHandler::new(bounds, ime.clone()),
-                                cx,
-                            );
-                            selection::register_mouse_selection(
-                                window,
-                                view.clone(),
-                                bounds,
-                                0,
-                                cw,
-                                ch,
-                                grid_rows,
-                                grid_cols,
-                            );
-                        },
-                    )
-                    // Pinned to the pane's content box (border box minus the
-                    // pane's p_1 padding) via the relative wrapper.
-                    .absolute()
-                    .top(px(TERMINAL_PANE_PADDING_PX / 2.0))
-                    .left(px(TERMINAL_PANE_PADDING_PX / 2.0))
-                    .right(px(TERMINAL_PANE_PADDING_PX / 2.0))
-                    .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0));
+                    window.handle_input(
+                        &focus_handle,
+                        ElementInputHandler::new(bounds, ime.clone()),
+                        cx,
+                    );
+                    selection::register_mouse_selection(
+                        window,
+                        view.clone(),
+                        bounds,
+                        0,
+                        cw,
+                        ch,
+                        grid_rows,
+                        grid_cols,
+                    );
+                },
+            )
+            // Pinned to the pane's content box (border box minus the
+            // pane's p_1 padding) via the relative wrapper.
+            .absolute()
+            .top(px(TERMINAL_PANE_PADDING_PX / 2.0))
+            .left(px(TERMINAL_PANE_PADDING_PX / 2.0))
+            .right(px(TERMINAL_PANE_PADDING_PX / 2.0))
+            .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0));
 
             div()
                 .relative()

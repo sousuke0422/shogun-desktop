@@ -152,7 +152,10 @@ mod tests {
     #[test]
     fn osc9_numeric_looking_body_over_10_is_a_notification() {
         assert_eq!(parse_osc9(b"42; done").unwrap().body, "42; done");
-        assert_eq!(parse_osc9(b"1 task finished").unwrap().body, "1 task finished");
+        assert_eq!(
+            parse_osc9(b"1 task finished").unwrap().body,
+            "1 task finished"
+        );
     }
 
     #[test]
