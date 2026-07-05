@@ -403,6 +403,12 @@ impl KittyGraphics {
     }
 
     pub fn apply(&mut self, payload: &[u8]) -> Option<Vec<u8>> {
+        let resp = self.apply_inner(payload);
+        debug_log(payload, resp.as_deref());
+        resp
+    }
+
+    fn apply_inner(&mut self, payload: &[u8]) -> Option<Vec<u8>> {
         let payload = payload.strip_prefix(b"G")?;
         let split = payload.iter().position(|&b| b == b';');
         let (controls, data) = match split {
@@ -515,6 +521,31 @@ fn respond(cmd: &GCmd, msg: &str) -> Option<Vec<u8>> {
     out.push_str(msg);
     out.push_str("\x1b\\");
     Some(out.into_bytes())
+}
+
+/// Field diagnostics: set `SHOGUN_KITTY_LOG=<path>` before launching to
+/// append every APC command (controls only, payload elided) and our response
+/// to that file. Off (and cost-free past one env lookup) otherwise.
+fn debug_log(payload: &[u8], resp: Option<&[u8]>) {
+    static PATH: OnceLock<Option<String>> = OnceLock::new();
+    let Some(path) = PATH.get_or_init(|| std::env::var("SHOGUN_KITTY_LOG").ok()) else {
+        return;
+    };
+    let controls_len = payload
+        .iter()
+        .position(|&b| b == b';')
+        .unwrap_or(payload.len().min(120));
+    let line = format!(
+        "apc {} (+{}B payload) -> {}\n",
+        String::from_utf8_lossy(&payload[..controls_len]),
+        payload.len().saturating_sub(controls_len),
+        resp.map(|r| String::from_utf8_lossy(r).into_owned())
+            .unwrap_or_else(|| "(no response)".into()),
+    );
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(line.as_bytes());
+    }
 }
 
 fn decode_transmission(cmd: &GCmd, b64: &[u8]) -> Result<RenderImage, String> {

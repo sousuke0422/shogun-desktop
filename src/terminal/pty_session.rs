@@ -392,10 +392,60 @@ fn build_terminal_session(
 /// Convenience constructor for tests that do not need a real PTY.
 #[cfg(test)]
 pub fn build_test_session(cols: u16, rows: u16) -> TerminalSession {
+    build_test_session_with_output(cols, rows, Vec::new())
+}
+
+/// Test session whose "PTY" plays back a canned output byte stream, then
+/// EOFs — exercises the real reader thread (scanners, parser, snapshots).
+#[cfg(test)]
+pub fn build_test_session_with_output(cols: u16, rows: u16, output: Vec<u8>) -> TerminalSession {
     use crate::terminal::NoopResizer;
     use std::io::Cursor;
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> =
         Arc::new(FairMutex::new(Box::new(std::io::sink())));
-    let reader: Box<dyn Read + Send> = Box::new(Cursor::new(vec![]));
+    let reader: Box<dyn Read + Send> = Box::new(Cursor::new(output));
     build_terminal_session(cols, rows, reader, writer, Arc::new(NoopResizer)).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The full kitty-graphics pipeline through the real reader thread:
+    /// APC scanner → protocol driver → image store, and placeholder cells
+    /// through vte → snapshot. Guards the integration seams the unit tests
+    /// in kitty_graphics.rs / mod.rs cannot see.
+    #[test]
+    fn kitty_graphics_end_to_end_through_reader_thread() {
+        use base64::Engine as _;
+
+        // 1x1 red PNG, transmitted as a virtual placement (U=1, 1x1 cells).
+        let mut png = Vec::new();
+        let img = image::RgbaImage::from_raw(1, 1, vec![255, 0, 0, 255]).unwrap();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+
+        let mut script = Vec::new();
+        script.extend(format!("\x1b_Ga=T,U=1,i=3,f=100,c=1,r=1;{b64}\x1b\\").into_bytes());
+        // Placeholder cell: fg = 256-color index 3 (image id), row/col 0.
+        script.extend("\x1b[38;5;3m\u{10EEEE}\u{0305}\u{0305}\x1b[0m".bytes());
+
+        let session = build_test_session_with_output(10, 2, script);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while session.is_connected() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!session.is_connected(), "reader thread must reach EOF");
+
+        let stored = session.images.get(3).expect("image must land in the store");
+        assert_eq!((stored.cols, stored.rows), (1, 1));
+        let snap = session.snapshot.lock().clone();
+        assert!(snap.has_images);
+        assert_eq!(
+            snap.cells[0][0].image,
+            Some(kitty_graphics::PlaceholderCell { id: 3, row: 0, col: 0 })
+        );
+    }
 }
