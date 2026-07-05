@@ -16,8 +16,10 @@
 - [ ] アイドル時 CPU がほぼ 0%（16ms ポーリング全廃・イベント駆動化）
 - [ ] shell window: 履歴スクロール／ステータスバー「履歴 N行上」／キー入力で最下部復帰
 - [ ] shell window: Shift+PageUp/PageDown ページング
-- [ ] btop でホイールがアプリ側スクロールになるか（マウスレポーティング転送）
-- [ ] less / man でホイールが効くか（alternate scroll → 矢印変換）
+- [x] btop でホイールがアプリ側スクロールになるか（マウスレポーティング転送）
+      — **2026-07-05 実機確認済み**（殿確認）
+- [x] less / man でホイールが効くか（alternate scroll → 矢印変換）
+      — **2026-07-05 実機確認済み**（殿確認）
 - [x] 絵文字 Twemoji 統一 — **2026-07-04 実機確認済み**。gpui バグ 2 連: ①fallback を
       system collection でしか解決しない（44b69fd: custom 検索 + AddMapping へ collection
       明示）②raster_bounds がベースグリフのみ解析 → COLR ベース空の Twemoji が 0×0 で
