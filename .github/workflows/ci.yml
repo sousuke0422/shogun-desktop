@@ -103,10 +103,10 @@ jobs:
           retention-days: 30
 
   # ── Linux (x86_64, ubuntu-latest) ──────────────────────────────────────────
-  # Build + test only: the Linux port is not usable yet (gpui 0.2.2 ignores
-  # FontFallbacks on Linux — see TODO.md), so no artifact is published. The
-  # job keeps the Linux paths (notify-send delivery, unix PTY, gpui linux
-  # backend) compiling and the logic tests green.
+  # The Linux port is not usable yet (gpui 0.2.2 ignores FontFallbacks on
+  # Linux — see TODO.md), so the binary ships as a CI artifact only and stays
+  # OUT of the tagged Release. The job keeps the Linux paths (notify-send
+  # delivery, unix PTY, gpui linux backend) compiling and the tests green.
   build-linux:
     name: Build & Test — Linux (x86_64)
     runs-on: ubuntu-latest
@@ -143,6 +143,14 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: shogun-desktop-linux-x86_64
+          path: target/release/shogun-desktop
+          if-no-files-found: error
+          retention-days: 30
 
   # ── Lint (clippy + rustfmt) ────────────────────────────────────────────────
   lint:
