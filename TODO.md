@@ -95,10 +95,13 @@
       実機確認待ち: `printf '\e]9;4;1;50\a'`
   - [ ] Phase 2: Windows タスクバー進捗 (ITaskbarList3::SetProgressValue)。
         HWND は vendored gpui に accessor を足すか EnumWindows+PID で取得
-- [ ] **OSC 8 ハイパーリンクのクリック**（パース済み・snapshot が捨てている）。
-      優先度UP (2026-07-04): CC 2.1.181/187/191 で 3 連続「Cmd+click で URL が開かない」修正
-      = リンクを踏ませる前提の UI。マウスヒットテストを click レポーティングと共有できるので
-      上記とセット実装が効率的。修飾キー+クリック → ShellExecute/open
+- [x] **OSC 8 ハイパーリンク（2026-07-06 実装・実機確認済み）**: 明示 OSC 8 ＋
+      ベア http(s):// 自動検出（WRAPLINE で soft-wrap 跨ぎ結合・句読点trim・括弧
+      バランス）。リンクセルは点線下線(SGR Dotted+58 注入で run 機構に相乗り)常時表示、
+      Ctrl+ホバーで当該「出現」のみ実線（URI dedupe→出現単位 index に後段split、
+      同一URL複数箇所の全点灯を修正済み）、Ctrl+クリックで開く（http/https/mailto
+      限定 — 端末エスケープ由来 URI に任意ハンドラを起動させない）。
+      素クリックは mouse reporting/選択のまま（wt/VSCode 流）
 - [ ] **Synchronized output (DEC ?2026)** — 新規 (2026-07-04)。CC 2.1.191 は更新を 100ms に
       合体するなど高頻度書換方向。begin/end synchronized update の間は描画を保留して
       チラつき根絶。WT/Ghostty/kitty 対応済みの現代標準。alacritty_terminal がパース済みなら
