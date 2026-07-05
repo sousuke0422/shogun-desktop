@@ -1631,8 +1631,20 @@ mod tests {
         assert_eq!(
             image_runs_for_row(&row),
             vec![
-                ImageRun { c0: 1, c1: 4, id: 7, prow: 1, pcol0: 0 },
-                ImageRun { c0: 5, c1: 6, id: 7, prow: 1, pcol0: 4 },
+                ImageRun {
+                    c0: 1,
+                    c1: 4,
+                    id: 7,
+                    prow: 1,
+                    pcol0: 0
+                },
+                ImageRun {
+                    c0: 5,
+                    c1: 6,
+                    id: 7,
+                    prow: 1,
+                    pcol0: 4
+                },
             ]
         );
     }
@@ -1650,10 +1662,34 @@ mod tests {
         assert_eq!(
             image_runs_for_row(&row),
             vec![
-                ImageRun { c0: 0, c1: 1, id: 7, prow: 0, pcol0: 0 },
-                ImageRun { c0: 1, c1: 2, id: 8, prow: 0, pcol0: 1 },
-                ImageRun { c0: 2, c1: 3, id: 8, prow: 1, pcol0: 2 },
-                ImageRun { c0: 3, c1: 4, id: 8, prow: 1, pcol0: 0 },
+                ImageRun {
+                    c0: 0,
+                    c1: 1,
+                    id: 7,
+                    prow: 0,
+                    pcol0: 0
+                },
+                ImageRun {
+                    c0: 1,
+                    c1: 2,
+                    id: 8,
+                    prow: 0,
+                    pcol0: 1
+                },
+                ImageRun {
+                    c0: 2,
+                    c1: 3,
+                    id: 8,
+                    prow: 1,
+                    pcol0: 2
+                },
+                ImageRun {
+                    c0: 3,
+                    c1: 4,
+                    id: 8,
+                    prow: 1,
+                    pcol0: 0
+                },
             ]
         );
     }

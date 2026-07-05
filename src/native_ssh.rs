@@ -497,7 +497,13 @@ struct NativeResizer {
 }
 
 impl PtyResizer for NativeResizer {
-    fn resize(&self, cols: u16, rows: u16, pixel_width: u16, pixel_height: u16) -> anyhow::Result<()> {
+    fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> anyhow::Result<()> {
         let write_half = Arc::clone(&self.write_half);
         self.rt.spawn(async move {
             let guard = write_half.lock().await;

@@ -43,7 +43,13 @@ struct SystemResizer {
 }
 
 impl PtyResizer for SystemResizer {
-    fn resize(&self, cols: u16, rows: u16, pixel_width: u16, pixel_height: u16) -> anyhow::Result<()> {
+    fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> anyhow::Result<()> {
         self.master.lock().0.resize(PtySize {
             rows,
             cols,
@@ -445,7 +451,11 @@ mod tests {
         assert!(snap.has_images);
         assert_eq!(
             snap.cells[0][0].image,
-            Some(kitty_graphics::PlaceholderCell { id: 3, row: 0, col: 0 })
+            Some(kitty_graphics::PlaceholderCell {
+                id: 3,
+                row: 0,
+                col: 0
+            })
         );
     }
 }

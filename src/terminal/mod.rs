@@ -66,8 +66,13 @@ pub trait PtyResizer: Send + Sync {
     /// Pixel dimensions accompany the cell grid so applications reading
     /// `TIOCGWINSZ` (yazi et al.) can derive the cell size in pixels — the
     /// kitty graphics protocol sizes images with it. `(0, 0)` when unknown.
-    fn resize(&self, cols: u16, rows: u16, pixel_width: u16, pixel_height: u16)
-    -> anyhow::Result<()>;
+    fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> anyhow::Result<()>;
 }
 
 /// No-op resizer used as a fallback when the backend provides no resize channel.
@@ -567,9 +572,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
             // would corrupt it). Runs with omitted diacritics continue from
             // the left neighbor, already decoded (display_iter is row-major).
             let image = if indexed.c == kitty_graphics::PLACEHOLDER {
-                let prev = col
-                    .checked_sub(1)
-                    .and_then(|pc| cells[row][pc].image);
+                let prev = col.checked_sub(1).and_then(|pc| cells[row][pc].image);
                 kitty_graphics::decode_placeholder(
                     raw_color24(indexed.fg),
                     indexed.zerowidth().unwrap_or(&[]),
@@ -655,9 +658,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
 fn raw_color24(color: alacritty_terminal::vte::ansi::Color) -> u32 {
     use alacritty_terminal::vte::ansi::Color;
     match color {
-        Color::Spec(rgb) => {
-            (u32::from(rgb.r) << 16) | (u32::from(rgb.g) << 8) | u32::from(rgb.b)
-        }
+        Color::Spec(rgb) => (u32::from(rgb.r) << 16) | (u32::from(rgb.g) << 8) | u32::from(rgb.b),
         Color::Indexed(n) => u32::from(n),
         Color::Named(_) => 0,
     }
@@ -996,11 +997,19 @@ mod tests {
         use kitty_graphics::PlaceholderCell;
         assert_eq!(
             snap.cells[0][0].image,
-            Some(PlaceholderCell { id: 42, row: 0, col: 0 })
+            Some(PlaceholderCell {
+                id: 42,
+                row: 0,
+                col: 0
+            })
         );
         assert_eq!(
             snap.cells[0][1].image,
-            Some(PlaceholderCell { id: 42, row: 0, col: 1 })
+            Some(PlaceholderCell {
+                id: 42,
+                row: 0,
+                col: 1
+            })
         );
         // The undefined placeholder glyph must not reach the shaper (tofu).
         assert_eq!(snap.cells[0][0].c, ' ');
@@ -1019,7 +1028,11 @@ mod tests {
         let snap = take_snapshot(&term);
         assert_eq!(
             snap.cells[0][0].image,
-            Some(kitty_graphics::PlaceholderCell { id: 0x010203, row: 1, col: 2 })
+            Some(kitty_graphics::PlaceholderCell {
+                id: 0x010203,
+                row: 1,
+                col: 2
+            })
         );
     }
 

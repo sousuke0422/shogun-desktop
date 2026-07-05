@@ -44,56 +44,303 @@ const MAX_TRANSMISSION_BYTES: usize = 64 * 1024 * 1024;
 /// virtual placement, in kitty's table order (index = encoded number).
 /// Source: kitty gen/rowcolumn-diacritics.txt (Unicode 6.0 combining chars).
 pub(crate) const ROWCOL_DIACRITICS: [char; 297] = [
-    '\u{0305}', '\u{030D}', '\u{030E}', '\u{0310}', '\u{0312}', '\u{033D}',
-    '\u{033E}', '\u{033F}', '\u{0346}', '\u{034A}', '\u{034B}', '\u{034C}',
-    '\u{0350}', '\u{0351}', '\u{0352}', '\u{0357}', '\u{035B}', '\u{0363}',
-    '\u{0364}', '\u{0365}', '\u{0366}', '\u{0367}', '\u{0368}', '\u{0369}',
-    '\u{036A}', '\u{036B}', '\u{036C}', '\u{036D}', '\u{036E}', '\u{036F}',
-    '\u{0483}', '\u{0484}', '\u{0485}', '\u{0486}', '\u{0487}', '\u{0592}',
-    '\u{0593}', '\u{0594}', '\u{0595}', '\u{0597}', '\u{0598}', '\u{0599}',
-    '\u{059C}', '\u{059D}', '\u{059E}', '\u{059F}', '\u{05A0}', '\u{05A1}',
-    '\u{05A8}', '\u{05A9}', '\u{05AB}', '\u{05AC}', '\u{05AF}', '\u{05C4}',
-    '\u{0610}', '\u{0611}', '\u{0612}', '\u{0613}', '\u{0614}', '\u{0615}',
-    '\u{0616}', '\u{0617}', '\u{0657}', '\u{0658}', '\u{0659}', '\u{065A}',
-    '\u{065B}', '\u{065D}', '\u{065E}', '\u{06D6}', '\u{06D7}', '\u{06D8}',
-    '\u{06D9}', '\u{06DA}', '\u{06DB}', '\u{06DC}', '\u{06DF}', '\u{06E0}',
-    '\u{06E1}', '\u{06E2}', '\u{06E4}', '\u{06E7}', '\u{06E8}', '\u{06EB}',
-    '\u{06EC}', '\u{0730}', '\u{0732}', '\u{0733}', '\u{0735}', '\u{0736}',
-    '\u{073A}', '\u{073D}', '\u{073F}', '\u{0740}', '\u{0741}', '\u{0743}',
-    '\u{0745}', '\u{0747}', '\u{0749}', '\u{074A}', '\u{07EB}', '\u{07EC}',
-    '\u{07ED}', '\u{07EE}', '\u{07EF}', '\u{07F0}', '\u{07F1}', '\u{07F3}',
-    '\u{0816}', '\u{0817}', '\u{0818}', '\u{0819}', '\u{081B}', '\u{081C}',
-    '\u{081D}', '\u{081E}', '\u{081F}', '\u{0820}', '\u{0821}', '\u{0822}',
-    '\u{0823}', '\u{0825}', '\u{0826}', '\u{0827}', '\u{0829}', '\u{082A}',
-    '\u{082B}', '\u{082C}', '\u{082D}', '\u{0951}', '\u{0953}', '\u{0954}',
-    '\u{0F82}', '\u{0F83}', '\u{0F86}', '\u{0F87}', '\u{135D}', '\u{135E}',
-    '\u{135F}', '\u{17DD}', '\u{193A}', '\u{1A17}', '\u{1A75}', '\u{1A76}',
-    '\u{1A77}', '\u{1A78}', '\u{1A79}', '\u{1A7A}', '\u{1A7B}', '\u{1A7C}',
-    '\u{1B6B}', '\u{1B6D}', '\u{1B6E}', '\u{1B6F}', '\u{1B70}', '\u{1B71}',
-    '\u{1B72}', '\u{1B73}', '\u{1CD0}', '\u{1CD1}', '\u{1CD2}', '\u{1CDA}',
-    '\u{1CDB}', '\u{1CE0}', '\u{1DC0}', '\u{1DC1}', '\u{1DC3}', '\u{1DC4}',
-    '\u{1DC5}', '\u{1DC6}', '\u{1DC7}', '\u{1DC8}', '\u{1DC9}', '\u{1DCB}',
-    '\u{1DCC}', '\u{1DD1}', '\u{1DD2}', '\u{1DD3}', '\u{1DD4}', '\u{1DD5}',
-    '\u{1DD6}', '\u{1DD7}', '\u{1DD8}', '\u{1DD9}', '\u{1DDA}', '\u{1DDB}',
-    '\u{1DDC}', '\u{1DDD}', '\u{1DDE}', '\u{1DDF}', '\u{1DE0}', '\u{1DE1}',
-    '\u{1DE2}', '\u{1DE3}', '\u{1DE4}', '\u{1DE5}', '\u{1DE6}', '\u{1DFE}',
-    '\u{20D0}', '\u{20D1}', '\u{20D4}', '\u{20D5}', '\u{20D6}', '\u{20D7}',
-    '\u{20DB}', '\u{20DC}', '\u{20E1}', '\u{20E7}', '\u{20E9}', '\u{20F0}',
-    '\u{2CEF}', '\u{2CF0}', '\u{2CF1}', '\u{2DE0}', '\u{2DE1}', '\u{2DE2}',
-    '\u{2DE3}', '\u{2DE4}', '\u{2DE5}', '\u{2DE6}', '\u{2DE7}', '\u{2DE8}',
-    '\u{2DE9}', '\u{2DEA}', '\u{2DEB}', '\u{2DEC}', '\u{2DED}', '\u{2DEE}',
-    '\u{2DEF}', '\u{2DF0}', '\u{2DF1}', '\u{2DF2}', '\u{2DF3}', '\u{2DF4}',
-    '\u{2DF5}', '\u{2DF6}', '\u{2DF7}', '\u{2DF8}', '\u{2DF9}', '\u{2DFA}',
-    '\u{2DFB}', '\u{2DFC}', '\u{2DFD}', '\u{2DFE}', '\u{2DFF}', '\u{A66F}',
-    '\u{A67C}', '\u{A67D}', '\u{A6F0}', '\u{A6F1}', '\u{A8E0}', '\u{A8E1}',
-    '\u{A8E2}', '\u{A8E3}', '\u{A8E4}', '\u{A8E5}', '\u{A8E6}', '\u{A8E7}',
-    '\u{A8E8}', '\u{A8E9}', '\u{A8EA}', '\u{A8EB}', '\u{A8EC}', '\u{A8ED}',
-    '\u{A8EE}', '\u{A8EF}', '\u{A8F0}', '\u{A8F1}', '\u{AAB0}', '\u{AAB2}',
-    '\u{AAB3}', '\u{AAB7}', '\u{AAB8}', '\u{AABE}', '\u{AABF}', '\u{AAC1}',
-    '\u{FE20}', '\u{FE21}', '\u{FE22}', '\u{FE23}', '\u{FE24}', '\u{FE25}',
-    '\u{FE26}', '\u{10A0F}', '\u{10A38}', '\u{1D185}', '\u{1D186}',
-    '\u{1D187}', '\u{1D188}', '\u{1D189}', '\u{1D1AA}', '\u{1D1AB}',
-    '\u{1D1AC}', '\u{1D1AD}', '\u{1D242}', '\u{1D243}', '\u{1D244}',
+    '\u{0305}',
+    '\u{030D}',
+    '\u{030E}',
+    '\u{0310}',
+    '\u{0312}',
+    '\u{033D}',
+    '\u{033E}',
+    '\u{033F}',
+    '\u{0346}',
+    '\u{034A}',
+    '\u{034B}',
+    '\u{034C}',
+    '\u{0350}',
+    '\u{0351}',
+    '\u{0352}',
+    '\u{0357}',
+    '\u{035B}',
+    '\u{0363}',
+    '\u{0364}',
+    '\u{0365}',
+    '\u{0366}',
+    '\u{0367}',
+    '\u{0368}',
+    '\u{0369}',
+    '\u{036A}',
+    '\u{036B}',
+    '\u{036C}',
+    '\u{036D}',
+    '\u{036E}',
+    '\u{036F}',
+    '\u{0483}',
+    '\u{0484}',
+    '\u{0485}',
+    '\u{0486}',
+    '\u{0487}',
+    '\u{0592}',
+    '\u{0593}',
+    '\u{0594}',
+    '\u{0595}',
+    '\u{0597}',
+    '\u{0598}',
+    '\u{0599}',
+    '\u{059C}',
+    '\u{059D}',
+    '\u{059E}',
+    '\u{059F}',
+    '\u{05A0}',
+    '\u{05A1}',
+    '\u{05A8}',
+    '\u{05A9}',
+    '\u{05AB}',
+    '\u{05AC}',
+    '\u{05AF}',
+    '\u{05C4}',
+    '\u{0610}',
+    '\u{0611}',
+    '\u{0612}',
+    '\u{0613}',
+    '\u{0614}',
+    '\u{0615}',
+    '\u{0616}',
+    '\u{0617}',
+    '\u{0657}',
+    '\u{0658}',
+    '\u{0659}',
+    '\u{065A}',
+    '\u{065B}',
+    '\u{065D}',
+    '\u{065E}',
+    '\u{06D6}',
+    '\u{06D7}',
+    '\u{06D8}',
+    '\u{06D9}',
+    '\u{06DA}',
+    '\u{06DB}',
+    '\u{06DC}',
+    '\u{06DF}',
+    '\u{06E0}',
+    '\u{06E1}',
+    '\u{06E2}',
+    '\u{06E4}',
+    '\u{06E7}',
+    '\u{06E8}',
+    '\u{06EB}',
+    '\u{06EC}',
+    '\u{0730}',
+    '\u{0732}',
+    '\u{0733}',
+    '\u{0735}',
+    '\u{0736}',
+    '\u{073A}',
+    '\u{073D}',
+    '\u{073F}',
+    '\u{0740}',
+    '\u{0741}',
+    '\u{0743}',
+    '\u{0745}',
+    '\u{0747}',
+    '\u{0749}',
+    '\u{074A}',
+    '\u{07EB}',
+    '\u{07EC}',
+    '\u{07ED}',
+    '\u{07EE}',
+    '\u{07EF}',
+    '\u{07F0}',
+    '\u{07F1}',
+    '\u{07F3}',
+    '\u{0816}',
+    '\u{0817}',
+    '\u{0818}',
+    '\u{0819}',
+    '\u{081B}',
+    '\u{081C}',
+    '\u{081D}',
+    '\u{081E}',
+    '\u{081F}',
+    '\u{0820}',
+    '\u{0821}',
+    '\u{0822}',
+    '\u{0823}',
+    '\u{0825}',
+    '\u{0826}',
+    '\u{0827}',
+    '\u{0829}',
+    '\u{082A}',
+    '\u{082B}',
+    '\u{082C}',
+    '\u{082D}',
+    '\u{0951}',
+    '\u{0953}',
+    '\u{0954}',
+    '\u{0F82}',
+    '\u{0F83}',
+    '\u{0F86}',
+    '\u{0F87}',
+    '\u{135D}',
+    '\u{135E}',
+    '\u{135F}',
+    '\u{17DD}',
+    '\u{193A}',
+    '\u{1A17}',
+    '\u{1A75}',
+    '\u{1A76}',
+    '\u{1A77}',
+    '\u{1A78}',
+    '\u{1A79}',
+    '\u{1A7A}',
+    '\u{1A7B}',
+    '\u{1A7C}',
+    '\u{1B6B}',
+    '\u{1B6D}',
+    '\u{1B6E}',
+    '\u{1B6F}',
+    '\u{1B70}',
+    '\u{1B71}',
+    '\u{1B72}',
+    '\u{1B73}',
+    '\u{1CD0}',
+    '\u{1CD1}',
+    '\u{1CD2}',
+    '\u{1CDA}',
+    '\u{1CDB}',
+    '\u{1CE0}',
+    '\u{1DC0}',
+    '\u{1DC1}',
+    '\u{1DC3}',
+    '\u{1DC4}',
+    '\u{1DC5}',
+    '\u{1DC6}',
+    '\u{1DC7}',
+    '\u{1DC8}',
+    '\u{1DC9}',
+    '\u{1DCB}',
+    '\u{1DCC}',
+    '\u{1DD1}',
+    '\u{1DD2}',
+    '\u{1DD3}',
+    '\u{1DD4}',
+    '\u{1DD5}',
+    '\u{1DD6}',
+    '\u{1DD7}',
+    '\u{1DD8}',
+    '\u{1DD9}',
+    '\u{1DDA}',
+    '\u{1DDB}',
+    '\u{1DDC}',
+    '\u{1DDD}',
+    '\u{1DDE}',
+    '\u{1DDF}',
+    '\u{1DE0}',
+    '\u{1DE1}',
+    '\u{1DE2}',
+    '\u{1DE3}',
+    '\u{1DE4}',
+    '\u{1DE5}',
+    '\u{1DE6}',
+    '\u{1DFE}',
+    '\u{20D0}',
+    '\u{20D1}',
+    '\u{20D4}',
+    '\u{20D5}',
+    '\u{20D6}',
+    '\u{20D7}',
+    '\u{20DB}',
+    '\u{20DC}',
+    '\u{20E1}',
+    '\u{20E7}',
+    '\u{20E9}',
+    '\u{20F0}',
+    '\u{2CEF}',
+    '\u{2CF0}',
+    '\u{2CF1}',
+    '\u{2DE0}',
+    '\u{2DE1}',
+    '\u{2DE2}',
+    '\u{2DE3}',
+    '\u{2DE4}',
+    '\u{2DE5}',
+    '\u{2DE6}',
+    '\u{2DE7}',
+    '\u{2DE8}',
+    '\u{2DE9}',
+    '\u{2DEA}',
+    '\u{2DEB}',
+    '\u{2DEC}',
+    '\u{2DED}',
+    '\u{2DEE}',
+    '\u{2DEF}',
+    '\u{2DF0}',
+    '\u{2DF1}',
+    '\u{2DF2}',
+    '\u{2DF3}',
+    '\u{2DF4}',
+    '\u{2DF5}',
+    '\u{2DF6}',
+    '\u{2DF7}',
+    '\u{2DF8}',
+    '\u{2DF9}',
+    '\u{2DFA}',
+    '\u{2DFB}',
+    '\u{2DFC}',
+    '\u{2DFD}',
+    '\u{2DFE}',
+    '\u{2DFF}',
+    '\u{A66F}',
+    '\u{A67C}',
+    '\u{A67D}',
+    '\u{A6F0}',
+    '\u{A6F1}',
+    '\u{A8E0}',
+    '\u{A8E1}',
+    '\u{A8E2}',
+    '\u{A8E3}',
+    '\u{A8E4}',
+    '\u{A8E5}',
+    '\u{A8E6}',
+    '\u{A8E7}',
+    '\u{A8E8}',
+    '\u{A8E9}',
+    '\u{A8EA}',
+    '\u{A8EB}',
+    '\u{A8EC}',
+    '\u{A8ED}',
+    '\u{A8EE}',
+    '\u{A8EF}',
+    '\u{A8F0}',
+    '\u{A8F1}',
+    '\u{AAB0}',
+    '\u{AAB2}',
+    '\u{AAB3}',
+    '\u{AAB7}',
+    '\u{AAB8}',
+    '\u{AABE}',
+    '\u{AABF}',
+    '\u{AAC1}',
+    '\u{FE20}',
+    '\u{FE21}',
+    '\u{FE22}',
+    '\u{FE23}',
+    '\u{FE24}',
+    '\u{FE25}',
+    '\u{FE26}',
+    '\u{10A0F}',
+    '\u{10A38}',
+    '\u{1D185}',
+    '\u{1D186}',
+    '\u{1D187}',
+    '\u{1D188}',
+    '\u{1D189}',
+    '\u{1D1AA}',
+    '\u{1D1AB}',
+    '\u{1D1AC}',
+    '\u{1D1AD}',
+    '\u{1D242}',
+    '\u{1D243}',
+    '\u{1D244}',
 ];
 
 /// Number encoded by a row/column diacritic, if `c` is one.
@@ -143,11 +390,19 @@ pub fn decode_placeholder(
         // must share the (pre-MSB) id.
         (Some(r), None) => {
             let p = prev.filter(|p| p.row == r)?;
-            Some(PlaceholderCell { id: p.id, row: r, col: p.col + 1 })
+            Some(PlaceholderCell {
+                id: p.id,
+                row: r,
+                col: p.col + 1,
+            })
         }
         (None, _) => {
             let p = prev?;
-            Some(PlaceholderCell { id: p.id, row: p.row, col: p.col + 1 })
+            Some(PlaceholderCell {
+                id: p.id,
+                row: p.row,
+                col: p.col + 1,
+            })
         }
     }
 }
@@ -204,7 +459,9 @@ impl KittyImageStore {
             inner.order.retain(|&i| i != id);
         }
         while inner.bytes + size > MAX_STORE_BYTES {
-            let Some(evict) = inner.order.pop_front() else { break };
+            let Some(evict) = inner.order.pop_front() else {
+                break;
+            };
             if let Some(old) = inner.map.remove(&evict) {
                 inner.bytes -= image_bytes(&old.image);
             }
@@ -265,7 +522,11 @@ enum ApcState {
 
 impl ApcScanner {
     pub fn new() -> Self {
-        Self { state: ApcState::Ground, buf: Vec::new(), overflow: false }
+        Self {
+            state: ApcState::Ground,
+            buf: Vec::new(),
+            overflow: false,
+        }
     }
 
     pub fn advance(&mut self, byte: u8) -> Option<Vec<u8>> {
@@ -357,9 +618,15 @@ struct GCmd {
 }
 
 fn parse_controls(controls: &str) -> GCmd {
-    let mut cmd = GCmd { format: 32, medium: b'd', ..GCmd::default() };
+    let mut cmd = GCmd {
+        format: 32,
+        medium: b'd',
+        ..GCmd::default()
+    };
     for kv in controls.split(',') {
-        let Some((k, v)) = kv.split_once('=') else { continue };
+        let Some((k, v)) = kv.split_once('=') else {
+            continue;
+        };
         let int = || v.parse::<u32>().unwrap_or(0);
         let byte = || v.bytes().next().unwrap_or(0);
         match k {
@@ -399,7 +666,10 @@ pub struct KittyGraphics {
 
 impl KittyGraphics {
     pub fn new(store: Arc<KittyImageStore>) -> Self {
-        Self { store, pending: None }
+        Self {
+            store,
+            pending: None,
+        }
     }
 
     pub fn apply(&mut self, payload: &[u8]) -> Option<Vec<u8>> {
@@ -444,7 +714,10 @@ impl KittyGraphics {
                 if cmd.medium != b'd' {
                     return respond(&cmd, "ENOTSUPPORTED:only t=d");
                 }
-                let pending = Pending { cmd, b64: data.to_vec() };
+                let pending = Pending {
+                    cmd,
+                    b64: data.to_vec(),
+                };
                 if cmd.more {
                     self.pending = Some(pending);
                     None
@@ -456,7 +729,10 @@ impl KittyGraphics {
                 if !cmd.unicode {
                     return respond(&cmd, "ENOTSUPPORTED:only virtual placements");
                 }
-                if self.store.set_placement(cmd.id, cmd.cols as u16, cmd.rows as u16) {
+                if self
+                    .store
+                    .set_placement(cmd.id, cmd.cols as u16, cmd.rows as u16)
+                {
                     respond(&cmd, "OK")
                 } else {
                     respond(&cmd, "ENOENT:no such image")
@@ -509,7 +785,11 @@ fn query_response(cmd: &GCmd) -> Option<Vec<u8>> {
 
 /// Build `ESC_G i=…[,I=…];MSG ESC\`, honoring the quiet level.
 fn respond(cmd: &GCmd, msg: &str) -> Option<Vec<u8>> {
-    let suppress = if msg == "OK" { cmd.quiet >= 1 } else { cmd.quiet >= 2 };
+    let suppress = if msg == "OK" {
+        cmd.quiet >= 1
+    } else {
+        cmd.quiet >= 2
+    };
     if suppress {
         return None;
     }
@@ -543,7 +823,11 @@ fn debug_log(payload: &[u8], resp: Option<&[u8]>) {
             .unwrap_or_else(|| "(no response)".into()),
     );
     use std::io::Write as _;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }
@@ -728,21 +1012,37 @@ mod tests {
         assert_eq!(diacritic_index('a'), None);
 
         // Full form: row 1, col 2, id MSB 1 over fg 0x000030.
-        let ph = decode_placeholder(
-            0x30,
-            &['\u{030D}', '\u{030E}', '\u{030D}'],
-            None,
-        )
-        .unwrap();
-        assert_eq!(ph, PlaceholderCell { id: 0x0100_0030, row: 1, col: 2 });
+        let ph = decode_placeholder(0x30, &['\u{030D}', '\u{030E}', '\u{030D}'], None).unwrap();
+        assert_eq!(
+            ph,
+            PlaceholderCell {
+                id: 0x0100_0030,
+                row: 1,
+                col: 2
+            }
+        );
 
         // Omitted col: continues left neighbor on the same row.
         let next = decode_placeholder(0x30, &['\u{030D}'], Some(ph)).unwrap();
-        assert_eq!(next, PlaceholderCell { id: ph.id, row: 1, col: 3 });
+        assert_eq!(
+            next,
+            PlaceholderCell {
+                id: ph.id,
+                row: 1,
+                col: 3
+            }
+        );
 
         // No diacritics at all: pure run-length continuation.
         let next2 = decode_placeholder(0x30, &[], Some(next)).unwrap();
-        assert_eq!(next2, PlaceholderCell { id: ph.id, row: 1, col: 4 });
+        assert_eq!(
+            next2,
+            PlaceholderCell {
+                id: ph.id,
+                row: 1,
+                col: 4
+            }
+        );
 
         // No diacritics and no neighbor: undecodable.
         assert!(decode_placeholder(0x30, &[], None).is_none());
