@@ -13,7 +13,8 @@
       IME/選択 overlay canvas (absolute+size_full) 自体が overflow 源（taffy は
       absolute 子もコンテンツサイズに算入→padding 8px 分が常時スクロール可能・
       上端欠け・下隙間も同根）。bce57db で overlay を content box に inset
-- [ ] アイドル時 CPU がほぼ 0%（16ms ポーリング全廃・イベント駆動化）
+- [x] アイドル時 CPU がほぼ 0%（16ms ポーリング全廃・イベント駆動化）
+      — **2026-07-05 実機確認済み**（殿計測: アイドル時 ≤0.5%）
 - [ ] shell window: 履歴スクロール／ステータスバー「履歴 N行上」／キー入力で最下部復帰
 - [ ] shell window: Shift+PageUp/PageDown ページング
 - [x] btop でホイールがアプリ側スクロールになるか（マウスレポーティング転送）
@@ -27,8 +28,10 @@
       gpui 上流 PR ネタ×3: 上記2件 + Linux FontFallbacks 無視。診断は src/bin/fontprobe.rs。
       **上流起票用の下書きは本 repo issue #2 / #3 / #4 に格納済み**（zed へは殿が自分の
       言葉で起票し、下書きは AI 生成と開示して引用添付 — Zed AI Policy 準拠の形式）
-- [ ] Ctrl+Shift+V ペースト（claude code へ複数行貼り→ 1行ずつ実行されないこと）
-- [ ] shell window の選択コピー・IME（前回実装分の目視）
+- [x] Ctrl+Shift+V ペースト（claude code へ複数行貼り→ 1行ずつ実行されないこと）
+      — **2026-07-05 実機確認済み**（殿確認）
+- [x] shell window の選択コピー・IME（前回実装分の目視）
+      — **2026-07-05 実機確認済み**（殿確認）
 - [ ] tailscale アイドル後の入力引っかかり解消（keepalive + 非同期書込）
 - [x] e2e/ スクリプト再実行 — **2026-07-04 PASS**（drag-copy + scan-highlight とも）。
       `pwsh.exe -NoProfile -File` で呼ぶ（powershell.exe 5.1 は PSModulePath 汚染で不可）。
