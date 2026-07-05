@@ -16,8 +16,9 @@ use crate::terminal::selection::{self, SelectionHost, SelectionState};
 use crate::theme::Colors;
 use gpui::{
     App, Bounds, ClickEvent, Context, ExternalPaths, FocusHandle, IntoElement, KeyDownEvent,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window,
-    WindowBounds, WindowOptions, div, prelude::*, px, size,
+    ParentElement, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    size,
 };
 use gpui_component::{
     Disableable, Root, Sizable,
@@ -245,6 +246,13 @@ pub struct ShogunWindow {
     /// chrome heights (the estimate drifting even 1px past the padding
     /// made the pane scrollable — the "micro-scroll" bug).
     pane_measured: Rc<Cell<(f32, f32)>>,
+    /// Terminal-pane origin (logical px, content box) from the same overlay
+    /// canvas — converts window-relative wheel positions to grid cells for
+    /// mouse reporting (tmux picks the pane under the cursor by coordinate).
+    pane_origin: Rc<Cell<(f32, f32)>>,
+    /// Fractional wheel-line accumulator for PTY wheel forwarding (trackpads
+    /// deliver sub-line pixel deltas).
+    wheel_accum: f32,
 }
 
 impl SelectionHost for ShogunWindow {
@@ -316,7 +324,50 @@ impl ShogunWindow {
             desktop_notifications,
             desktop_notifications_multiagent,
             pane_measured: Rc::new(Cell::new((0.0, 0.0))),
+            pane_origin: Rc::new(Cell::new((0.0, 0.0))),
+            wheel_accum: 0.0,
         }
+    }
+
+    /// Forward a wheel event on a terminal pane to its PTY when the running
+    /// application asked for it (mouse reporting — tmux `mouse on` — or
+    /// alternate scroll). Returns `true` when consumed; `false` means the
+    /// caller should treat the wheel as a local scroll. Mirrors the shell
+    /// window's wheel path; see `TerminalSession::wheel_to_pty`.
+    pub(crate) fn wheel_to_pty_for_pane(
+        &mut self,
+        is_shogun: bool,
+        event: &ScrollWheelEvent,
+        cw: f32,
+        ch: f32,
+    ) -> bool {
+        let session = if is_shogun {
+            self.shogun_session.as_ref()
+        } else {
+            self.multiagent_session.as_ref()
+        };
+        let Some(s) = session else {
+            return false;
+        };
+        self.wheel_accum += match &event.delta {
+            ScrollDelta::Pixels(p) => (p.y / px(1.)) / ch,
+            ScrollDelta::Lines(l) => l.y,
+        };
+        // With `whole == 0` (sub-line trackpad fragment) this still consults
+        // the mode: wheel_to_pty sends nothing but returns whether the PTY
+        // owns the wheel, so fragments never scroll locally *and* remotely.
+        let whole = self.wheel_accum.trunc() as i32;
+        self.wheel_accum -= whole as f32;
+        let (ox, oy) = self.pane_origin.get();
+        let cols = s.cols.load(Ordering::Relaxed).max(1) as usize;
+        let rows = s.rows.load(Ordering::Relaxed).max(1) as usize;
+        let col = ((((event.position.x / px(1.)) - ox) / cw).max(0.0) as usize).min(cols - 1);
+        let row = ((((event.position.y / px(1.)) - oy) / ch).max(0.0) as usize).min(rows - 1);
+        let mods = crate::terminal::ReportMods {
+            alt: event.modifiers.alt,
+            ctrl: event.modifiers.control,
+        };
+        s.wheel_to_pty(whole, col, row, mods)
     }
 
     /// The terminal session belonging to the currently selected tab, if any.
@@ -807,6 +858,7 @@ impl ShogunWindow {
                     cw,
                     ch,
                     self.pane_measured.clone(),
+                    self.pane_origin.clone(),
                     cx,
                 )
                 .into_any_element()

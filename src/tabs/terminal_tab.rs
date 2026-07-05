@@ -47,6 +47,9 @@ pub fn render_terminal_tab(
     // Written back with the pane's painted size (padding box) each frame so
     // the view derives rows/cols from reality instead of a chrome estimate.
     pane_measured: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    // Written back with the pane's painted origin (content box) so wheel
+    // positions can be mapped to grid cells for mouse reporting.
+    pane_origin: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
     cx: &mut Context<ShogunWindow>,
 ) -> impl IntoElement {
     let scroll_handle = scroll_handle.clone();
@@ -110,6 +113,17 @@ pub fn render_terminal_tab(
             }))
             .on_scroll_wheel(
                 cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
+                    // tmux scroll: when the application asked for the wheel
+                    // (tmux `mouse on` → mouse reporting, or alternate
+                    // scroll), forward it to the PTY — tmux then scrolls its
+                    // *server-side* history (copy-mode), which is where the
+                    // scrollback actually lives for these panes. Only a
+                    // local wheel falls through to the autoscroll-lock
+                    // bookkeeping below.
+                    if this.wheel_to_pty_for_pane(is_shogun, event, cw, ch) {
+                        cx.stop_propagation();
+                        return;
+                    }
                     let delta_y = scroll_delta_y(event);
                     if delta_y < 0.0 {
                         if is_shogun {
@@ -152,6 +166,7 @@ pub fn render_terminal_tab(
                         // A change re-renders (deferred — we are inside
                         // paint) so the PTY is resized to the true fit.
                         let painted = (bounds.size.width / px(1.), bounds.size.height / px(1.));
+                        pane_origin.set((bounds.origin.x / px(1.), bounds.origin.y / px(1.)));
                         let (pw, ph) = pane_measured.get();
                         if (pw - painted.0).abs() > 0.5 || (ph - painted.1).abs() > 0.5 {
                             pane_measured.set(painted);

@@ -73,9 +73,13 @@
       核心経路=SGR click/drag/hover は**バイト単位一致**と判定済み。ホイール修飾ビットと
       X10>223 drop は同日適用済み）: 水平ホイール (btn 66/67)・?1005 UTF-8・
       ?1015 urxvt・?1016 SGR-pixels・shift-capture (kitty 系)。いずれも低優先
-- [ ] **ssh/tmux ペインの履歴スクロール** — tmux は alternate screen 故サーバ側履歴。
-      tmux `mouse on` なら `wheel_pty_bytes` を本窓ペインに配線するだけで動く見込み。
-      copy-mode 中継 / capture-pane 方式はその後
+- [x] **ssh/tmux ペインの履歴スクロール** — **2026-07-06 実装（実機確認待ち）**。
+      `ShogunWindow::wheel_to_pty_for_pane` が本窓ペインの wheel を shell window と
+      同じ規則で PTY へ転送（tmux `mouse on`=mouse reporting / alternate scroll。
+      tmux がサーバ側履歴＝copy-mode でスクロール）。座標は overlay canvas が書き戻す
+      pane_origin で window座標→セル変換（tmux はカーソル下のペインを座標で選ぶ）。
+      小数 wheel 断片は accum 保持しローカル/リモート二重スクロールを防止。
+      PTY が取らない時のみ従来の autoscroll-lock ロジックへ落ちる
 - [x] **マウス click/drag のレポーティング転送** — 2026-07-04 実装。動機: claude code
       2.1.187 で select menu がクリック対応・2.1.178 で statusline リンクもクリック化。
       `mouse_pty_bytes`（?1000 click / ?1002 drag / ?1003 hover、SGR/X10 両対応、
