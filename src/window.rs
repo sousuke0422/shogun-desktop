@@ -237,6 +237,8 @@ pub struct ShogunWindow {
     window_active: bool,
     /// OSC 9 / 777 desktop notifications enabled (settings.terminal).
     desktop_notifications: bool,
+    /// 家老陣 tab notifications (default off — many agents, constant toasts).
+    desktop_notifications_multiagent: bool,
     /// Terminal-pane size actually painted (logical px, padding box),
     /// reported by the pane's overlay canvas. `(0, 0)` until the first
     /// paint; `render` derives rows/cols from this instead of estimating
@@ -275,6 +277,7 @@ impl ShogunWindow {
         let settings = load_settings().unwrap_or_default();
         let terminal_font = settings.terminal.font.clone();
         let desktop_notifications = settings.terminal.desktop_notifications;
+        let desktop_notifications_multiagent = settings.terminal.desktop_notifications_multiagent;
         let weak = cx.weak_entity();
         let ime = cx.new(|_| TerminalIme::new(weak));
         cx.observe(&ime, |_, _, cx| cx.notify()).detach();
@@ -310,6 +313,7 @@ impl ShogunWindow {
             selection: SelectionState::default(),
             window_active: window.is_window_active(),
             desktop_notifications,
+            desktop_notifications_multiagent,
             pane_measured: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
@@ -684,7 +688,10 @@ impl ShogunWindow {
                         let pending = crate::terminal::notify::take_notifications(&queue);
                         let tab = if is_shogun { 0 } else { 5 };
                         let surface_focused = view.window_active && view.selected_tab == tab;
-                        if !pending.is_empty() && view.desktop_notifications && !surface_focused {
+                        // 家老陣 is swallowed unless its own switch is also on.
+                        let enabled = view.desktop_notifications
+                            && (is_shogun || view.desktop_notifications_multiagent);
+                        if !pending.is_empty() && enabled && !surface_focused {
                             let default_title = if is_shogun { "将軍" } else { "家老陣" };
                             for n in &pending {
                                 crate::notify_toast::show(

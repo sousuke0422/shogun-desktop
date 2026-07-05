@@ -23,6 +23,11 @@ pub struct TerminalSettings {
     /// `desktop-notifications`).
     #[serde(default = "default_true")]
     pub desktop_notifications: bool,
+    /// Notifications from the 家老陣 (multiagent) tab. Off by default — that
+    /// tmux session hosts many agents and would toast constantly. ANDed with
+    /// `desktop_notifications`.
+    #[serde(default)]
+    pub desktop_notifications_multiagent: bool,
 }
 
 fn default_terminal_font() -> String {
@@ -38,6 +43,7 @@ impl Default for TerminalSettings {
         Self {
             font: default_terminal_font(),
             desktop_notifications: true,
+            desktop_notifications_multiagent: false,
         }
     }
 }
@@ -279,6 +285,7 @@ mod tests {
             terminal: TerminalSettings {
                 font: "Cica".into(),
                 desktop_notifications: false,
+                desktop_notifications_multiagent: true,
             },
             ..Default::default()
         };
@@ -286,12 +293,15 @@ mod tests {
         let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
         assert_eq!(parsed.terminal.font, "Cica");
         assert!(!parsed.terminal.desktop_notifications);
+        assert!(parsed.terminal.desktop_notifications_multiagent);
     }
 
     #[test]
-    fn desktop_notifications_defaults_on_when_absent() {
+    fn desktop_notifications_defaults_when_absent() {
         let parsed: ShogunDesktopSettings = toml::from_str("[terminal]\nfont = \"x\"\n").unwrap();
+        // Master switch on; the noisy multiagent tab swallowed by default.
         assert!(parsed.terminal.desktop_notifications);
+        assert!(!parsed.terminal.desktop_notifications_multiagent);
     }
 
     #[test]
