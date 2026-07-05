@@ -117,6 +117,14 @@
       残課題: `TERM=xterm-kitty` 誘導なしで検出させる恒久策（XTVERSION 応答で
       端末名を名乗る／独自 terminfo）。ローカル WSL シェル（ConPTY 経由）は
       conhost が APC を剥がす疑いが濃く、native SSH 経路のみ対応
+- [ ] **Sixel 対応**（2026-07-06 殿下知）— ローカル WSL シェル（ConPTY）で画像を出す道。
+      ConPTY は Sixel(DCS) を通すことを WT 1.22+ / wt-pwsh-wsl-yazi で実証済み
+      （劣化あり: パレット 256 色）。kitty(APC) は ConPTY に剥がされるため相補関係。
+      実装メモ: DCS `q` デコーダ（既存 APC/OSC 受動スキャナと同型で観測可）＋
+      カーソル固定 placement（placeholder 方式が使えないため、grid 行に紐づく
+      配置追跡が必要 — kitty で回避した宿題がここで来る）。
+      検出はアプリが DA1 応答の `4` を見る — vendored alacritty の DA1 応答への
+      capability 追加パッチも必要
 - [ ] **Synchronized output (DEC ?2026)** — 新規 (2026-07-04)。CC 2.1.191 は更新を 100ms に
       合体するなど高頻度書換方向。begin/end synchronized update の間は描画を保留して
       チラつき根絶。WT/Ghostty/kitty 対応済みの現代標準。alacritty_terminal がパース済みなら
