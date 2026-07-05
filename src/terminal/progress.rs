@@ -15,8 +15,13 @@
 //! `Processor::advance` and never interferes with the real parser. The scanner
 //! must survive sequences split across `read()` chunk boundaries, hence the
 //! explicit state machine instead of a regex over each buffer.
+//!
+//! The same scanner also extracts OSC 9 / OSC 777 desktop notifications
+//! (also dropped by vte) — see [`super::notify`] for the parsing rules.
 
 use std::sync::atomic::{AtomicU8, Ordering};
+
+use super::notify::{self, TermNotification};
 
 /// Terminal-reported progress, shared between the PTY reader thread (writer)
 /// and the UI (reader). Two `AtomicU8`s instead of a mutex: the reader thread
@@ -90,10 +95,28 @@ pub enum ProgressUpdate {
     Warning(Option<u8>),
 }
 
-/// Longest payload we accept: `9;4;` + state + `;` + 3-digit percent.
-/// Anything longer is not an OSC 9;4 and the scanner abandons it.
-const MAX_PAYLOAD: usize = 12;
-const PREFIX: &[u8] = b"9;4;";
+/// One event extracted by the scanner from the raw PTY stream.
+#[derive(Clone, PartialEq, Debug)]
+pub enum OscEvent {
+    Progress(ProgressUpdate),
+    Notify(TermNotification),
+}
+
+/// Longest payload we collect. Notification bodies are capped at 255 bytes by
+/// [`notify`], so anything past this is either garbage or some other OSC the
+/// prefix check failed to reject early — abandon it.
+const MAX_PAYLOAD: usize = 1024;
+
+/// A collected payload stays alive while it could still become `9;…` or
+/// `777;…`; everything else (title, color, OSC 52…) is abandoned on the first
+/// mismatching byte.
+fn plausible(payload: &[u8]) -> bool {
+    let matches = |p: &[u8]| {
+        let n = payload.len().min(p.len());
+        payload[..n] == p[..n]
+    };
+    matches(b"9;") || matches(b"777;")
+}
 
 enum ScanState {
     Ground,
@@ -105,26 +128,26 @@ enum ScanState {
     CollectEsc,
 }
 
-/// Incremental scanner for OSC 9;4 sequences in a raw PTY byte stream.
+/// Incremental scanner for OSC 9 / 777 sequences in a raw PTY byte stream.
 ///
 /// Purely an observer: every byte is also fed to the real VTE parser by the
-/// caller, so a mis-detection here can at worst miss a progress update —
-/// never corrupt the terminal state.
-pub struct Osc94Scanner {
+/// caller, so a mis-detection here can at worst miss a progress update or a
+/// notification — never corrupt the terminal state.
+pub struct OscScanner {
     state: ScanState,
     payload: Vec<u8>,
 }
 
-impl Osc94Scanner {
+impl OscScanner {
     pub fn new() -> Self {
         Self {
             state: ScanState::Ground,
-            payload: Vec::with_capacity(MAX_PAYLOAD),
+            payload: Vec::with_capacity(64),
         }
     }
 
-    /// Feed one byte; returns a parsed update when a full OSC 9;4 terminates.
-    pub fn advance(&mut self, byte: u8) -> Option<ProgressUpdate> {
+    /// Feed one byte; returns an event when a matching OSC terminates.
+    pub fn advance(&mut self, byte: u8) -> Option<OscEvent> {
         match self.state {
             ScanState::Ground => {
                 if byte == 0x1b {
@@ -155,10 +178,7 @@ impl Osc94Scanner {
                 }
                 _ => {
                     self.payload.push(byte);
-                    // Abandon as soon as the payload can no longer be an
-                    // OSC 9;4 — this is some other OSC (title, color, 52…).
-                    let n = self.payload.len().min(PREFIX.len());
-                    if self.payload[..n] != PREFIX[..n] || self.payload.len() > MAX_PAYLOAD {
+                    if !plausible(&self.payload) || self.payload.len() > MAX_PAYLOAD {
                         self.state = ScanState::Ground;
                         self.payload.clear();
                     }
@@ -190,13 +210,33 @@ impl Osc94Scanner {
     }
 }
 
-/// Parse `9;4;<state>[;<progress>]` — payload without terminator.
-fn parse_payload(payload: &[u8]) -> Option<ProgressUpdate> {
-    let rest = payload.strip_prefix(PREFIX)?;
+/// Dispatch a terminated OSC payload (without terminator) to the progress or
+/// notification parser.
+fn parse_payload(payload: &[u8]) -> Option<OscEvent> {
+    if let Some(rest) = payload.strip_prefix(b"9;4;") {
+        // Malformed 9;4 payloads are dropped, not shown as notifications
+        // (deliberate Ghostty deviation — see notify.rs module docs).
+        return parse_progress(rest).map(OscEvent::Progress);
+    }
+    if let Some(rest) = payload.strip_prefix(b"9;") {
+        return notify::parse_osc9(rest).map(OscEvent::Notify);
+    }
+    if let Some(rest) = payload.strip_prefix(b"777;") {
+        return notify::parse_osc777(rest).map(OscEvent::Notify);
+    }
+    None
+}
+
+/// Parse `<state>[;<progress>]` — the part after `9;4;`.
+fn parse_progress(rest: &[u8]) -> Option<ProgressUpdate> {
     let mut parts = rest.split(|&b| b == b';');
     let state = parse_num(parts.next()?)?;
     // Percent clamps to 100 (apps occasionally emit 100+ during rounding).
-    let percent = parts.next().and_then(parse_num).map(|p| p.min(100) as u8);
+    // A present-but-unparseable percent makes the whole payload malformed.
+    let percent = match parts.next() {
+        None => None,
+        Some(f) => Some(parse_num(f)?.min(100) as u8),
+    };
     match state {
         0 => Some(ProgressUpdate::Remove),
         1 => Some(ProgressUpdate::Set(percent.unwrap_or(0))),
@@ -218,57 +258,82 @@ fn parse_num(digits: &[u8]) -> Option<u32> {
 mod tests {
     use super::*;
 
-    fn scan(bytes: &[u8]) -> Vec<ProgressUpdate> {
-        let mut s = Osc94Scanner::new();
+    fn scan(bytes: &[u8]) -> Vec<OscEvent> {
+        let mut s = OscScanner::new();
         bytes.iter().filter_map(|&b| s.advance(b)).collect()
+    }
+
+    fn progress(u: ProgressUpdate) -> OscEvent {
+        OscEvent::Progress(u)
     }
 
     #[test]
     fn set_progress_bel() {
-        assert_eq!(scan(b"\x1b]9;4;1;42\x07"), vec![ProgressUpdate::Set(42)]);
+        assert_eq!(
+            scan(b"\x1b]9;4;1;42\x07"),
+            vec![progress(ProgressUpdate::Set(42))]
+        );
     }
 
     #[test]
     fn set_progress_st() {
         assert_eq!(
             scan(b"\x1b]9;4;1;100\x1b\\"),
-            vec![ProgressUpdate::Set(100)]
+            vec![progress(ProgressUpdate::Set(100))]
         );
     }
 
     #[test]
     fn remove() {
-        assert_eq!(scan(b"\x1b]9;4;0\x07"), vec![ProgressUpdate::Remove]);
-        assert_eq!(scan(b"\x1b]9;4;0;0\x07"), vec![ProgressUpdate::Remove]);
+        assert_eq!(
+            scan(b"\x1b]9;4;0\x07"),
+            vec![progress(ProgressUpdate::Remove)]
+        );
+        assert_eq!(
+            scan(b"\x1b]9;4;0;0\x07"),
+            vec![progress(ProgressUpdate::Remove)]
+        );
     }
 
     #[test]
     fn error_with_and_without_percent() {
-        assert_eq!(scan(b"\x1b]9;4;2\x07"), vec![ProgressUpdate::Error(None)]);
-        assert_eq!(scan(b"\x1b]9;4;2;0\x07"), vec![ProgressUpdate::Error(None)]);
+        assert_eq!(
+            scan(b"\x1b]9;4;2\x07"),
+            vec![progress(ProgressUpdate::Error(None))]
+        );
+        assert_eq!(
+            scan(b"\x1b]9;4;2;0\x07"),
+            vec![progress(ProgressUpdate::Error(None))]
+        );
         assert_eq!(
             scan(b"\x1b]9;4;2;55\x07"),
-            vec![ProgressUpdate::Error(Some(55))]
+            vec![progress(ProgressUpdate::Error(Some(55)))]
         );
     }
 
     #[test]
     fn indeterminate_and_warning() {
-        assert_eq!(scan(b"\x1b]9;4;3\x07"), vec![ProgressUpdate::Indeterminate]);
+        assert_eq!(
+            scan(b"\x1b]9;4;3\x07"),
+            vec![progress(ProgressUpdate::Indeterminate)]
+        );
         assert_eq!(
             scan(b"\x1b]9;4;4;10\x07"),
-            vec![ProgressUpdate::Warning(Some(10))]
+            vec![progress(ProgressUpdate::Warning(Some(10)))]
         );
     }
 
     #[test]
     fn percent_clamped_to_100() {
-        assert_eq!(scan(b"\x1b]9;4;1;999\x07"), vec![ProgressUpdate::Set(100)]);
+        assert_eq!(
+            scan(b"\x1b]9;4;1;999\x07"),
+            vec![progress(ProgressUpdate::Set(100))]
+        );
     }
 
     #[test]
     fn split_across_chunks() {
-        let mut s = Osc94Scanner::new();
+        let mut s = OscScanner::new();
         let mut got = vec![];
         for chunk in [&b"\x1b]9;"[..], &b"4;1;7"[..], &b"3\x1b"[..], &b"\\"[..]] {
             for &b in chunk {
@@ -277,14 +342,14 @@ mod tests {
                 }
             }
         }
-        assert_eq!(got, vec![ProgressUpdate::Set(73)]);
+        assert_eq!(got, vec![progress(ProgressUpdate::Set(73))]);
     }
 
     #[test]
     fn other_osc_ignored() {
         assert_eq!(scan(b"\x1b]0;window title\x07"), vec![]);
         assert_eq!(scan(b"\x1b]52;c;aGVsbG8=\x07"), vec![]);
-        // OSC 9;1 (ConEmu notification) — not 9;4.
+        // OSC 9;1 (ConEmu sleep) — a ConEmu subcommand, not a notification.
         assert_eq!(scan(b"\x1b]9;1;done\x07"), vec![]);
     }
 
@@ -292,7 +357,7 @@ mod tests {
     fn scanner_recovers_after_abandoned_osc() {
         assert_eq!(
             scan(b"\x1b]0;title\x07\x1b]9;4;1;5\x07"),
-            vec![ProgressUpdate::Set(5)]
+            vec![progress(ProgressUpdate::Set(5))]
         );
     }
 
@@ -304,8 +369,71 @@ mod tests {
     }
 
     #[test]
-    fn oversized_payload_abandoned() {
+    fn oversized_percent_dropped_not_notified() {
         assert_eq!(scan(b"\x1b]9;4;1;100000000\x07"), vec![]);
+    }
+
+    #[test]
+    fn osc9_notification_bel_and_st() {
+        let want = OscEvent::Notify(TermNotification {
+            title: None,
+            body: "This is test".into(),
+        });
+        assert_eq!(scan(b"\x1b]9;This is test\x07"), vec![want.clone()]);
+        assert_eq!(scan(b"\x1b]9;This is test\x1b\\"), vec![want]);
+    }
+
+    #[test]
+    fn osc777_notification() {
+        assert_eq!(
+            scan(b"\x1b]777;notify;Title;Body text\x07"),
+            vec![OscEvent::Notify(TermNotification {
+                title: Some("Title".into()),
+                body: "Body text".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn osc9_notification_split_across_chunks() {
+        let mut s = OscScanner::new();
+        let mut got = vec![];
+        for chunk in [&b"\x1b]9;ta"[..], &b"sk done"[..], &b"\x07"[..]] {
+            for &b in chunk {
+                if let Some(u) = s.advance(b) {
+                    got.push(u);
+                }
+            }
+        }
+        assert_eq!(
+            got,
+            vec![OscEvent::Notify(TermNotification {
+                title: None,
+                body: "task done".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn notification_interleaved_with_progress() {
+        assert_eq!(
+            scan(b"\x1b]9;4;1;50\x07\x1b]9;half way\x07"),
+            vec![
+                progress(ProgressUpdate::Set(50)),
+                OscEvent::Notify(TermNotification {
+                    title: None,
+                    body: "half way".into(),
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn giant_notification_body_abandoned() {
+        let mut seq = b"\x1b]9;".to_vec();
+        seq.extend(std::iter::repeat_n(b'x', 2000));
+        seq.push(0x07);
+        assert_eq!(scan(&seq), vec![]);
     }
 
     #[test]

@@ -23,6 +23,8 @@ pub struct SettingsTab {
     shogun_session: Entity<InputState>,
     multiagent_session: Entity<InputState>,
     terminal_font: Entity<InputState>,
+    /// No UI yet — carried through save so a hand-edited value survives.
+    desktop_notifications: bool,
     agents: Vec<String>,
 }
 
@@ -101,6 +103,7 @@ impl SettingsTab {
             shogun_session,
             multiagent_session,
             terminal_font,
+            desktop_notifications: settings.terminal.desktop_notifications,
             agents: settings.sessions.agents.clone(),
         }
     }
@@ -145,6 +148,7 @@ impl SettingsTab {
             },
             terminal: crate::settings::TerminalSettings {
                 font: self.terminal_font.read(cx).value().to_string(),
+                desktop_notifications: self.desktop_notifications,
             },
         }
     }

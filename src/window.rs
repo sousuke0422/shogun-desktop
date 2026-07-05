@@ -231,6 +231,12 @@ pub struct ShogunWindow {
     ime: gpui::Entity<TerminalIme<Self>>,
     /// Shared mouse-selection state (see `terminal::selection`).
     selection: SelectionState,
+    /// Mirrors `Window::is_window_active()` (kept fresh by an activation
+    /// observer) so the async notification watcher — which has no `Window` —
+    /// can apply Ghostty-style focus suppression.
+    window_active: bool,
+    /// OSC 9 / 777 desktop notifications enabled (settings.terminal).
+    desktop_notifications: bool,
     /// Terminal-pane size actually painted (logical px, padding box),
     /// reported by the pane's overlay canvas. `(0, 0)` until the first
     /// paint; `render` derives rows/cols from this instead of estimating
@@ -268,9 +274,14 @@ impl ShogunWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = load_settings().unwrap_or_default();
         let terminal_font = settings.terminal.font.clone();
+        let desktop_notifications = settings.terminal.desktop_notifications;
         let weak = cx.weak_entity();
         let ime = cx.new(|_| TerminalIme::new(weak));
         cx.observe(&ime, |_, _, cx| cx.notify()).detach();
+        cx.observe_window_activation(window, |view, window, _cx| {
+            view.window_active = window.is_window_active();
+        })
+        .detach();
         Self {
             selected_tab: 0,
             settings_tab: SettingsTab::new(window, cx, &settings),
@@ -297,6 +308,8 @@ impl ShogunWindow {
             terminal_focus: cx.focus_handle(),
             ime,
             selection: SelectionState::default(),
+            window_active: window.is_window_active(),
+            desktop_notifications,
             pane_measured: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
@@ -660,6 +673,26 @@ impl ShogunWindow {
                         .is_some_and(|s| Arc::ptr_eq(&s.generation, &generation));
                     if !owned {
                         return false;
+                    }
+                    let notifications = current.as_ref().map(|s| Arc::clone(&s.notifications));
+
+                    // OSC 9 / 777 desktop notifications, Ghostty-style focus
+                    // suppression: toast only when the user is NOT looking at
+                    // this surface (window inactive or another tab selected).
+                    // Always drain, even when suppressed or disabled.
+                    if let Some(queue) = notifications {
+                        let pending = crate::terminal::notify::take_notifications(&queue);
+                        let tab = if is_shogun { 0 } else { 5 };
+                        let surface_focused = view.window_active && view.selected_tab == tab;
+                        if !pending.is_empty() && view.desktop_notifications && !surface_focused {
+                            let default_title = if is_shogun { "将軍" } else { "家老陣" };
+                            for n in &pending {
+                                crate::notify_toast::show(
+                                    n.title.as_deref().unwrap_or(default_title),
+                                    &n.body,
+                                );
+                            }
+                        }
                     }
                     // Blink-only ticks repaint but must not touch the scroll
                     // position — that would fight the user's scrollback.

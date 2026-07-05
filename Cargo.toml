@@ -29,6 +29,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # repo goes live on GitHub — then switch back to the cross-repo path dep.
 shogun-core = { path = "crates/shogun-core" }
 
+[target.'cfg(windows)'.dependencies]
+# OSC 9 / 777 desktop notifications → WinRT toast (MIT OR Apache-2.0).
+tauri-winrt-notification = "0.7.3"
+
 [patch.crates-io]
 alacritty_terminal = { path = "crates/alacritty_terminal" }
 # Vendored for one fix: generate_font_fallbacks (DirectWrite) never searched

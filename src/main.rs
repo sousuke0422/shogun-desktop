@@ -2,6 +2,7 @@ mod ansi;
 mod app;
 mod image_upload;
 pub mod native_ssh;
+mod notify_toast;
 mod settings;
 mod shell_window;
 mod ssh;

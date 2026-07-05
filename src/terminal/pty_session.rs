@@ -16,7 +16,8 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::native_ssh::NativeSshClient;
 use crate::ssh::{SshClient, SystemSshClient};
-use crate::terminal::progress::{Osc94Scanner, Progress};
+use crate::terminal::notify;
+use crate::terminal::progress::{OscEvent, OscScanner, Progress};
 use crate::terminal::{
     ClipboardEvent, ClipboardListener, GridSnapshot, PtyResizer, TerminalSession, take_snapshot,
 };
@@ -296,6 +297,7 @@ fn build_terminal_session(
     let notify = Arc::new(tokio::sync::Notify::new());
     let error: Arc<FairMutex<Option<String>>> = Arc::new(FairMutex::new(None));
     let progress = Arc::new(Progress::default());
+    let notifications: notify::NotificationQueue = Default::default();
 
     {
         let term2 = Arc::clone(&term);
@@ -305,13 +307,15 @@ fn build_terminal_session(
         let notify2 = Arc::clone(&notify);
         let err2 = Arc::clone(&error);
         let progress2 = Arc::clone(&progress);
+        let notifications2 = Arc::clone(&notifications);
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = [0u8; 4096];
             let mut parser = Processor::<StdSyncHandler>::new();
-            // OSC 9;4 progress observer — the vte stack drops the sequence,
-            // so a passive side-scanner extracts it (see terminal::progress).
-            let mut osc94 = Osc94Scanner::new();
+            // OSC 9 / 9;4 / 777 observer — the vte stack drops these
+            // sequences, so a passive side-scanner extracts progress and
+            // desktop notifications (see terminal::progress / notify).
+            let mut osc = OscScanner::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
@@ -326,8 +330,12 @@ fn build_terminal_session(
                     Ok(n) => {
                         let mut t = term2.lock();
                         for &byte in &buf[..n] {
-                            if let Some(update) = osc94.advance(byte) {
-                                progress2.apply(update);
+                            match osc.advance(byte) {
+                                Some(OscEvent::Progress(update)) => progress2.apply(update),
+                                Some(OscEvent::Notify(note)) => {
+                                    notify::push(&notifications2, note)
+                                }
+                                None => {}
                             }
                             parser.advance(&mut *t, byte);
                         }
@@ -349,6 +357,7 @@ fn build_terminal_session(
         notify,
         error,
         progress,
+        notifications,
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         resizer,

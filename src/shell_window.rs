@@ -46,6 +46,12 @@ pub struct ShellWindow {
     /// overlay canvas. `(0, 0)` until the first paint; `render` derives
     /// rows from this instead of estimating the status-bar height.
     pane_measured: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    /// Mirrors `Window::is_window_active()` (kept fresh by an activation
+    /// observer) so the async notification watcher — which has no `Window` —
+    /// can apply Ghostty-style focus suppression.
+    window_active: bool,
+    /// OSC 9 / 777 desktop notifications enabled (settings.terminal).
+    desktop_notifications: bool,
 }
 
 impl SelectionHost for ShellWindow {
@@ -69,10 +75,14 @@ impl ImeHost for ShellWindow {
 }
 
 impl ShellWindow {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let weak = cx.weak_entity();
         let ime = cx.new(|_| TerminalIme::new(weak));
         cx.observe(&ime, |_, _, cx| cx.notify()).detach();
+        cx.observe_window_activation(window, |view, window, _cx| {
+            view.window_active = window.is_window_active();
+        })
+        .detach();
         let mut win = Self {
             session: None,
             error: None,
@@ -87,6 +97,11 @@ impl ShellWindow {
             selection: SelectionState::default(),
             scroll_accum: 0.0,
             pane_measured: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
+            window_active: window.is_window_active(),
+            desktop_notifications: load_settings()
+                .unwrap_or_default()
+                .terminal
+                .desktop_notifications,
         };
         win.connect(cx);
         win
@@ -164,6 +179,7 @@ impl ShellWindow {
         let generation = std::sync::Arc::clone(&session.generation);
         let notify = std::sync::Arc::clone(&session.notify);
         let snapshot = std::sync::Arc::clone(&session.snapshot);
+        let notifications = std::sync::Arc::clone(&session.notifications);
         let scroll = self.scroll_handle.clone();
 
         cx.spawn(async move |this, cx| {
@@ -190,6 +206,18 @@ impl ShellWindow {
                 }
                 last = cur;
                 let alive = this.update(cx, |view, cx| {
+                    // OSC 9 / 777 desktop notifications, Ghostty-style focus
+                    // suppression: a single-surface window, so suppress
+                    // whenever the window itself is active. Always drain.
+                    let pending = crate::terminal::notify::take_notifications(&notifications);
+                    if !pending.is_empty() && view.desktop_notifications && !view.window_active {
+                        for n in &pending {
+                            crate::notify_toast::show(
+                                n.title.as_deref().unwrap_or("シェル"),
+                                &n.body,
+                            );
+                        }
+                    }
                     // Blink-only ticks repaint without touching the scroll.
                     if data_changed {
                         view.last_gen = cur;
@@ -513,8 +541,7 @@ pub fn open_shell_window(cx: &mut App) {
             ..Default::default()
         },
         |window, cx| {
-            let _ = window;
-            let view = cx.new(|cx| ShellWindow::new(cx));
+            let view = cx.new(|cx| ShellWindow::new(window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         },
     )

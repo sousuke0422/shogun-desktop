@@ -79,9 +79,17 @@
 - [ ] **Focus reporting (?1004)** — 新規 (2026-07-04)。focus in/out で `CSI I`/`CSI O`。
       CC 2.1.181 の presence 検知（在席中は mobile push 抑止）の標準経路。vim/tmux も使う。数十行
 - [ ] OSC 0/2 ウィンドウタイトル反映（実害小）
-- [ ] OSC 9 / 777 デスクトップ通知 — エージェント完了通知に転用できる可能性。
-      価値UP (2026-07-04): CC の `preferredNotifChannel` 設定だけで「足軽完了→Windows トースト」
-      が成立する。multi-agent-shogun 運用との相乗効果が最大の項目
+- [x] **OSC 9 / 777 デスクトップ通知** — 2026-07-05 実装（Ghostty 準拠挙動）。
+      OSC 9;4 スキャナを OSC 9 / 777 汎用観測器に拡張（`terminal/notify.rs`）。
+      Ghostty parity: ConEmu サブコマンド (9;1〜10) は通知にしない・title 63 /
+      body 255 バイト切詰・**フォーカス抑止**（window active かつ当該タブ選択中は
+      出さない = requireFocus 挙動。本窓は将軍 tab0 / 家老陣 tab5 を個別判定）。
+      配送は tauri-winrt-notification (MIT/Apache-2.0)、HKCU AppUserModelId 登録で
+      「将軍デスクトップ」名義・失敗時 PowerShell AUMID フォールバック。
+      設定 `terminal.desktop_notifications`（既定 on、UI 未作成・TOML 手編集）。
+      CC 側は `preferredNotifChannel` で「足軽完了→トースト」成立。
+      実機確認待ち: 別窓フォーカス中に `sleep 2; printf '\e]9;test\a'` →トースト、
+      フォーカス中は出ない、`\e]777;notify;題;本文\a` で題名付き。mac 配送は未実装
 - [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）

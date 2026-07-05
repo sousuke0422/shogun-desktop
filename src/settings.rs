@@ -19,16 +19,25 @@ pub struct ShogunDesktopSettings {
 pub struct TerminalSettings {
     #[serde(default = "default_terminal_font")]
     pub font: String,
+    /// OSC 9 / OSC 777 desktop notifications (equivalent of Ghostty's
+    /// `desktop-notifications`).
+    #[serde(default = "default_true")]
+    pub desktop_notifications: bool,
 }
 
 fn default_terminal_font() -> String {
     "Moralerspace Neon HW".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for TerminalSettings {
     fn default() -> Self {
         Self {
             font: default_terminal_font(),
+            desktop_notifications: true,
         }
     }
 }
@@ -269,12 +278,20 @@ mod tests {
         let settings = ShogunDesktopSettings {
             terminal: TerminalSettings {
                 font: "Cica".into(),
+                desktop_notifications: false,
             },
             ..Default::default()
         };
         let raw = toml::to_string(&settings).unwrap();
         let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
         assert_eq!(parsed.terminal.font, "Cica");
+        assert!(!parsed.terminal.desktop_notifications);
+    }
+
+    #[test]
+    fn desktop_notifications_defaults_on_when_absent() {
+        let parsed: ShogunDesktopSettings = toml::from_str("[terminal]\nfont = \"x\"\n").unwrap();
+        assert!(parsed.terminal.desktop_notifications);
     }
 
     #[test]

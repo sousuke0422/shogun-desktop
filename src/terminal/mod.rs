@@ -1,5 +1,6 @@
 pub mod ime;
 pub mod keys;
+pub mod notify;
 pub mod progress;
 pub mod pty_session;
 pub mod renderer;
@@ -90,6 +91,10 @@ pub struct TerminalSession {
     /// OSC 9;4 progress reported by the running application (written by the
     /// PTY reader thread, read by the UI). See [`progress`].
     pub progress: Arc<progress::Progress>,
+    /// OSC 9 / 777 desktop notifications queued by the PTY reader thread and
+    /// drained by the UI watcher, which applies Ghostty-style focus
+    /// suppression. See [`notify`].
+    pub notifications: notify::NotificationQueue,
     /// Current terminal width in columns (updated by `resize`).
     pub cols: AtomicU16,
     /// Current terminal height in rows (updated by `resize`).
