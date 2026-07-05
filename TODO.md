@@ -38,9 +38,14 @@
       taffy が **コンテンツサイズ**に合わせるため、overlay 高さ = グリッド行数×セル高で
       固定 → 行数計算が overlay 高さ依存 → **循環参照で行数がspawn時から不変**
       （幅は追従、高さのみ死亡）。修正: overlay canvas をスクロールコンテナ外の
-      relative ラッパー兄弟へ移設（shell + 本窓両方）。offset は常時0のため選択/IME
+      relative ラッパー兄弟へ移設（**shell window のみ**）。offset は常時0のため選択/IME
       座標系は不変。計装並行インスタンス+MoveWindow 自動試験で 33→21→41行の追従を確認、
-      shift-drag e2e で選択ハイライトも PASS
+      shift-drag e2e で選択ハイライトも PASS。
+      **本窓（将軍/家老陣タブ）への同修正は表示崩れのため revert**（殿裁定 2026-07-05。
+      本窓は shell と違い外側に overflow_hidden ラッパーが無く、relative ラッパーが
+      min-height:auto でコンテンツ高さに膨らんだ疑い）。本窓は元々問題なし＝
+      常に最大化運用でペイン高さ≥グリッド高さのため taffy の罠を踏まない。
+      縮小リサイズを本窓で使う日が来たら min_h(0)+overflow_hidden 付きで再挑戦
 - [x] e2e/ スクリプト再実行 — **2026-07-04 PASS**（drag-copy + scan-highlight とも）。
       **2026-07-05 注意**: マウスレポーティング転送実装後は素のドラッグはアプリ側へ
       転送され青ハイライトが出ない → `-ShiftDrag` オプション（ローカル選択バイパス）で

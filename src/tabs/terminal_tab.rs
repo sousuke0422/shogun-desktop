@@ -51,13 +51,15 @@ pub fn render_terminal_tab(
     let view = cx.entity();
     let grid_rows = snap.rows;
     let grid_cols = snap.cols;
-    let pane = div()
+    v_flex().flex_1().size_full().bg(Colors::shikkoku()).child(
+        div()
             .id(if is_shogun {
                 "terminal-pane-shogun"
             } else {
                 "terminal-pane-multiagent"
             })
-            .size_full()
+            .flex_1()
+            .w_full()
             .track_scroll(&scroll_handle)
             .overflow_y_scroll()
             // focusable() sets focusable=true + tab_stop=true.
@@ -130,35 +132,16 @@ pub fn render_terminal_tab(
                 }),
             )
             .p_1()
-            .child(render_grid(snap, font, cw, ch, selection, ime_preedit))
-            // Right-click menu: dispatches the same actions as the keyboard
-            // shortcuts. action_context routes them to the terminal focus
-            // handle, i.e. the pane's TERMINAL_KEY_CONTEXT on_action handlers.
-            .context_menu(move |menu, _window, _cx| {
-                menu.action_context(menu_focus.clone())
-                    .menu("コピー", Box::new(TerminalCopy))
-                    .menu("ペースト", Box::new(TerminalPaste))
-            });
-
-    // Overlay with three jobs, all requiring paint-phase access:
-    // 1. Register the IME input handler for the terminal viewport.
-    //    Without this, WM_CHAR / IME composition events are dropped
-    //    and Japanese input never reaches the PTY.
-    // 2. Mouse-selection hit-testing (window-level listeners).
-    // 3. Report the pane size for PTY resize (pane_measured).
-    // NOTE: nothing may be *drawn* from this canvas — paint calls
-    // issued here never reach the screen (verified 2026-07-03). The
-    // preedit and selection highlight are painted by render_grid.
-    //
-    // The canvas lives OUTSIDE the scroll container, as a sibling in a
-    // relative wrapper: taffy sizes absolute children of a scroll container
-    // to its CONTENT box, so inside the pane the overlay's height tracked the
-    // grid (rows × cell) instead of the viewport — rows could then never
-    // shrink or grow past the current grid height (the resize-never-fires
-    // bug, found 2026-07-05). The wrapper's box IS the pane's border box, and
-    // the pane never scrolls (the grid always fits exactly), so the overlay
-    // geometry is identical.
-    let overlay = canvas(
+            // Overlay with two jobs, both requiring paint-phase access:
+            // 1. Register the IME input handler for the terminal viewport.
+            //    Without this, WM_CHAR / IME composition events are dropped
+            //    and Japanese input never reaches the PTY.
+            // 2. Mouse-selection hit-testing (window-level listeners).
+            // NOTE: nothing may be *drawn* from this canvas — paint calls
+            // issued here never reach the screen (verified 2026-07-03). The
+            // preedit and selection highlight are painted by render_grid.
+            .child(
+                canvas(
                     |_bounds, _window, _cx| (),
                     move |bounds, (), window, cx: &mut App| {
                         // Report the painted pane size back to the view.
@@ -195,22 +178,30 @@ pub fn render_terminal_tab(
                         );
                     },
                 )
-    // Pinned to the pane's content box (border box minus the pane's p_1
-    // padding) via the relative wrapper. The overlay origin coincides with
-    // the grid origin, so the selection pointer→cell mapping has no skew.
-    .absolute()
-    .top(px(TERMINAL_PANE_PADDING_PX / 2.0))
-    .left(px(TERMINAL_PANE_PADDING_PX / 2.0))
-    .right(px(TERMINAL_PANE_PADDING_PX / 2.0))
-    .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0));
-
-    v_flex().flex_1().size_full().bg(Colors::shikkoku()).child(
-        div()
-            .relative()
-            .flex_1()
-            .w_full()
-            .child(pane)
-            .child(overlay),
+                // Pinned to the CONTENT box (inset by the pane padding), NOT
+                // size_full: taffy counts absolute children toward the
+                // scroll container's content size (inflow ⊔ absolute), and a
+                // padding-box-sized overlay plus the re-added padding made
+                // the pane permanently scrollable by 8px — the micro-scroll.
+                // scroll_to_bottom() then pinned that phantom overflow,
+                // clipping the top row and leaving a bottom gap. Bonus: the
+                // overlay origin now coincides with the grid origin, so the
+                // selection pointer→cell mapping loses its 4px skew.
+                .absolute()
+                .top(px(TERMINAL_PANE_PADDING_PX / 2.0))
+                .left(px(TERMINAL_PANE_PADDING_PX / 2.0))
+                .right(px(TERMINAL_PANE_PADDING_PX / 2.0))
+                .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0)),
+            )
+            .child(render_grid(snap, font, cw, ch, selection, ime_preedit))
+            // Right-click menu: dispatches the same actions as the keyboard
+            // shortcuts. action_context routes them to the terminal focus
+            // handle, i.e. the pane's TERMINAL_KEY_CONTEXT on_action handlers.
+            .context_menu(move |menu, _window, _cx| {
+                menu.action_context(menu_focus.clone())
+                    .menu("コピー", Box::new(TerminalCopy))
+                    .menu("ペースト", Box::new(TerminalPaste))
+            }),
     )
 }
 
