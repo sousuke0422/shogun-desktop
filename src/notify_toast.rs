@@ -86,7 +86,25 @@ pub fn show(title: &str, body: &str) {
     });
 }
 
-/// Linux: planned as a zero-dependency `notify-send` spawn when the Linux
-/// port lands (libnotify CLI, present on effectively every desktop distro).
+/// Linux (and other unix): zero-dependency `notify-send` spawn — the
+/// libnotify CLI is present on effectively every desktop distro, and a
+/// richer zbus (blocking) client only earns its dependency tree once the
+/// Linux port needs actions/icons. Arguments are passed directly (no shell),
+/// so no escaping is needed; a missing binary fails silently like every
+/// other delivery path here.
 #[cfg(not(any(windows, target_os = "macos")))]
-pub fn show(_title: &str, _body: &str) {}
+pub fn show(title: &str, body: &str) {
+    let child = std::process::Command::new("notify-send")
+        .arg("--app-name=将軍デスクトップ")
+        .arg("--")
+        .arg(title)
+        .arg(body)
+        .spawn();
+    if let Ok(mut child) = child {
+        // Reap off-thread: an unwaited unix child stays a zombie until the
+        // app exits.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+}
