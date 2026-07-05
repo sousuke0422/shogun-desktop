@@ -145,6 +145,15 @@
 - [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）
+- [ ] **RikkaTerminal 構想**（2026-07-06 殿表明）— 本格ターミナルとして独立プロダクト化。
+      前段として shogun-desktop のターミナルロジックのクレート化
+      （`terminal/` 一式: pty_session・renderer・selection・kitty_graphics・
+      progress/notify・keys/ime — alacritty_terminal ラッパ＋GPUI 描画エンジン）。
+      shogun-desktop は抽出クレートの利用者となり二重メンテを避ける。
+      旧 aki-term 構想（wt 代替タブ付きターミナル・設計書あり実装未着手）は
+      本構想に吸収候補。検討事項: リポ切りとクレート側ライセンス選定
+      （shogun-desktop に GPL 化予定は無い — gpui が Apache-2.0 になり
+      旧 Zed-GPL 前提は消滅）、vendored gpui/alacritty パッチの扱い
 - [ ] terminal_tab.rs の旧 scroll-lock ロジック整理 — 符号が逆疑い＋padding 修正後は
       ほぼ死にコード
 
