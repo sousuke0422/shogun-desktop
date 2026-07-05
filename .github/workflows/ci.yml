@@ -102,6 +102,48 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # ── Linux (x86_64, ubuntu-latest) ──────────────────────────────────────────
+  # Build + test only: the Linux port is not usable yet (gpui 0.2.2 ignores
+  # FontFallbacks on Linux — see TODO.md), so no artifact is published. The
+  # job keeps the Linux paths (notify-send delivery, unix PTY, gpui linux
+  # backend) compiling and the logic tests green.
+  build-linux:
+    name: Build & Test — Linux (x86_64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        # gpui's linux backend links xkbcommon/wayland at build time; the
+        # vulkan loader is runtime-only but cheap to install for cargo test.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libvulkan1 libfontconfig-dev libssl-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: linux-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: linux-cargo-
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test
+
   # ── Lint (clippy + rustfmt) ────────────────────────────────────────────────
   lint:
     name: Lint (clippy + rustfmt)
