@@ -487,11 +487,19 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     let content = term.renderable_content();
     let cols = term.columns();
     let rows = term.screen_lines();
+    // display_iter yields the viewport in GRID coordinates: with the display
+    // scrolled back by `display_offset`, visible lines run from
+    // -display_offset (oldest history row on screen) to
+    // rows - 1 - display_offset. Screen row = grid line + display_offset.
+    // Casting the raw line to usize instead silently dropped every history
+    // line (negative → huge) and drew the rest shifted up — scrollback
+    // appeared to move the wrong way (bug found 2026-07-05).
+    let display_offset = content.display_offset as i32;
     let mut cells = vec![vec![SnapshotCell::blank(); cols]; rows];
     let mut has_blink = false;
 
     for indexed in content.display_iter {
-        let row = indexed.point.line.0 as usize;
+        let row = (indexed.point.line.0 + display_offset) as usize;
         let col = indexed.point.column.0;
         if row < rows && col < cols {
             let is_spacer = indexed
@@ -546,7 +554,9 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         cols,
         rows,
         cells,
-        cursor: (cur.line.0 as usize, cur.column.0),
+        // Same grid→screen shift; scrolled back far enough the cursor row
+        // passes `rows` and simply stops matching any painted row.
+        cursor: ((cur.line.0 + display_offset) as usize, cur.column.0),
         display_offset: term.grid().display_offset(),
         has_blink,
     }
@@ -667,6 +677,33 @@ mod tests {
         for &byte in bytes {
             parser.advance(term, byte);
         }
+    }
+
+    #[test]
+    fn snapshot_scrollback_shows_history_rows() {
+        let mut term = make_term(4, 2);
+        // Five lines through a 2-row screen: 1..=3 scroll into history.
+        advance_bytes(&mut term, b"1\r\n2\r\n3\r\n4\r\n5");
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.cells[0][0].c, '4');
+        assert_eq!(snap.cells[1][0].c, '5');
+
+        // One step back: viewport shifts one row into history. The raw
+        // grid-line cast used to drop the history row and draw '4','5'
+        // shifted up — scrollback looked like it moved the wrong way.
+        term.scroll_display(alacritty_terminal::grid::Scroll::Delta(1));
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.display_offset, 1);
+        assert_eq!(snap.cells[0][0].c, '3');
+        assert_eq!(snap.cells[1][0].c, '4');
+        // The cursor ('5' row) scrolls off the bottom and must not match
+        // any painted row.
+        assert!(snap.cursor.0 >= snap.rows);
+
+        term.scroll_display(alacritty_terminal::grid::Scroll::Top);
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.cells[0][0].c, '1');
+        assert_eq!(snap.cells[1][0].c, '2');
     }
 
     #[test]
