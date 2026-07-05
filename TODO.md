@@ -144,6 +144,14 @@ Air は 60Hz（ProMotion なし）→ 省電力側の検証機。
 2. [ ] ピクセル単位スクロール補間（現状セル単位ジャンプ）
 3. [ ] 行 shape 結果のキャッシュ＋dirty row 差分描画
       （スクロール中は行内容不変＝全ヒットで最軽量、という好条件あり）
+      2026-07-06 検分（gpt-5.5 献策の突合）: shape_line は gpui 内部の
+      LineLayoutCache が前フレーム同一 (text,font,runs) を再利用済み → 残る
+      CPU コストは毎フレーム全行の coalesce_runs による Run 列組立
+      （renderer.rs render_grid）。実装は「snapshot に行 hash → 不変行は
+      前回 Vec<Run> を使い回す」一本で box drawing ループも巻き込んで消える。
+      背景 quad コアレスと空白 run スキップは実装済み・カーソル/blink の
+      overlay 化は不可（絶対配置 overlay canvas の paint は画面に届かない
+      実測 2026-07-03）。着手前にフレーム時間の実測必須（btop 全画面等）。
 4. [ ] コアレス 16ms→8ms（第1段・最小変更）→ 余裕が出たら vsync 駆動（第2段）
 
 ## 4. リリース / インフラ（殿の作業を含む）
