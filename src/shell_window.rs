@@ -81,6 +81,11 @@ impl ShellWindow {
         cx.observe(&ime, |_, _, cx| cx.notify()).detach();
         cx.observe_window_activation(window, |view, window, _cx| {
             view.window_active = window.is_window_active();
+            // Focus reporting (?1004): a shell window has one surface, so
+            // its focus simply follows window activation.
+            if let Some(s) = view.session.as_ref() {
+                s.report_focus(view.window_active);
+            }
         })
         .detach();
         let mut win = Self {

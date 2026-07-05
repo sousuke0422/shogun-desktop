@@ -283,6 +283,7 @@ impl ShogunWindow {
         cx.observe(&ime, |_, _, cx| cx.notify()).detach();
         cx.observe_window_activation(window, |view, window, _cx| {
             view.window_active = window.is_window_active();
+            view.sync_focus_reports();
         })
         .detach();
         Self {
@@ -553,6 +554,9 @@ impl ShogunWindow {
                     Ok(session) => {
                         view.shogun_session = Some(session);
                         view.shogun_error = None;
+                        // Correct the session's initial focused=true if the
+                        // user is looking elsewhere by the time spawn lands.
+                        view.sync_focus_reports();
                         view.start_terminal_refresh(true, cx);
                     }
                     Err(e) => {
@@ -603,6 +607,9 @@ impl ShogunWindow {
                     Ok(session) => {
                         view.multiagent_session = Some(session);
                         view.multiagent_error = None;
+                        // Correct the session's initial focused=true if the
+                        // user is looking elsewhere by the time spawn lands.
+                        view.sync_focus_reports();
                         view.start_terminal_refresh(false, cx);
                     }
                     Err(e) => {
@@ -964,7 +971,21 @@ impl ShogunWindow {
         cx: &mut Context<Self>,
     ) {
         self.selected_tab = index;
+        self.sync_focus_reports();
         cx.notify();
+    }
+
+    /// Focus reporting (?1004): a terminal surface here counts as focused
+    /// when the window is active AND its tab is the selected one — the same
+    /// rule the OSC 9 toast suppression uses. `report_focus` de-duplicates,
+    /// so calling this on every activation/tab change is safe.
+    fn sync_focus_reports(&self) {
+        if let Some(s) = self.shogun_session.as_ref() {
+            s.report_focus(self.window_active && self.selected_tab == 0);
+        }
+        if let Some(s) = self.multiagent_session.as_ref() {
+            s.report_focus(self.window_active && self.selected_tab == 5);
+        }
     }
 
     fn set_control_path(&mut self, path: ControlPathType, cx: &mut Context<Self>) {

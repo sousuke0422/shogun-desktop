@@ -109,6 +109,10 @@ pub struct TerminalSession {
     /// (written by the PTY reader thread, painted by the renderer for
     /// placeholder cells). See [`kitty_graphics`].
     pub images: Arc<kitty_graphics::KittyImageStore>,
+    /// Last focus state reported to the application via CSI I / CSI O
+    /// (focus reporting, DECSET ?1004). Sessions start focused: they are
+    /// spawned into the surface the user is looking at.
+    pub focused: AtomicBool,
     /// Current terminal width in columns (updated by `resize`).
     pub cols: AtomicU16,
     /// Current terminal height in rows (updated by `resize`).
@@ -124,6 +128,22 @@ impl TerminalSession {
 
     pub fn send_bytes(&self, bytes: &[u8]) {
         let _ = self.writer.lock().write_all(bytes);
+    }
+
+    /// Focus reporting (DECSET ?1004): tell the application when this
+    /// surface gains/loses the user's attention (`CSI I` / `CSI O`).
+    /// De-duplicates, and only writes when the application opted in —
+    /// callers may report every window-activation or tab-switch event.
+    pub fn report_focus(&self, focused: bool) {
+        use alacritty_terminal::term::TermMode;
+        if self.focused.swap(focused, Ordering::Relaxed) == focused {
+            return;
+        }
+        let mode = *self.term.lock().mode();
+        if !mode.contains(TermMode::FOCUS_IN_OUT) {
+            return;
+        }
+        self.send_bytes(if focused { b"\x1b[I" } else { b"\x1b[O" });
     }
 
     /// Route a wheel event to the PTY when the running application asked for

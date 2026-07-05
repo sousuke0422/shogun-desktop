@@ -438,6 +438,7 @@ fn build_terminal_session(
         progress,
         notifications,
         images,
+        focused: AtomicBool::new(true),
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         resizer,
@@ -539,6 +540,69 @@ mod tests {
         let session = build_test_session_with_output(10, 2, script);
         wait_for_eof(&session);
         assert!(row0_text(&session).starts_with("hi"));
+    }
+
+    /// Focus reporting (?1004): CSI I/O only when the app opted in, only on
+    /// actual changes.
+    #[test]
+    fn focus_reporting_gated_and_deduplicated() {
+        use crate::terminal::NoopResizer;
+
+        #[derive(Clone, Default)]
+        struct CaptureWriter(Arc<FairMutex<Vec<u8>>>);
+        impl Write for CaptureWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let capture = CaptureWriter::default();
+        let sink = capture.clone();
+        let writer: Arc<FairMutex<Box<dyn Write + Send>>> =
+            Arc::new(FairMutex::new(Box::new(sink)));
+
+        // App enables focus reporting, then the stream EOFs.
+        let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(b"\x1b[?1004h".to_vec()));
+        let session = build_terminal_session(10, 2, reader, writer, Arc::new(NoopResizer)).unwrap();
+        wait_for_eof(&session);
+
+        session.report_focus(true); // already focused — no output
+        assert!(capture.0.lock().is_empty());
+        session.report_focus(false);
+        session.report_focus(false); // duplicate — swallowed
+        session.report_focus(true);
+        assert_eq!(capture.0.lock().as_slice(), b"\x1b[O\x1b[I");
+    }
+
+    /// Without ?1004 no focus bytes may reach the PTY (vim would see garbage).
+    #[test]
+    fn focus_reporting_silent_when_mode_off() {
+        use crate::terminal::NoopResizer;
+
+        let bytes: Arc<FairMutex<Vec<u8>>> = Arc::default();
+        struct W(Arc<FairMutex<Vec<u8>>>);
+        impl Write for W {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let writer: Arc<FairMutex<Box<dyn Write + Send>>> =
+            Arc::new(FairMutex::new(Box::new(W(Arc::clone(&bytes)))));
+        let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(Vec::new()));
+        let session = build_terminal_session(10, 2, reader, writer, Arc::new(NoopResizer)).unwrap();
+        wait_for_eof(&session);
+
+        session.report_focus(false);
+        session.report_focus(true);
+        assert!(bytes.lock().is_empty());
     }
 
     /// An unterminated BSU on a silent-but-alive PTY must be flushed by the

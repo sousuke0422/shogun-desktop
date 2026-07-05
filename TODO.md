@@ -133,8 +133,10 @@
       （sync 保留中は `recv_timeout(deadline)`、期限切れで `stop_sync` flush）に分割。
       EOF 時も開きっぱなしの sync を flush。回帰テスト 3 本（ESU 適用・EOF flush・
       timeout flush、StallingReader で沈黙 PTY を再現）
-- [ ] **Focus reporting (?1004)** — 新規 (2026-07-04)。focus in/out で `CSI I`/`CSI O`。
-      CC 2.1.181 の presence 検知（在席中は mobile push 抑止）の標準経路。vim/tmux も使う。数十行
+- [x] **Focus reporting (?1004)** — **2026-07-06 実装**。`TerminalSession::report_focus`
+      （mode gate＝FOCUS_IN_OUT・dedup 内蔵）＋ shell window は activation 直結、本窓は
+      「window active かつ当該タブ選択中」（OSC 9 抑止と同じ規則、将軍 tab0 / 家老陣 tab5）。
+      spawn 完了時にも初期整合。回帰テスト 2 本（gate+dedup / mode off 無音）
 - [ ] OSC 0/2 ウィンドウタイトル反映（実害小）
 - [x] **OSC 9 / 777 デスクトップ通知** — 2026-07-05 実装（Ghostty 準拠挙動）。
       OSC 9;4 スキャナを OSC 9 / 777 汎用観測器に拡張（`terminal/notify.rs`）。
