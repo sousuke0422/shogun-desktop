@@ -43,9 +43,10 @@
       shift-drag e2e で選択ハイライトも PASS。
       **本窓（将軍/家老陣タブ）への同修正は表示崩れのため revert**（殿裁定 2026-07-05。
       本窓は shell と違い外側に overflow_hidden ラッパーが無く、relative ラッパーが
-      min-height:auto でコンテンツ高さに膨らんだ疑い）。本窓は元々問題なし＝
-      常に最大化運用でペイン高さ≥グリッド高さのため taffy の罠を踏まない。
-      縮小リサイズを本窓で使う日が来たら min_h(0)+overflow_hidden 付きで再挑戦
+      min-height:auto でコンテンツ高さに膨らんだ疑い）。
+      **本窓は触る前からリサイズ正常（殿確認）** — 同じ pane_measured 構造なのに
+      shell だけ壊れた理由は未解明（タブ chrome の flex 構成差か、grid content と
+      viewport の大小関係か）。本窓構造には触れないこと。再発時のみ調査
 - [x] e2e/ スクリプト再実行 — **2026-07-04 PASS**（drag-copy + scan-highlight とも）。
       **2026-07-05 注意**: マウスレポーティング転送実装後は素のドラッグはアプリ側へ
       転送され青ハイライトが出ない → `-ShiftDrag` オプション（ローカル選択バイパス）で
