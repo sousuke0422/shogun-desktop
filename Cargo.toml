@@ -33,6 +33,11 @@ shogun-core = { path = "crates/shogun-core" }
 # OSC 9 / 777 desktop notifications → WinRT toast (MIT OR Apache-2.0).
 tauri-winrt-notification = "0.7.3"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# OSC 9 / 777 desktop notifications → NSUserNotificationCenter (MIT/Apache-2.0).
+# objc2-based thin wrapper; same family gpui's mac backend already links.
+mac-notification-sys = "0.6.15"
+
 [patch.crates-io]
 alacritty_terminal = { path = "crates/alacritty_terminal" }
 # Vendored for one fix: generate_font_fallbacks (DirectWrite) never searched

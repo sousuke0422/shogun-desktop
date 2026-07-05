@@ -118,7 +118,11 @@
       多エージェント常時発報のため。マスターと AND）。設定タブ「ターミナル」節に
       Switch UI あり（切替は即時反映・保存で永続化）。
       CC 側は `preferredNotifChannel` で「足軽完了→トースト」成立。
-      **2026-07-05 実機確認済み**（殿確認）。mac 配送は未実装
+      **2026-07-05 実機確認済み**（殿確認）。
+      mac 配送も実装済み: mac-notification-sys 0.6.15（objc2系・notify-rust の中身と同じ。
+      notify-rust 本体は非optional async-std（開発終了ランタイム）を担ぐため不採用）。
+      set_application("com.aki.shogun-desktop") でバンドル名義。**MBA実機確認待ち**。
+      Linux は port 時に notify-send spawn（依存ゼロ）予定
 - [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）

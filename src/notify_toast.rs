@@ -61,6 +61,32 @@ fn register_app_id() -> bool {
         .unwrap_or(false)
 }
 
-/// Non-Windows: no delivery yet (macOS: osascript/UNUserNotification later).
-#[cfg(not(windows))]
+/// macOS: NSUserNotificationCenter via mac-notification-sys — the same
+/// thin-native-wrapper approach as tauri-winrt-notification on Windows (and
+/// what notify-rust wraps internally; notify-rust itself was rejected for
+/// dragging in the discontinued async-std runtime). Attribution needs our
+/// bundle identifier (assets/Info.plist), registered once. Fire-and-forget
+/// like the Windows path: `send()` may wait on the delegate, so it runs on a
+/// detached thread and failures stay silent.
+#[cfg(target_os = "macos")]
+pub fn show(title: &str, body: &str) {
+    use std::sync::Once;
+    static APP: Once = Once::new();
+
+    let title = title.to_owned();
+    let body = body.to_owned();
+    std::thread::spawn(move || {
+        APP.call_once(|| {
+            let _ = mac_notification_sys::set_application("com.aki.shogun-desktop");
+        });
+        let _ = mac_notification_sys::Notification::default()
+            .title(&title)
+            .message(&body)
+            .send();
+    });
+}
+
+/// Linux: planned as a zero-dependency `notify-send` spawn when the Linux
+/// port lands (libnotify CLI, present on effectively every desktop distro).
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn show(_title: &str, _body: &str) {}
