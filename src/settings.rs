@@ -41,6 +41,13 @@ pub struct TerminalSettings {
     /// apps (vim/less/tmux) break. See the settings-tab warnings.
     #[serde(default)]
     pub term: TermName,
+    /// OpenType features for terminal text, comma/space separated 4-char
+    /// tags: `ss01, ss03` (on), `calt=0` (explicit off), `cv02=3`
+    /// (alternate). Monaspace/Moralerspace keeps its ligatures in stylistic
+    /// sets: ss01 ==/!=, ss02 >=/<=, ss03 arrows, ss04 </ />, ss05 |>,
+    /// ss07 ::, ss08 .= — enable per feature to taste.
+    #[serde(default)]
+    pub font_features: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
@@ -85,6 +92,22 @@ impl TerminalIdentity {
     }
 }
 
+/// Parse the free-form feature string into (tag, value) pairs, dropping
+/// anything that isn't a 4-character OpenType tag.
+pub fn parse_font_features(raw: &str) -> Vec<(String, u32)> {
+    raw.split([',', ' ', '\t'])
+        .filter(|t| !t.is_empty())
+        .filter_map(|item| {
+            let (tag, value) = match item.split_once('=') {
+                Some((tag, v)) => (tag.trim(), v.trim().parse().ok()?),
+                None => (item.trim(), 1),
+            };
+            (tag.len() == 4 && tag.chars().all(|c| c.is_ascii_alphanumeric()))
+                .then(|| (tag.to_string(), value))
+        })
+        .collect()
+}
+
 fn default_terminal_font() -> String {
     "Moralerspace Neon HW".to_string()
 }
@@ -101,6 +124,7 @@ impl Default for TerminalSettings {
             desktop_notifications_multiagent: false,
             identity: TerminalIdentity::default(),
             term: TermName::default(),
+            font_features: String::new(),
         }
     }
 }
@@ -294,6 +318,22 @@ mod tests {
     }
 
     #[test]
+    fn font_features_parser_accepts_tags_and_values() {
+        assert_eq!(
+            parse_font_features("ss01, ss03 calt=0\tcv02=3"),
+            vec![
+                ("ss01".to_string(), 1),
+                ("ss03".to_string(), 1),
+                ("calt".to_string(), 0),
+                ("cv02".to_string(), 3),
+            ]
+        );
+        // Garbage and non-4-char tags are dropped; empty input is empty.
+        assert!(parse_font_features("").is_empty());
+        assert!(parse_font_features("liga!, ss, =1, ss001").is_empty());
+    }
+
+    #[test]
     fn term_name_serde_roundtrip_and_default() {
         assert_eq!(
             ShogunDesktopSettings::default().terminal.term,
@@ -391,6 +431,7 @@ mod tests {
                 desktop_notifications_multiagent: true,
                 identity: TerminalIdentity::Ghostty,
                 term: TermName::XtermGhostty,
+                font_features: "ss01, ss03".into(),
             },
             ..Default::default()
         };

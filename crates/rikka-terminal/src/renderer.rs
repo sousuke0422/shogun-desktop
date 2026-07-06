@@ -47,7 +47,28 @@ pub const EMOJI_FONT: &str = "Twemoji Mozilla";
 pub fn terminal_font(family: &str) -> gpui::Font {
     let mut f = gpui::font(family.to_string());
     f.fallbacks = Some(gpui::FontFallbacks::from_fonts(vec![EMOJI_FONT.into()]));
+    if let Some(features) = FONT_FEATURES.read().clone() {
+        f.features = features;
+    }
     f
+}
+
+/// OpenType features applied to every terminal font instance (ligature and
+/// stylistic-set toggles — e.g. Monaspace arrows live in ss03). Engine-global
+/// so the embedder can flip features at runtime (settings save) without
+/// threading a parameter through every render call; `None` = font defaults.
+static FONT_FEATURES: parking_lot::RwLock<Option<gpui::FontFeatures>> =
+    parking_lot::RwLock::new(None);
+
+/// Set the OpenType features for terminal text. Each entry is a 4-char tag
+/// with a value (1 = on, 0 = off, N = alternate index). Takes effect on the
+/// next frame.
+pub fn set_font_features(tags: Vec<(String, u32)>) {
+    *FONT_FEATURES.write() = if tags.is_empty() {
+        None
+    } else {
+        Some(gpui::FontFeatures(std::sync::Arc::new(tags)))
+    };
 }
 
 /// Attach the bundled emoji fallback to an element's inherited text style, so

@@ -60,6 +60,14 @@ fn load_system_font(family: &str) -> Option<Vec<u8>> {
 }
 
 fn main() {
+    // OpenType features apply engine-globally; set them before the first
+    // frame (saving settings re-applies at runtime).
+    rikka_terminal::renderer::set_font_features(settings::parse_font_features(
+        &settings::load_settings()
+            .unwrap_or_default()
+            .terminal
+            .font_features,
+    ));
     Application::new().run(|cx| {
         let mut fonts: Vec<Cow<'static, [u8]>> = vec![
             Cow::Borrowed(MORALERSPACE_NEON),

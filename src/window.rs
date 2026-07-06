@@ -973,6 +973,10 @@ impl ShogunWindow {
     pub fn save_settings(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings_tab.collect(cx);
         self.terminal_font = settings.terminal.font.clone();
+        // Font features apply engine-globally on the next frame.
+        crate::terminal::renderer::set_font_features(crate::settings::parse_font_features(
+            &settings.terminal.font_features,
+        ));
         self.status_message = match save_settings(&settings) {
             Ok(()) => "設定を保存しました".into(),
             Err(err) => format!("保存失敗: {err}").into(),

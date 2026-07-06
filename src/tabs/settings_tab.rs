@@ -23,6 +23,7 @@ pub struct SettingsTab {
     shogun_session: Entity<InputState>,
     multiagent_session: Entity<InputState>,
     terminal_font: Entity<InputState>,
+    font_features: Entity<InputState>,
     pub desktop_notifications: bool,
     pub desktop_notifications_multiagent: bool,
     pub terminal_identity: crate::settings::TerminalIdentity,
@@ -90,6 +91,11 @@ impl SettingsTab {
                 .default_value(settings.terminal.font.clone())
                 .placeholder("Moralerspace Neon HW")
         });
+        let font_features = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.terminal.font_features.clone())
+                .placeholder("例: ss01, ss03（空欄 = フォント既定のみ）")
+        });
 
         Self {
             host,
@@ -105,6 +111,7 @@ impl SettingsTab {
             shogun_session,
             multiagent_session,
             terminal_font,
+            font_features,
             desktop_notifications: settings.terminal.desktop_notifications,
             desktop_notifications_multiagent: settings.terminal.desktop_notifications_multiagent,
             terminal_identity: settings.terminal.identity,
@@ -153,6 +160,7 @@ impl SettingsTab {
             },
             terminal: crate::settings::TerminalSettings {
                 font: self.terminal_font.read(cx).value().to_string(),
+                font_features: self.font_features.read(cx).value().to_string(),
                 desktop_notifications: self.desktop_notifications,
                 desktop_notifications_multiagent: self.desktop_notifications_multiagent,
                 identity: self.terminal_identity,
@@ -242,6 +250,11 @@ pub fn render_settings_tab(
                         .child(labeled_input("フォント名", &tab.terminal_font))
                         .child(font_preset_buttons)
                         .child(hint("システムにインストール済みの等幅フォント名を指定"))
+                        .child(field_label("フォント機能（OpenType features・機能ごとに有効化）"))
+                        .child(Input::new(&tab.font_features).w_full())
+                        .child(hint(
+                            "4文字タグをカンマ区切りで。Moralerspace/Monaspace: ss01 ==/!=・ss02 >=/<=・ss03 矢印・ss04 </ />・ss05 |>・ss07 ::・ss08 .=、calt=0 で texture healing 停止。保存で即時反映",
+                        ))
                         .child(field_label("デスクトップ通知（OSC 9 / 777）"))
                         .child(notification_toggles)
                         .child(field_label("端末の名乗り（XTVERSION）"))
