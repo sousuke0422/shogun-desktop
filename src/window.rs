@@ -1443,7 +1443,15 @@ impl Render for ShogunWindow {
                     }))
                     .child(Radio::new("term-256color").label("xterm-256color"))
                     .child(Radio::new("term-ghostty").label("xterm-ghostty"))
-                    .child(Radio::new("term-rikka").label("xterm-rikka"))
+                    // xterm-rikka stays visible but inert: there is no rikka
+                    // terminfo to broadcast yet, so selecting it could only
+                    // break the remote. Re-enable once RikkaTerminal ships
+                    // its terminfo + auto-install.
+                    .child(
+                        Radio::new("term-rikka")
+                            .label("xterm-rikka（将来用）")
+                            .disabled(true),
+                    )
                     .on_click(cx.listener(|this, index: &usize, _, cx| {
                         let (term, notice) = match index {
                             0 => (
@@ -1454,10 +1462,13 @@ impl Render for ShogunWindow {
                                 crate::settings::TermName::XtermGhostty,
                                 "⚠ TERM=xterm-ghostty — リモートに Ghostty の terminfo が必要。無いと vim/less/tmux が壊れる（確認: infocmp xterm-ghostty）",
                             ),
-                            _ => (
-                                crate::settings::TermName::XtermRikka,
-                                "⚠ TERM=xterm-rikka — 独自 terminfo は未配布でリモートにほぼ確実に無い（実験用。将来自動植え付け予定）",
-                            ),
+                            _ => {
+                                // Disabled radio; keep the current value.
+                                this.status_message =
+                                    "xterm-rikka は terminfo 配布の仕組みができるまで選択不可".into();
+                                cx.notify();
+                                return;
+                            }
                         };
                         this.settings_tab.term_name = term;
                         this.status_message = notice.into();
@@ -1471,8 +1482,9 @@ impl Render for ShogunWindow {
                         "注意: リモート側に Ghostty の terminfo が必要（ghostty 導入済みか、~/.terminfo へ手動配置）。無い接続先では vim/less/tmux が起動しない・表示が崩れる。保存後の新規接続から適用"
                             .into(),
                     ),
+                    // Reachable only via a hand-edited settings.toml.
                     crate::settings::TermName::XtermRikka => Some(
-                        "警告: xterm-rikka の terminfo は未配布 — 現状ほぼ全てのリモートに存在せず、フルスクリーン系アプリが壊れる実験用設定。将来 kitten ssh 流の自動インストールを予定。保存後の新規接続から適用"
+                        "警告: xterm-rikka の terminfo は未配布 — リモートに存在せずフルスクリーン系アプリが壊れる。settings.toml の手編集でのみ到達する実験値。保存後の新規接続から適用"
                             .into(),
                     ),
                 };
