@@ -21,6 +21,8 @@ pub struct NativeSshClient {
     password: Option<String>,
     proxy_command: Option<String>,
     accept_all_host_keys: bool,
+    /// TERM name for the remote pty-req (settings.terminal.term).
+    term: String,
     session: Arc<Mutex<Option<client::Handle<ShogunHandler>>>>,
     rt: Arc<tokio::runtime::Runtime>,
 }
@@ -96,6 +98,7 @@ impl NativeSshClient {
             password,
             proxy_command,
             accept_all_host_keys: ssh.accept_all_host_keys,
+            term: settings.terminal.term.as_str().to_string(),
             session: Arc::new(Mutex::new(None)),
             rt: Arc::new(rt),
         })
@@ -233,7 +236,7 @@ impl NativeSshClient {
             .await
             .context("SSH セッションチャンネルのオープンに失敗しました")?;
         channel
-            .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
+            .request_pty(false, &self.term, cols as u32, rows as u32, 0, 0, &[])
             .await
             .context("SSH PTY 要求に失敗しました")?;
         channel

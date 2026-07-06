@@ -35,6 +35,35 @@ pub struct TerminalSettings {
     /// advertises this way: kitty graphics, kitty keyboard, OSC 8/9/52, sixel.
     #[serde(default)]
     pub identity: TerminalIdentity,
+    /// TERM name sent in the SSH pty-req (and TERM env on the ssh.exe
+    /// path). This is a *terminfo lookup key* on the remote, not a greeting:
+    /// pick a name the remote actually has an entry for, or full-screen
+    /// apps (vim/less/tmux) break. See the settings-tab warnings.
+    #[serde(default)]
+    pub term: TermName,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TermName {
+    /// Present on every machine; capabilities match what we implement.
+    #[default]
+    Xterm256color,
+    /// Requires Ghostty's terminfo on the remote (`infocmp xterm-ghostty`).
+    XtermGhostty,
+    /// RikkaTerminal's own terminfo — not distributed yet; almost certainly
+    /// missing on remotes. Future: kitten-ssh-style auto-install.
+    XtermRikka,
+}
+
+impl TermName {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TermName::Xterm256color => "xterm-256color",
+            TermName::XtermGhostty => "xterm-ghostty",
+            TermName::XtermRikka => "xterm-rikka",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
@@ -71,6 +100,7 @@ impl Default for TerminalSettings {
             desktop_notifications: true,
             desktop_notifications_multiagent: false,
             identity: TerminalIdentity::default(),
+            term: TermName::default(),
         }
     }
 }
@@ -264,6 +294,27 @@ mod tests {
     }
 
     #[test]
+    fn term_name_serde_roundtrip_and_default() {
+        assert_eq!(
+            ShogunDesktopSettings::default().terminal.term,
+            TermName::Xterm256color
+        );
+        assert_eq!(TermName::Xterm256color.as_str(), "xterm-256color");
+        for variant in [TermName::XtermGhostty, TermName::XtermRikka] {
+            let settings = ShogunDesktopSettings {
+                terminal: TerminalSettings {
+                    term: variant,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let raw = toml::to_string(&settings).unwrap();
+            let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
+            assert_eq!(parsed.terminal.term, variant);
+        }
+    }
+
+    #[test]
     fn ssh_settings_includes_control_path_default() {
         let settings = ShogunDesktopSettings::default();
         assert_eq!(settings.ssh.control_path, ControlPathType::Socket);
@@ -339,6 +390,7 @@ mod tests {
                 desktop_notifications: false,
                 desktop_notifications_multiagent: true,
                 identity: TerminalIdentity::Ghostty,
+                term: TermName::XtermGhostty,
             },
             ..Default::default()
         };

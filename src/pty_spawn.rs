@@ -143,6 +143,15 @@ fn spawn_shell_system(
         }
     }
     cmd.args(["-o", "ConnectTimeout=10"]);
+    // ssh sends the local TERM in its pty-req; pin it to the configured name.
+    cmd.env(
+        "TERM",
+        crate::settings::load_settings()
+            .unwrap_or_default()
+            .terminal
+            .term
+            .as_str(),
+    );
     if let Some(ref key) = ssh.key_path {
         cmd.args(["-i", key]);
     }
@@ -234,6 +243,15 @@ fn spawn_system(
         }
     }
     cmd.args(["-o", "ConnectTimeout=10"]);
+    // ssh sends the local TERM in its pty-req; pin it to the configured name.
+    cmd.env(
+        "TERM",
+        crate::settings::load_settings()
+            .unwrap_or_default()
+            .terminal
+            .term
+            .as_str(),
+    );
     if let Some(ref key) = ssh.key_path {
         cmd.args(["-i", key]);
     }

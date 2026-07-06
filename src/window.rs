@@ -1434,6 +1434,48 @@ impl Render for ShogunWindow {
                         };
                         cx.notify();
                     }));
+                let term_name = self.settings_tab.term_name;
+                let term_name_selector = RadioGroup::horizontal("term-name")
+                    .selected_index(Some(match term_name {
+                        crate::settings::TermName::Xterm256color => 0,
+                        crate::settings::TermName::XtermGhostty => 1,
+                        crate::settings::TermName::XtermRikka => 2,
+                    }))
+                    .child(Radio::new("term-256color").label("xterm-256color"))
+                    .child(Radio::new("term-ghostty").label("xterm-ghostty"))
+                    .child(Radio::new("term-rikka").label("xterm-rikka"))
+                    .on_click(cx.listener(|this, index: &usize, _, cx| {
+                        let (term, notice) = match index {
+                            0 => (
+                                crate::settings::TermName::Xterm256color,
+                                "TERM=xterm-256color — 全リモートに terminfo があり安全",
+                            ),
+                            1 => (
+                                crate::settings::TermName::XtermGhostty,
+                                "⚠ TERM=xterm-ghostty — リモートに Ghostty の terminfo が必要。無いと vim/less/tmux が壊れる（確認: infocmp xterm-ghostty）",
+                            ),
+                            _ => (
+                                crate::settings::TermName::XtermRikka,
+                                "⚠ TERM=xterm-rikka — 独自 terminfo は未配布でリモートにほぼ確実に無い（実験用。将来自動植え付け予定）",
+                            ),
+                        };
+                        this.settings_tab.term_name = term;
+                        this.status_message = notice.into();
+                        cx.notify();
+                    }));
+                // Standing warning while a risky TERM is selected: what it
+                // needs and what breaks without it.
+                let term_name_warning: Option<SharedString> = match term_name {
+                    crate::settings::TermName::Xterm256color => None,
+                    crate::settings::TermName::XtermGhostty => Some(
+                        "注意: リモート側に Ghostty の terminfo が必要（ghostty 導入済みか、~/.terminfo へ手動配置）。無い接続先では vim/less/tmux が起動しない・表示が崩れる。保存後の新規接続から適用"
+                            .into(),
+                    ),
+                    crate::settings::TermName::XtermRikka => Some(
+                        "警告: xterm-rikka の terminfo は未配布 — 現状ほぼ全てのリモートに存在せず、フルスクリーン系アプリが壊れる実験用設定。将来 kitten ssh 流の自動インストールを予定。保存後の新規接続から適用"
+                            .into(),
+                    ),
+                };
                 let font_preset_buttons = h_flex()
                     .gap_2()
                     .child(
@@ -1484,6 +1526,8 @@ impl Render for ShogunWindow {
                     font_preset_buttons,
                     notification_toggles,
                     terminal_identity_selector,
+                    term_name_selector,
+                    term_name_warning,
                     #[cfg(windows)]
                     Some(control_path_selector),
                     #[cfg(not(windows))]

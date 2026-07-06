@@ -26,6 +26,7 @@ pub struct SettingsTab {
     pub desktop_notifications: bool,
     pub desktop_notifications_multiagent: bool,
     pub terminal_identity: crate::settings::TerminalIdentity,
+    pub term_name: crate::settings::TermName,
     agents: Vec<String>,
 }
 
@@ -107,6 +108,7 @@ impl SettingsTab {
             desktop_notifications: settings.terminal.desktop_notifications,
             desktop_notifications_multiagent: settings.terminal.desktop_notifications_multiagent,
             terminal_identity: settings.terminal.identity,
+            term_name: settings.terminal.term,
             agents: settings.sessions.agents.clone(),
         }
     }
@@ -154,6 +156,7 @@ impl SettingsTab {
                 desktop_notifications: self.desktop_notifications,
                 desktop_notifications_multiagent: self.desktop_notifications_multiagent,
                 identity: self.terminal_identity,
+                term: self.term_name,
             },
         }
     }
@@ -170,6 +173,8 @@ pub fn render_settings_tab(
     font_preset_buttons: impl IntoElement,
     notification_toggles: impl IntoElement,
     terminal_identity_selector: impl IntoElement,
+    term_name_selector: impl IntoElement,
+    term_name_warning: Option<SharedString>,
     control_path_selector: Option<impl IntoElement>,
 ) -> impl IntoElement {
     let mut advanced = section_card(
@@ -244,6 +249,14 @@ pub fn render_settings_tab(
                         .child(hint(
                             "アプリが端末名で機能を出し分ける時に効く。Ghostty偽装で yazi 等が kitty 画像を有効化する（実装済み能力のみ名乗る）",
                         ))
+                        .child(field_label("TERM（リモートの terminfo 検索キー）"))
+                        .child(term_name_selector)
+                        .children(term_name_warning.map(|w| {
+                            div()
+                                .text_sm()
+                                .text_color(crate::theme::Colors::kurenai())
+                                .child(w)
+                        }))
                         .child(hint(
                             "見ているタブの通知は出ない（Ghostty と同じフォーカス抑止）。\
                              家老陣は多エージェントで鳴りやすいため既定オフ",
