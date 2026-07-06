@@ -432,6 +432,44 @@ mod tests {
         assert!(row1.starts_with("done"), "got {row1:?}");
     }
 
+    /// `cat`-ing an ELF must not hang, panic or wedge the pipeline — the
+    /// classic terminal killer is binary garbage opening a string-consuming
+    /// state (DCS/OSC/APC) that swallows everything after it. Feed a
+    /// deterministic megabyte of garbage seeded with the nastiest prefixes,
+    /// then prove the terminal still processes output afterwards.
+    #[test]
+    fn binary_garbage_does_not_hang_the_pipeline() {
+        let mut script = Vec::new();
+        // ELF header, then unterminated string-openers with payloads.
+        script.extend_from_slice(b"\x7fELF\x02\x01\x01\x00");
+        script.extend_from_slice(b"\x1bP"); // DCS, never terminated…
+        script.extend_from_slice(&[b'q'; 4096]);
+        script.extend_from_slice(b"\x1b]"); // OSC, never terminated…
+        script.extend_from_slice(&[0x41; 4096]);
+        script.extend_from_slice(b"\x1b_G"); // kitty APC opener
+        script.extend_from_slice(&[0x42; 4096]);
+        script.extend_from_slice(b"\x1b[?2026h"); // sync update, no ESU
+        // A megabyte of deterministic pseudo-random bytes (LCG), NUL to 0xFF.
+        let mut x: u32 = 0x1234_5678;
+        for _ in 0..1_000_000 {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            script.push((x >> 24) as u8);
+        }
+        // Full reset, then a marker that must come out the other side.
+        script.extend_from_slice(b"\x1bc GARBAGE-SURVIVED");
+
+        let session = build_test_session_with_output(40, 5, script);
+        wait_for_eof(&session); // asserts completion within 5s = no hang
+        let snap = session.snapshot.lock().clone();
+        let all: String = snap
+            .cells
+            .iter()
+            .map(|row| row.iter().map(|c| c.c).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("GARBAGE-SURVIVED"), "terminal wedged: {all:?}");
+    }
+
     /// OSC 0/2 lands in the shared title slot (mirrored to the OS window
     /// title by the UI).
     #[test]
