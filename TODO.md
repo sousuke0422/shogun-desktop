@@ -123,7 +123,9 @@
       `DCS >|shogun-desktop x.y ST` を返す。ただし kgp 検出側が既知端末名しか
       見ない場合は効かず、独自 terminfo が残り弾）。ローカル WSL シェル
       （ConPTY 経由）は conhost が APC を剥がす疑いが濃く、native SSH 経路のみ対応
-- [x] **Sixel 対応**（2026-07-06 殿下知）— **2026-07-06 実装（実機確認待ち）**。
+- [x] **Sixel 対応**（2026-07-06 殿下知）— **2026-07-06 実装・実機確認済み**
+      （e2e自動: shell window へ合成打鍵で printf sixel → 赤ブロック描画＋カーソルが
+      画像下行へ降りるスクロール動作をスクショで確認）。
       ローカル WSL シェル（ConPTY）で画像を出す道: ConPTY は Sixel(DCS) を通す
       （WT 1.22+ 実証済み）。kitty(APC) は ConPTY に剥がされるため相補関係。
       設計は **kitty 基盤への合流**: `terminal/sixel.rs` の受動 DCS スキャナ
@@ -151,7 +153,9 @@
       （mode gate＝FOCUS_IN_OUT・dedup 内蔵）＋ shell window は activation 直結、本窓は
       「window active かつ当該タブ選択中」（OSC 9 抑止と同じ規則、将軍 tab0 / 家老陣 tab5）。
       spawn 完了時にも初期整合。回帰テスト 2 本（gate+dedup / mode off 無音）
-- [x] OSC 0/2 ウィンドウタイトル反映 — **2026-07-06 実装**。Event::Title/ResetTitle を
+- [x] OSC 0/2 ウィンドウタイトル反映 — **2026-07-06 実装・実機確認済み**
+      （bash PROMPT_COMMAND の自動タイトル＋明示 OSC 2 上書き→プロンプトで復帰、
+      GetWindowText で検証）。Event::Title/ResetTitle を
       listener が session 共有スロットへ、shell window が render で OS タイトルへ
       dedup 反映（既定「シェル」）。本窓タブは対象外（tmux セッション名表示を優先）
 - [x] **OSC 9 / 777 デスクトップ通知** — 2026-07-05 実装（Ghostty 準拠挙動）。
