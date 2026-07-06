@@ -276,7 +276,11 @@ fn build_terminal_session(
         }
     });
 
-    let listener = ClipboardListener { tx: cb_tx };
+    let title: Arc<FairMutex<Option<String>>> = Arc::default();
+    let listener = ClipboardListener {
+        tx: cb_tx,
+        title: Arc::clone(&title),
+    };
     // OSC 52: alacritty's default is OnlyCopy — store works but load (the
     // clipboard *read* query, e.g. vim's "+p over SSH) is silently denied,
     // so the ClipboardEvent::Load path never fired. CopyPaste enables both.
@@ -496,6 +500,7 @@ fn build_terminal_session(
         images,
         focused: AtomicBool::new(true),
         cell_size_px,
+        title,
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         resizer,
@@ -630,6 +635,15 @@ mod tests {
         // The injected trailing newline puts the following text on row 1.
         let row1: String = snap.cells[1].iter().map(|c| c.c).collect();
         assert!(row1.starts_with("done"), "got {row1:?}");
+    }
+
+    /// OSC 0/2 lands in the shared title slot (mirrored to the OS window
+    /// title by the UI).
+    #[test]
+    fn osc_title_reaches_session() {
+        let session = build_test_session_with_output(10, 2, b"\x1b]2;hello title\x07".to_vec());
+        wait_for_eof(&session);
+        assert_eq!(session.title.lock().as_deref(), Some("hello title"));
     }
 
     /// Focus reporting (?1004): CSI I/O only when the app opted in, only on

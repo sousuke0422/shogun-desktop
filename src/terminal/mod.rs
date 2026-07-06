@@ -40,6 +40,10 @@ pub enum ClipboardEvent {
 /// clipboard operation — events are silently dropped if the buffer is full.
 pub struct ClipboardListener {
     pub tx: std::sync::mpsc::SyncSender<ClipboardEvent>,
+    /// OSC 0/2 window title set by the application (`None` = no title /
+    /// reset). Shared with [`TerminalSession::title`]; the UI mirrors it
+    /// into the OS window title.
+    pub title: Arc<FairMutex<Option<String>>>,
 }
 
 impl EventListener for ClipboardListener {
@@ -55,6 +59,8 @@ impl EventListener for ClipboardListener {
             Event::PtyWrite(text) => {
                 let _ = self.tx.try_send(ClipboardEvent::PtyWrite(text));
             }
+            Event::Title(title) => *self.title.lock() = Some(title),
+            Event::ResetTitle => *self.title.lock() = None,
             _ => {}
         }
     }
@@ -118,6 +124,9 @@ pub struct TerminalSession {
     /// Cell size in device pixels, rounded (updated by `resize`). Shared
     /// with the PTY reader thread, which sizes sixel placements with it.
     pub cell_size_px: Arc<(AtomicU16, AtomicU16)>,
+    /// OSC 0/2 application window title (written by the term event listener,
+    /// mirrored into the OS window title by the shell-window UI).
+    pub title: Arc<FairMutex<Option<String>>>,
     /// Current terminal width in columns (updated by `resize`).
     pub cols: AtomicU16,
     /// Current terminal height in rows (updated by `resize`).

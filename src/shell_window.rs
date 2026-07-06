@@ -52,6 +52,8 @@ pub struct ShellWindow {
     window_active: bool,
     /// OSC 9 / 777 desktop notifications enabled (settings.terminal).
     desktop_notifications: bool,
+    /// Last OSC 0/2 title applied to the OS window (dedup for `render`).
+    applied_title: Option<String>,
 }
 
 impl SelectionHost for ShellWindow {
@@ -107,6 +109,7 @@ impl ShellWindow {
                 .unwrap_or_default()
                 .terminal
                 .desktop_notifications,
+            applied_title: None,
         };
         win.connect(cx);
         win
@@ -274,6 +277,16 @@ impl ShellWindow {
 impl Render for ShellWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = self.last_gen;
+
+        // OSC 0/2: mirror the application-set title into the OS window
+        // title (de-duplicated — render runs every frame).
+        if let Some(s) = self.session.as_ref() {
+            let title = s.title.lock().clone();
+            if title != self.applied_title {
+                window.set_window_title(title.as_deref().unwrap_or("シェル"));
+                self.applied_title = title;
+            }
+        }
 
         // Resize: full viewport (no chrome except tiny status bar of 24px)
         let (cw, ch) = measure_cell_metrics(&cx.text_system(), MONO_FONT, window.scale_factor());

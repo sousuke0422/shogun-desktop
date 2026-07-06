@@ -151,7 +151,9 @@
       （mode gate＝FOCUS_IN_OUT・dedup 内蔵）＋ shell window は activation 直結、本窓は
       「window active かつ当該タブ選択中」（OSC 9 抑止と同じ規則、将軍 tab0 / 家老陣 tab5）。
       spawn 完了時にも初期整合。回帰テスト 2 本（gate+dedup / mode off 無音）
-- [ ] OSC 0/2 ウィンドウタイトル反映（実害小）
+- [x] OSC 0/2 ウィンドウタイトル反映 — **2026-07-06 実装**。Event::Title/ResetTitle を
+      listener が session 共有スロットへ、shell window が render で OS タイトルへ
+      dedup 反映（既定「シェル」）。本窓タブは対象外（tmux セッション名表示を優先）
 - [x] **OSC 9 / 777 デスクトップ通知** — 2026-07-05 実装（Ghostty 準拠挙動）。
       OSC 9;4 スキャナを OSC 9 / 777 汎用観測器に拡張（`terminal/notify.rs`）。
       Ghostty parity: ConEmu サブコマンド (9;1〜10) は通知にしない・title 63 /
