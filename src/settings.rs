@@ -29,7 +29,7 @@ pub struct TerminalSettings {
     #[serde(default)]
     pub desktop_notifications_multiagent: bool,
     /// What XTVERSION (`CSI > 0 q`) claims this terminal is. `Honest` names
-    /// shogun-desktop; `Ghostty` masquerades so emulator-sniffing apps
+    /// the engine (rikka-terminal); `Ghostty` masquerades so emulator-sniffing apps
     /// (e.g. yazi picks its kitty-graphics adapter by known terminal names)
     /// enable their good paths. We implement the capabilities Ghostty
     /// advertises this way: kitty graphics, kitty keyboard, OSC 8/9/52, sixel.
@@ -49,11 +49,9 @@ impl TerminalIdentity {
     /// The XTVERSION reply body (`DCS >| <this> ST`).
     pub fn xtversion(self) -> String {
         match self {
-            TerminalIdentity::Honest => {
-                format!("shogun-desktop {}", env!("CARGO_PKG_VERSION"))
-            }
-            // A plausible current Ghostty version; apps key off the name.
-            TerminalIdentity::Ghostty => "ghostty 1.1.3".to_string(),
+            TerminalIdentity::Honest => rikka_terminal::xtversion::engine_identity(),
+            // Current Ghostty release; apps key off the name.
+            TerminalIdentity::Ghostty => "ghostty 1.3.1".to_string(),
         }
     }
 }
@@ -257,11 +255,11 @@ mod tests {
         let raw = toml::to_string(&settings).unwrap();
         let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
         assert_eq!(parsed.terminal.identity, TerminalIdentity::Ghostty);
-        assert_eq!(parsed.terminal.identity.xtversion(), "ghostty 1.1.3");
+        assert_eq!(parsed.terminal.identity.xtversion(), "ghostty 1.3.1");
         assert!(
             TerminalIdentity::Honest
                 .xtversion()
-                .starts_with("shogun-desktop ")
+                .starts_with("rikka-terminal ")
         );
     }
 

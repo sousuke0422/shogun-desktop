@@ -1425,7 +1425,7 @@ impl Render for ShogunWindow {
                         crate::settings::TerminalIdentity::Honest => 0,
                         crate::settings::TerminalIdentity::Ghostty => 1,
                     }))
-                    .child(Radio::new("identity-honest").label("正直 (shogun-desktop)"))
+                    .child(Radio::new("identity-honest").label("正直 (rikka-terminal)"))
                     .child(Radio::new("identity-ghostty").label("Ghostty偽装"))
                     .on_click(cx.listener(|this, index: &usize, _, cx| {
                         this.settings_tab.terminal_identity = match index {

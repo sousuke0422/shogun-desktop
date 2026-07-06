@@ -6,6 +6,11 @@
 //! passive scanner watches the raw PTY stream and the reader thread writes
 //! the `DCS > | name version ST` reply back to the PTY.
 
+/// The engine's honest XTVERSION identity: `rikka-terminal <version>`.
+pub fn engine_identity() -> String {
+    format!("rikka-terminal {}", env!("CARGO_PKG_VERSION"))
+}
+
 /// Detects `ESC [ > [0] q` (XTVERSION query). Any other parameter or final
 /// byte is ignored (DA2 is `ESC [ > c`, modifyOtherKeys is `ESC [ > 4 ; m`…).
 pub struct XtversionScanner {
