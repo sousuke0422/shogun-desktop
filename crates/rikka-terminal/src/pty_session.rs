@@ -470,6 +470,47 @@ mod tests {
         assert!(all.contains("GARBAGE-SURVIVED"), "terminal wedged: {all:?}");
     }
 
+    /// The same resilience against a *real* system binary — whatever ELF/PE
+    /// this machine has (`cat /usr/bin/apt` in spirit). On CI a binary must
+    /// exist (the test fails otherwise); outside CI a machine with none of
+    /// the candidates passes by exception (殿裁定 2026-07-06) — the
+    /// deterministic garbage test above still guards those environments.
+    #[test]
+    fn cat_real_binary_smoke() {
+        let candidates: &[&str] = if cfg!(windows) {
+            &[
+                "C:\\Windows\\System32\\cmd.exe",
+                "C:\\Windows\\System32\\notepad.exe",
+            ]
+        } else {
+            &["/usr/bin/apt", "/usr/bin/bash", "/bin/bash", "/bin/ls"]
+        };
+        let Some(mut script) = candidates.iter().find_map(|p| std::fs::read(p).ok()) else {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "on CI one of {candidates:?} must exist so the smoke really runs"
+            );
+            return;
+        };
+        // Keep debug-build runtime well inside wait_for_eof's deadline.
+        script.truncate(4 * 1024 * 1024);
+        script.extend_from_slice(b"\x1bc CAT-BINARY-SURVIVED");
+
+        let session = build_test_session_with_output(40, 5, script);
+        wait_for_eof(&session);
+        let snap = session.snapshot.lock().clone();
+        let all: String = snap
+            .cells
+            .iter()
+            .map(|row| row.iter().map(|c| c.c).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("CAT-BINARY-SURVIVED"),
+            "terminal wedged after real binary: {all:?}"
+        );
+    }
+
     /// OSC 0/2 lands in the shared title slot (mirrored to the OS window
     /// title by the UI).
     #[test]
