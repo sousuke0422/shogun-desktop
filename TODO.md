@@ -118,9 +118,11 @@
       256MiB 上限 LRU。renderer は placement 全体を行 mask で clip して paint_image。
       カーソル固定の古典 placement・Sixel・iTerm2 は未対応（需要が出たら）。
       TIOCGWINSZ ピクセル寸法も resize 経路に配管済み（yazi の解像度計算用）。
-      残課題: `TERM=xterm-kitty` 誘導なしで検出させる恒久策（XTVERSION 応答で
-      端末名を名乗る／独自 terminfo）。ローカル WSL シェル（ConPTY 経由）は
-      conhost が APC を剥がす疑いが濃く、native SSH 経路のみ対応
+      残課題: `TERM=xterm-kitty` 誘導なしで検出させる恒久策 — **XTVERSION 応答は
+      2026-07-06 実装済み**（`terminal/xtversion.rs` 受動スキャナ、
+      `DCS >|shogun-desktop x.y ST` を返す。ただし kgp 検出側が既知端末名しか
+      見ない場合は効かず、独自 terminfo が残り弾）。ローカル WSL シェル
+      （ConPTY 経由）は conhost が APC を剥がす疑いが濃く、native SSH 経路のみ対応
 - [x] **Sixel 対応**（2026-07-06 殿下知）— **2026-07-06 実装（実機確認待ち）**。
       ローカル WSL シェル（ConPTY）で画像を出す道: ConPTY は Sixel(DCS) を通す
       （WT 1.22+ 実証済み）。kitty(APC) は ConPTY に剥がされるため相補関係。

@@ -7,6 +7,7 @@ pub mod pty_session;
 pub mod renderer;
 pub mod selection;
 pub mod sixel;
+pub mod xtversion;
 
 use std::io::Write;
 use std::sync::{

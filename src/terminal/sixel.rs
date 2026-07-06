@@ -663,6 +663,6 @@ mod tests {
         let a = alloc.next_id();
         let b = alloc.next_id();
         assert_ne!(a, b);
-        assert!(a >= SIXEL_ID_BASE && a < SIXEL_ID_BASE + SIXEL_ID_SPAN);
+        assert!((SIXEL_ID_BASE..SIXEL_ID_BASE + SIXEL_ID_SPAN).contains(&a));
     }
 }

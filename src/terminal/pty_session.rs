@@ -360,6 +360,9 @@ fn build_terminal_session(
             // is shared with kitty graphics. See terminal::sixel.
             let mut sixel_scanner = crate::terminal::sixel::SixelScanner::new();
             let mut sixel_ids = crate::terminal::sixel::SixelIdAllocator::new();
+            // XTVERSION (CSI > 0 q): vte has no hook for it — answer from a
+            // passive scanner so applications can identify the terminal.
+            let mut xtversion = crate::terminal::xtversion::XtversionScanner::new();
             loop {
                 // While a synchronized update is pending, wait only until its
                 // deadline so an unterminated BSU can't freeze the screen.
@@ -412,6 +415,9 @@ fn build_terminal_session(
                                 && let Some(resp) = kitty.apply(&payload)
                             {
                                 responses.push(resp);
+                            }
+                            if let Some(reply) = xtversion.advance(byte) {
+                                responses.push(reply);
                             }
                             parser.advance(&mut *t, byte);
                             // Sixel: on a completed DCS (the parser has just
@@ -494,12 +500,6 @@ fn build_terminal_session(
         rows: AtomicU16::new(rows),
         resizer,
     })
-}
-
-/// Convenience constructor for tests that do not need a real PTY.
-#[cfg(test)]
-pub fn build_test_session(cols: u16, rows: u16) -> TerminalSession {
-    build_test_session_with_output(cols, rows, Vec::new())
 }
 
 /// Test session whose "PTY" plays back a canned output byte stream, then
