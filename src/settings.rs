@@ -28,6 +28,34 @@ pub struct TerminalSettings {
     /// `desktop_notifications`.
     #[serde(default)]
     pub desktop_notifications_multiagent: bool,
+    /// What XTVERSION (`CSI > 0 q`) claims this terminal is. `Honest` names
+    /// shogun-desktop; `Ghostty` masquerades so emulator-sniffing apps
+    /// (e.g. yazi picks its kitty-graphics adapter by known terminal names)
+    /// enable their good paths. We implement the capabilities Ghostty
+    /// advertises this way: kitty graphics, kitty keyboard, OSC 8/9/52, sixel.
+    #[serde(default)]
+    pub identity: TerminalIdentity,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalIdentity {
+    #[default]
+    Honest,
+    Ghostty,
+}
+
+impl TerminalIdentity {
+    /// The XTVERSION reply body (`DCS >| <this> ST`).
+    pub fn xtversion(self) -> String {
+        match self {
+            TerminalIdentity::Honest => {
+                format!("shogun-desktop {}", env!("CARGO_PKG_VERSION"))
+            }
+            // A plausible current Ghostty version; apps key off the name.
+            TerminalIdentity::Ghostty => "ghostty 1.1.3".to_string(),
+        }
+    }
 }
 
 fn default_terminal_font() -> String {
@@ -44,6 +72,7 @@ impl Default for TerminalSettings {
             font: default_terminal_font(),
             desktop_notifications: true,
             desktop_notifications_multiagent: false,
+            identity: TerminalIdentity::default(),
         }
     }
 }
@@ -212,6 +241,31 @@ mod tests {
     }
 
     #[test]
+    fn terminal_identity_serde_roundtrip_and_default() {
+        // Default = honest; masquerade round-trips through TOML.
+        assert_eq!(
+            ShogunDesktopSettings::default().terminal.identity,
+            TerminalIdentity::Honest
+        );
+        let settings = ShogunDesktopSettings {
+            terminal: TerminalSettings {
+                identity: TerminalIdentity::Ghostty,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let raw = toml::to_string(&settings).unwrap();
+        let parsed: ShogunDesktopSettings = toml::from_str(&raw).unwrap();
+        assert_eq!(parsed.terminal.identity, TerminalIdentity::Ghostty);
+        assert_eq!(parsed.terminal.identity.xtversion(), "ghostty 1.1.3");
+        assert!(
+            TerminalIdentity::Honest
+                .xtversion()
+                .starts_with("shogun-desktop ")
+        );
+    }
+
+    #[test]
     fn ssh_settings_includes_control_path_default() {
         let settings = ShogunDesktopSettings::default();
         assert_eq!(settings.ssh.control_path, ControlPathType::Socket);
@@ -286,6 +340,7 @@ mod tests {
                 font: "Cica".into(),
                 desktop_notifications: false,
                 desktop_notifications_multiagent: true,
+                identity: TerminalIdentity::Ghostty,
             },
             ..Default::default()
         };

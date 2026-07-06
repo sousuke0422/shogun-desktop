@@ -1419,6 +1419,21 @@ impl Render for ShogunWindow {
                                 cx.notify();
                             })),
                     );
+                let identity = self.settings_tab.terminal_identity;
+                let terminal_identity_selector = RadioGroup::horizontal("terminal-identity")
+                    .selected_index(Some(match identity {
+                        crate::settings::TerminalIdentity::Honest => 0,
+                        crate::settings::TerminalIdentity::Ghostty => 1,
+                    }))
+                    .child(Radio::new("identity-honest").label("正直 (shogun-desktop)"))
+                    .child(Radio::new("identity-ghostty").label("Ghostty偽装"))
+                    .on_click(cx.listener(|this, index: &usize, _, cx| {
+                        this.settings_tab.terminal_identity = match index {
+                            0 => crate::settings::TerminalIdentity::Honest,
+                            _ => crate::settings::TerminalIdentity::Ghostty,
+                        };
+                        cx.notify();
+                    }));
                 let font_preset_buttons = h_flex()
                     .gap_2()
                     .child(
@@ -1468,6 +1483,7 @@ impl Render for ShogunWindow {
                     accept_all_host_keys_toggle,
                     font_preset_buttons,
                     notification_toggles,
+                    terminal_identity_selector,
                     #[cfg(windows)]
                     Some(control_path_selector),
                     #[cfg(not(windows))]

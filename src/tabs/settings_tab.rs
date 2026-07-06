@@ -25,6 +25,7 @@ pub struct SettingsTab {
     terminal_font: Entity<InputState>,
     pub desktop_notifications: bool,
     pub desktop_notifications_multiagent: bool,
+    pub terminal_identity: crate::settings::TerminalIdentity,
     agents: Vec<String>,
 }
 
@@ -105,6 +106,7 @@ impl SettingsTab {
             terminal_font,
             desktop_notifications: settings.terminal.desktop_notifications,
             desktop_notifications_multiagent: settings.terminal.desktop_notifications_multiagent,
+            terminal_identity: settings.terminal.identity,
             agents: settings.sessions.agents.clone(),
         }
     }
@@ -151,6 +153,7 @@ impl SettingsTab {
                 font: self.terminal_font.read(cx).value().to_string(),
                 desktop_notifications: self.desktop_notifications,
                 desktop_notifications_multiagent: self.desktop_notifications_multiagent,
+                identity: self.terminal_identity,
             },
         }
     }
@@ -166,6 +169,7 @@ pub fn render_settings_tab(
     accept_all_host_keys_toggle: impl IntoElement,
     font_preset_buttons: impl IntoElement,
     notification_toggles: impl IntoElement,
+    terminal_identity_selector: impl IntoElement,
     control_path_selector: Option<impl IntoElement>,
 ) -> impl IntoElement {
     let mut advanced = section_card(
@@ -235,6 +239,11 @@ pub fn render_settings_tab(
                         .child(hint("システムにインストール済みの等幅フォント名を指定"))
                         .child(field_label("デスクトップ通知（OSC 9 / 777）"))
                         .child(notification_toggles)
+                        .child(field_label("端末の名乗り（XTVERSION）"))
+                        .child(terminal_identity_selector)
+                        .child(hint(
+                            "アプリが端末名で機能を出し分ける時に効く。Ghostty偽装で yazi 等が kitty 画像を有効化する（実装済み能力のみ名乗る）",
+                        ))
                         .child(hint(
                             "見ているタブの通知は出ない（Ghostty と同じフォーカス抑止）。\
                              家老陣は多エージェントで鳴りやすいため既定オフ",

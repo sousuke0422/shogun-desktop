@@ -18,6 +18,16 @@ use crate::terminal::{PtyResizer, TerminalSession, pty_session::build_terminal_s
 
 use anyhow::Result;
 
+/// XTVERSION identity from settings — honest by default, or a deliberate
+/// Ghostty masquerade (see `settings::TerminalIdentity`).
+fn xtversion_identity() -> String {
+    crate::settings::load_settings()
+        .unwrap_or_default()
+        .terminal
+        .identity
+        .xtversion()
+}
+
 // ── system-SSH resizer ────────────────────────────────────────────────────────
 
 /// Newtype wrapper that asserts `Box<dyn MasterPty>` is `Send + Sync`.
@@ -83,7 +93,14 @@ fn spawn_shell_native(
 ) -> Result<TerminalSession> {
     let (reader, writer, resizer) = client.open_shell_channel(project_path, cols, rows)?;
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer));
-    build_terminal_session(cols, rows, reader, writer, Arc::from(resizer))
+    build_terminal_session(
+        cols,
+        rows,
+        reader,
+        writer,
+        Arc::from(resizer),
+        &xtversion_identity(),
+    )
 }
 
 fn spawn_shell_system(
@@ -140,7 +157,7 @@ fn spawn_shell_system(
         master: FairMutex::new(SendMaster(pair.master)),
     });
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer_box));
-    build_terminal_session(cols, rows, reader, writer, resizer)
+    build_terminal_session(cols, rows, reader, writer, resizer, &xtversion_identity())
 }
 
 pub fn spawn(
@@ -164,7 +181,14 @@ fn spawn_native(
 ) -> Result<TerminalSession> {
     let (reader, writer, resizer) = client.open_pty_channel(tmux_session, cols, rows)?;
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer));
-    build_terminal_session(cols, rows, reader, writer, Arc::from(resizer))
+    build_terminal_session(
+        cols,
+        rows,
+        reader,
+        writer,
+        Arc::from(resizer),
+        &xtversion_identity(),
+    )
 }
 
 fn spawn_system(
@@ -229,5 +253,5 @@ fn spawn_system(
     });
 
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer_box));
-    build_terminal_session(cols, rows, reader, writer, resizer)
+    build_terminal_session(cols, rows, reader, writer, resizer, &xtversion_identity())
 }

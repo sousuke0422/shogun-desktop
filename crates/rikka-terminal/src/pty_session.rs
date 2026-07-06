@@ -31,6 +31,7 @@ pub fn build_terminal_session(
     reader: Box<dyn Read + Send>,
     writer: Arc<FairMutex<Box<dyn Write + Send>>>,
     resizer: Arc<dyn PtyResizer>,
+    xtversion_identity: &str,
 ) -> Result<TerminalSession> {
     // ── OSC 52 clipboard handler ──────────────────────────────────────────────
     // Channel capacity of 16 is enough to absorb bursts without blocking the
@@ -99,6 +100,7 @@ pub fn build_terminal_session(
     let notifications: notify::NotificationQueue = Default::default();
     let images = Arc::new(kitty_graphics::KittyImageStore::default());
     let cell_size_px = Arc::new((AtomicU16::new(0), AtomicU16::new(0)));
+    let xtversion = crate::xtversion::XtversionScanner::new(xtversion_identity);
 
     {
         let term2 = Arc::clone(&term);
@@ -154,7 +156,7 @@ pub fn build_terminal_session(
             let mut sixel_ids = crate::sixel::SixelIdAllocator::new();
             // XTVERSION (CSI > 0 q): vte has no hook for it — answer from a
             // passive scanner so applications can identify the terminal.
-            let mut xtversion = crate::xtversion::XtversionScanner::new();
+            let mut xtversion = xtversion;
             loop {
                 // While a synchronized update is pending, wait only until its
                 // deadline so an unterminated BSU can't freeze the screen.
@@ -301,7 +303,15 @@ pub fn build_test_session_with_output(cols: u16, rows: u16, output: Vec<u8>) -> 
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> =
         Arc::new(FairMutex::new(Box::new(std::io::sink())));
     let reader: Box<dyn Read + Send> = Box::new(Cursor::new(output));
-    build_terminal_session(cols, rows, reader, writer, Arc::new(NoopResizer)).unwrap()
+    build_terminal_session(
+        cols,
+        rows,
+        reader,
+        writer,
+        Arc::new(NoopResizer),
+        "test-terminal 0.0",
+    )
+    .unwrap()
 }
 
 #[cfg(test)]
@@ -456,7 +466,15 @@ mod tests {
 
         // App enables focus reporting, then the stream EOFs.
         let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(b"\x1b[?1004h".to_vec()));
-        let session = build_terminal_session(10, 2, reader, writer, Arc::new(NoopResizer)).unwrap();
+        let session = build_terminal_session(
+            10,
+            2,
+            reader,
+            writer,
+            Arc::new(NoopResizer),
+            "test-terminal 0.0",
+        )
+        .unwrap();
         wait_for_eof(&session);
 
         session.report_focus(true); // already focused — no output
@@ -486,7 +504,15 @@ mod tests {
         let writer: Arc<FairMutex<Box<dyn Write + Send>>> =
             Arc::new(FairMutex::new(Box::new(W(Arc::clone(&bytes)))));
         let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(Vec::new()));
-        let session = build_terminal_session(10, 2, reader, writer, Arc::new(NoopResizer)).unwrap();
+        let session = build_terminal_session(
+            10,
+            2,
+            reader,
+            writer,
+            Arc::new(NoopResizer),
+            "test-terminal 0.0",
+        )
+        .unwrap();
         wait_for_eof(&session);
 
         session.report_focus(false);
@@ -520,7 +546,15 @@ mod tests {
             Arc::new(FairMutex::new(Box::new(std::io::sink())));
         let reader: Box<dyn Read + Send> =
             Box::new(StallingReader(Some(b"\x1b[?2026hhi".to_vec())));
-        let session = build_terminal_session(10, 2, reader, writer, Arc::new(NoopResizer)).unwrap();
+        let session = build_terminal_session(
+            10,
+            2,
+            reader,
+            writer,
+            Arc::new(NoopResizer),
+            "test-terminal 0.0",
+        )
+        .unwrap();
 
         // vte's sync deadline is 150ms; poll well past it.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);

@@ -10,6 +10,11 @@
 /// byte is ignored (DA2 is `ESC [ > c`, modifyOtherKeys is `ESC [ > 4 ; m`…).
 pub struct XtversionScanner {
     state: State,
+    /// Precomputed `DCS >| <identity> ST` reply. The identity string comes
+    /// from the embedding application (it may be honest or a deliberate
+    /// masquerade — e.g. "ghostty x.y.z" so emulator-sniffing apps enable
+    /// capabilities this engine actually implements).
+    reply: Vec<u8>,
 }
 
 #[derive(PartialEq)]
@@ -24,16 +29,11 @@ enum State {
     },
 }
 
-impl Default for XtversionScanner {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl XtversionScanner {
-    pub fn new() -> Self {
+    pub fn new(identity: &str) -> Self {
         Self {
             state: State::Ground,
+            reply: format!("\x1bP>|{identity}\x1b\\").into_bytes(),
         }
     }
 
@@ -78,10 +78,7 @@ impl XtversionScanner {
                     self.state = State::Ground;
                     // XTVERSION is `CSI > q` or `CSI > 0 q` only.
                     if params == 0 || !any_digit {
-                        Some(
-                            format!("\x1bP>|shogun-desktop {}\x1b\\", env!("CARGO_PKG_VERSION"))
-                                .into_bytes(),
-                        )
+                        Some(self.reply.clone())
                     } else {
                         None
                     }
@@ -104,7 +101,7 @@ mod tests {
     use super::*;
 
     fn feed(bytes: &[u8]) -> Vec<Vec<u8>> {
-        let mut s = XtversionScanner::new();
+        let mut s = XtversionScanner::new("shogun-desktop test");
         bytes.iter().filter_map(|&b| s.advance(b)).collect()
     }
 
@@ -114,9 +111,16 @@ mod tests {
             let replies = feed(query);
             assert_eq!(replies.len(), 1, "query {query:?}");
             let text = String::from_utf8(replies[0].clone()).unwrap();
-            assert!(text.starts_with("\x1bP>|shogun-desktop "));
+            assert!(text.starts_with("\x1bP>|shogun-desktop test"));
             assert!(text.ends_with("\x1b\\"));
         }
+    }
+
+    #[test]
+    fn reply_carries_the_configured_identity() {
+        let mut s = XtversionScanner::new("ghostty 1.1.3");
+        let reply = b"\x1b[>0q".iter().find_map(|&b| s.advance(b)).unwrap();
+        assert_eq!(reply, b"\x1bP>|ghostty 1.1.3\x1b\\");
     }
 
     #[test]
