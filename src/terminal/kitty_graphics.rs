@@ -471,6 +471,39 @@ impl KittyImageStore {
         inner.map.insert(id, img);
     }
 
+    /// Store an externally decoded RGBA image (the sixel path) under `id`
+    /// with an explicit placement size, going through the same quota and
+    /// eviction as kitty transmissions.
+    pub fn insert_rgba(
+        &self,
+        id: u32,
+        width: u32,
+        height: u32,
+        mut rgba: Vec<u8>,
+        cols: u16,
+        rows: u16,
+    ) -> bool {
+        if width == 0 || height == 0 || (width as usize * height as usize * 4) != rgba.len() {
+            return false;
+        }
+        // RGBA → BGRA (gpui atlas order, same swizzle as decode_transmission).
+        for px in rgba.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        let Some(img) = RgbaImage::from_raw(width, height, rgba) else {
+            return false;
+        };
+        self.insert(
+            id,
+            StoredImage {
+                image: Arc::new(RenderImage::new(vec![Frame::new(img)])),
+                cols,
+                rows,
+            },
+        );
+        true
+    }
+
     fn set_placement(&self, id: u32, cols: u16, rows: u16) -> bool {
         let mut inner = self.inner.lock();
         match inner.map.get_mut(&id) {

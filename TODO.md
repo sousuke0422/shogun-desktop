@@ -121,10 +121,18 @@
       残課題: `TERM=xterm-kitty` 誘導なしで検出させる恒久策（XTVERSION 応答で
       端末名を名乗る／独自 terminfo）。ローカル WSL シェル（ConPTY 経由）は
       conhost が APC を剥がす疑いが濃く、native SSH 経路のみ対応
-- [ ] **Sixel 対応**（2026-07-06 殿下知）— ローカル WSL シェル（ConPTY）で画像を出す道。
-      ConPTY は Sixel(DCS) を通すことを WT 1.22+ / wt-pwsh-wsl-yazi で実証済み
-      （劣化あり: パレット 256 色）。kitty(APC) は ConPTY に剥がされるため相補関係。
-      実装メモ: DCS `q` デコーダ（既存 APC/OSC 受動スキャナと同型で観測可）＋
+- [x] **Sixel 対応**（2026-07-06 殿下知）— **2026-07-06 実装（実機確認待ち）**。
+      ローカル WSL シェル（ConPTY）で画像を出す道: ConPTY は Sixel(DCS) を通す
+      （WT 1.22+ 実証済み）。kitty(APC) は ConPTY に剥がされるため相補関係。
+      設計は **kitty 基盤への合流**: `terminal/sixel.rs` の受動 DCS スキャナ
+      （中間バイト検査で XTGETTCAP/DECRQSS 除外）→ 自前デコーダ（VT340 パレット・
+      DEC HLS・raster/repeat/CR/LF・4096²上限）→ `KittyImageStore` に合成 id
+      （0xE00000+）で格納 → **placeholder セルを parser に注入**。grid 上は通常
+      セル故 scrollback/alt-screen/resize/描画がすべて kitty 経路の再利用となり、
+      カーソル固定 placement 追跡を丸ごと回避。注入前後で SGR fg を退避復元。
+      cell 寸法は resize が session 共有 atomics へ書き reader が参照。
+      DA1 は vendored patch で `?62;4;22c`（sixel 能力 4 を広告 — lsix 等の検出）。
+      デコーダ 9 + e2e 1 の回帰テスト。旧メモ:
       カーソル固定 placement（placeholder 方式が使えないため、grid 行に紐づく
       配置追跡が必要 — kitty で回避した宿題がここで来る）。
       検出はアプリが DA1 応答の `4` を見る — vendored alacritty の DA1 応答への

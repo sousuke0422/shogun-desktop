@@ -306,6 +306,7 @@ fn build_terminal_session(
     let progress = Arc::new(Progress::default());
     let notifications: notify::NotificationQueue = Default::default();
     let images = Arc::new(kitty_graphics::KittyImageStore::default());
+    let cell_size_px = Arc::new((AtomicU16::new(0), AtomicU16::new(0)));
 
     {
         let term2 = Arc::clone(&term);
@@ -317,6 +318,7 @@ fn build_terminal_session(
         let progress2 = Arc::clone(&progress);
         let notifications2 = Arc::clone(&notifications);
         let images2 = Arc::clone(&images);
+        let cell_px2 = Arc::clone(&cell_size_px);
         let writer2 = Arc::clone(&writer);
         // The blocking `Read` lives on its own IO thread so the parse thread
         // can wait with a deadline: synchronized updates (CSI ? 2026, DEC
@@ -351,7 +353,13 @@ fn build_terminal_session(
             // driver. Responses (query replies, transmission ACKs) go back
             // to the PTY writer. See terminal::kitty_graphics.
             let mut apc = kitty_graphics::ApcScanner::new();
-            let mut kitty = kitty_graphics::KittyGraphics::new(images2);
+            let mut kitty = kitty_graphics::KittyGraphics::new(Arc::clone(&images2));
+            // Sixel (DCS q): third passive observer. Decoded images join the
+            // kitty store and are laid down as Unicode placeholder cells fed
+            // straight into the parser — grid/scrollback/renderer handling
+            // is shared with kitty graphics. See terminal::sixel.
+            let mut sixel_scanner = crate::terminal::sixel::SixelScanner::new();
+            let mut sixel_ids = crate::terminal::sixel::SixelIdAllocator::new();
             loop {
                 // While a synchronized update is pending, wait only until its
                 // deadline so an unterminated BSU can't freeze the screen.
@@ -406,6 +414,48 @@ fn build_terminal_session(
                                 responses.push(resp);
                             }
                             parser.advance(&mut *t, byte);
+                            // Sixel: on a completed DCS (the parser has just
+                            // consumed the terminator and discarded the DCS
+                            // as unhandled), store the image and lay down
+                            // placeholder cells at the cursor.
+                            if let Some(seq) = sixel_scanner.advance(byte)
+                                && let Some(img) = crate::terminal::sixel::decode(&seq.data)
+                            {
+                                let cw = cell_px2.0.load(Ordering::Relaxed).max(1) as usize;
+                                let chp = cell_px2.1.load(Ordering::Relaxed).max(1) as usize;
+                                // Before the first resize the cell size is
+                                // unknown; assume a common 10×20 device px.
+                                let (cw, chp) = if cw <= 1 { (10, 20) } else { (cw, chp) };
+                                use alacritty_terminal::grid::Dimensions as _;
+                                let grid_cols = t.columns().max(1);
+                                let cols =
+                                    img.width.div_ceil(cw).clamp(1, grid_cols).min(296) as u16;
+                                let rows = img.height.div_ceil(chp).clamp(1, 296) as u16;
+                                let id = sixel_ids.next_id();
+                                if images2.insert_rgba(
+                                    id,
+                                    img.width as u32,
+                                    img.height as u32,
+                                    img.rgba,
+                                    cols,
+                                    rows,
+                                ) {
+                                    // The injection changes the fg color to
+                                    // carry the image id; save and restore
+                                    // the application's SGR foreground.
+                                    let restore = crate::terminal::sixel::sgr_fg_bytes(
+                                        t.grid().cursor.template.fg,
+                                    );
+                                    for &b in
+                                        &crate::terminal::sixel::placeholder_bytes(id, cols, rows)
+                                    {
+                                        parser.advance(&mut *t, b);
+                                    }
+                                    for &b in &restore {
+                                        parser.advance(&mut *t, b);
+                                    }
+                                }
+                            }
                         }
                         *snap2.lock() = take_snapshot(&t);
                         drop(t);
@@ -439,6 +489,7 @@ fn build_terminal_session(
         notifications,
         images,
         focused: AtomicBool::new(true),
+        cell_size_px,
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         resizer,
@@ -540,6 +591,45 @@ mod tests {
         let session = build_test_session_with_output(10, 2, script);
         wait_for_eof(&session);
         assert!(row0_text(&session).starts_with("hi"));
+    }
+
+    /// The full sixel pipeline through the real reader thread: DCS scanner →
+    /// decoder → kitty store under a synthetic id → placeholder cells
+    /// injected into the parser → snapshot, cursor left below the image.
+    #[test]
+    fn sixel_end_to_end_through_reader_thread() {
+        use crate::terminal::sixel::SIXEL_ID_BASE;
+
+        // Red 1×6 column ('~' = all six bits), then ordinary text.
+        let mut script = Vec::new();
+        script.extend_from_slice(b"\x1bPq#0;2;100;0;0~\x1b\\");
+        script.extend_from_slice(b"done");
+
+        let session = build_test_session_with_output(10, 4, script);
+        wait_for_eof(&session);
+
+        let stored = session
+            .images
+            .get(SIXEL_ID_BASE)
+            .expect("sixel image must land in the kitty store");
+        // Cell size unknown pre-resize → 10×20 fallback → 1×1 cells.
+        assert_eq!((stored.cols, stored.rows), (1, 1));
+        assert_eq!(u32::from(stored.image.size(0).width), 1);
+        assert_eq!(u32::from(stored.image.size(0).height), 6);
+
+        let snap = session.snapshot.lock().clone();
+        assert!(snap.has_images);
+        assert_eq!(
+            snap.cells[0][0].image,
+            Some(kitty_graphics::PlaceholderCell {
+                id: SIXEL_ID_BASE,
+                row: 0,
+                col: 0
+            })
+        );
+        // The injected trailing newline puts the following text on row 1.
+        let row1: String = snap.cells[1].iter().map(|c| c.c).collect();
+        assert!(row1.starts_with("done"), "got {row1:?}");
     }
 
     /// Focus reporting (?1004): CSI I/O only when the app opted in, only on

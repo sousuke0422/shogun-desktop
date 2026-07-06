@@ -6,6 +6,7 @@ pub mod progress;
 pub mod pty_session;
 pub mod renderer;
 pub mod selection;
+pub mod sixel;
 
 use std::io::Write;
 use std::sync::{
@@ -113,6 +114,9 @@ pub struct TerminalSession {
     /// (focus reporting, DECSET ?1004). Sessions start focused: they are
     /// spawned into the surface the user is looking at.
     pub focused: AtomicBool,
+    /// Cell size in device pixels, rounded (updated by `resize`). Shared
+    /// with the PTY reader thread, which sizes sixel placements with it.
+    pub cell_size_px: Arc<(AtomicU16, AtomicU16)>,
     /// Current terminal width in columns (updated by `resize`).
     pub cols: AtomicU16,
     /// Current terminal height in rows (updated by `resize`).
@@ -243,6 +247,12 @@ impl TerminalSession {
         //    already at the right dimensions without re-sending the resize.
         self.cols.store(cols, Ordering::Relaxed);
         self.rows.store(rows, Ordering::Relaxed);
+        self.cell_size_px
+            .0
+            .store(cell_px.0.round().max(1.0) as u16, Ordering::Relaxed);
+        self.cell_size_px
+            .1
+            .store(cell_px.1.round().max(1.0) as u16, Ordering::Relaxed);
         // 3. Tell the OS PTY / SSH channel.
         let px_w = (f32::from(cols) * cell_px.0).round() as u16;
         let px_h = (f32::from(rows) * cell_px.1).round() as u16;
