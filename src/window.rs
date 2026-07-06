@@ -141,6 +141,12 @@ pub struct ShogunWindow {
     terminal_cols: u16,
     terminal_rows: u16,
     terminal_font: String,
+    /// Cached session names for the tab jinmaku (from settings). Kept on the
+    /// view because `render` runs every frame and must not touch the
+    /// settings file — synchronous DrvFs reads there are exactly the class
+    /// of stall that makes other terminals freeze for seconds.
+    shogun_session_name: String,
+    multiagent_session_name: String,
     upload_state: UploadState,
     dragged_paths: Option<Vec<std::path::PathBuf>>,
     /// Focus handle for the terminal panes; required so an IME input handler
@@ -204,6 +210,8 @@ impl ShogunWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = load_settings().unwrap_or_default();
         let terminal_font = settings.terminal.font.clone();
+        let shogun_session_name = settings.sessions.shogun.clone();
+        let multiagent_session_name = settings.sessions.multiagent.clone();
         let desktop_notifications = settings.terminal.desktop_notifications;
         let desktop_notifications_multiagent = settings.terminal.desktop_notifications_multiagent;
         let weak = cx.weak_entity();
@@ -235,6 +243,8 @@ impl ShogunWindow {
             terminal_cols: 0,
             terminal_rows: 0,
             terminal_font,
+            shogun_session_name,
+            multiagent_session_name,
             upload_state: UploadState::Idle,
             dragged_paths: None,
             terminal_focus: cx.focus_handle(),
@@ -973,6 +983,8 @@ impl ShogunWindow {
     pub fn save_settings(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings_tab.collect(cx);
         self.terminal_font = settings.terminal.font.clone();
+        self.shogun_session_name = settings.sessions.shogun.clone();
+        self.multiagent_session_name = settings.sessions.multiagent.clone();
         // Font features apply engine-globally on the next frame.
         crate::terminal::renderer::set_font_features(crate::settings::parse_font_features(
             &settings.terminal.font_features,
@@ -1346,9 +1358,7 @@ impl Render for ShogunWindow {
 
         let content: gpui::AnyElement = match self.selected_tab {
             0 => {
-                let session_name = load_settings()
-                    .map(|s| s.sessions.shogun)
-                    .unwrap_or_else(|_| "shogun".to_string());
+                let session_name = self.shogun_session_name.clone();
                 self.render_terminal_with_ui(
                     &self.shogun_session,
                     &self.shogun_error,
@@ -1552,9 +1562,7 @@ impl Render for ShogunWindow {
                 .into_any_element()
             }
             5 => {
-                let session_name = load_settings()
-                    .map(|s| s.sessions.multiagent)
-                    .unwrap_or_else(|_| "multiagent".to_string());
+                let session_name = self.multiagent_session_name.clone();
                 self.render_terminal_with_ui(
                     &self.multiagent_session,
                     &self.multiagent_error,
