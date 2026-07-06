@@ -3,11 +3,14 @@ mod app;
 mod image_upload;
 pub mod native_ssh;
 mod notify_toast;
+mod pty_spawn;
 mod settings;
 mod shell_window;
 mod ssh;
 mod tabs;
-mod terminal;
+// Terminal engine extracted to the rikka-terminal workspace crate; keep the
+// old `crate::terminal::` paths alive via a root re-export.
+pub use rikka_terminal as terminal;
 mod theme;
 mod window;
 

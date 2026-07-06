@@ -4,8 +4,7 @@ use gpui::{
 };
 use gpui_component::v_flex;
 
-use crate::terminal::{GridSnapshot, ResolvedColor, SnapshotCell, UnderlineKind};
-use crate::theme::Colors;
+use crate::{GridSnapshot, ResolvedColor, SnapshotCell, UnderlineKind};
 
 /// Fixed cell width in pixels for the default font (Moralerspace Neon HW @ 13pt).
 /// Moralerspace HW ASCII advance = 525/1000 × 13 = 6.825px; we use 7.8 for
@@ -21,6 +20,16 @@ pub const CELL_W: f32 = 7.8;
 /// Measured advances (HAdvanceWidth / UPM × 13):
 ///   Moralerspace Neon HW : ASCII 6.825 px  → use 7.8 (empirical, adds breathing room)
 ///   Cica                  : ASCII 6.500 px  → use 6.5 (exact fit)
+/// Engine default background (#1A1A1A) and foreground (#E8DCC8) — the
+/// fallbacks for cells without explicit colors. Values match the
+/// shogun-desktop theme (shikkoku / zouge).
+pub fn default_bg() -> gpui::Rgba {
+    gpui::rgb(0x1A1A1A)
+}
+pub fn default_fg() -> gpui::Rgba {
+    gpui::rgb(0xE8DCC8)
+}
+
 pub fn cell_width_for_font(font: &str) -> f32 {
     match font {
         "Cica" => 6.5,
@@ -85,7 +94,7 @@ pub(crate) struct Run {
     /// Total display-column width of this run (sum of each cell's `display_width`).
     pub width: usize,
     /// SGR attributes shared by every cell in this run.
-    pub style: crate::terminal::CellStyle,
+    pub style: crate::CellStyle,
     /// True for the single run that sits at the cursor position.
     pub is_cursor: bool,
     /// True when every char in this run is a geometry-rendered box char (U+2500-U+259F).
@@ -101,7 +110,7 @@ pub(crate) struct Run {
 pub fn color_to_rgba(color: ResolvedColor) -> Rgba {
     match color {
         ResolvedColor::Rgb(r, g, b) => rgba(u32::from_be_bytes([r, g, b, 0xff])),
-        ResolvedColor::Default => Colors::zouge(),
+        ResolvedColor::Default => default_fg(),
     }
 }
 
@@ -120,7 +129,7 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
         // SGR 7: swap fg/bg. A transparent default bg swaps in as the pane's
         // base color so the inverted text stays legible.
         let new_bg = Some(fg);
-        fg = bg.unwrap_or_else(Colors::shikkoku);
+        fg = bg.unwrap_or_else(default_bg);
         bg = new_bg;
     }
     if run.style.dim {
@@ -699,7 +708,7 @@ pub(crate) fn selection_cols_for_row(
     selection: Option<((usize, usize), (usize, usize))>,
     row: usize,
     grid_cols: usize,
-    cells: &[crate::terminal::SnapshotCell],
+    cells: &[crate::SnapshotCell],
 ) -> Option<(usize, usize)> {
     let (start, end) = selection?;
     if row < start.0 || row > end.0 {
@@ -726,10 +735,7 @@ pub(crate) fn selection_cols_for_row(
 /// Contiguous `[c0, c1)` column spans of `row` whose cells belong to
 /// hyperlink `link` — the ctrl-hover underline. Spans, not single cells, so
 /// one quad covers a whole link run.
-pub(crate) fn link_cols_for_row(
-    cells: &[crate::terminal::SnapshotCell],
-    link: u16,
-) -> Vec<(usize, usize)> {
+pub(crate) fn link_cols_for_row(cells: &[crate::SnapshotCell], link: u16) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     let mut start = None;
     for (col, cell) in cells.iter().enumerate() {
@@ -813,7 +819,7 @@ pub fn render_grid(
     // Kitty-graphics image store of the session whose grid this is; tiles
     // for placeholder cells are painted from here. `None` for grids that
     // can never carry images (e.g. previews).
-    images: Option<&crate::terminal::kitty_graphics::KittyImageStore>,
+    images: Option<&crate::kitty_graphics::KittyImageStore>,
     // IME composition (preedit) text, drawn inline at the terminal cursor.
     // Painted here — in the cursor row's canvas — because paint calls issued
     // from the absolute viewport-overlay canvas never reach the screen
@@ -857,7 +863,7 @@ pub fn render_grid(
             // up front (Arc clones) so the paint closure stays lock-free.
             // Placements without size info (`c=`/`r=` never arrived) cannot
             // be scaled and are skipped.
-            let image_runs: Vec<(ImageRun, crate::terminal::kitty_graphics::StoredImage)> =
+            let image_runs: Vec<(ImageRun, crate::kitty_graphics::StoredImage)> =
                 match images.filter(|_| snap.has_images) {
                     Some(store) => image_runs_for_row(row)
                         .into_iter()
@@ -1259,10 +1265,92 @@ pub(crate) fn coalesce_runs(
     runs.into_iter()
 }
 
+/// Line-height multiplier applied to `font_size` to compute the cell height.
+///
+/// Following Zed's terminal approach: `cell_height = font_size × LINE_HEIGHT_MULT`.
+///
+/// Rationale for 1.5:
+///   - OS-independent: avoids platform-specific differences between DirectWrite
+///     (ascent+descent ≈ 1.53×) and CoreText (leading not included in ascent+descent).
+///   - Empirically validated on Windows: 13pt × 1.5 = 19.5 ≈ 20.0 (CELL_H fallback).
+///   - macOS CoreText returns `ascent+descent` without `leading`, so the old formula
+///     produced cramped rows on Retina. A fixed multiplier removes the OS dependency.
+///   - Matches Alacritty / Windows Terminal's typical inter-line breathing room.
+const LINE_HEIGHT_MULT: f32 = 1.5;
+
+/// Measure cell dimensions from the active GPUI `TextSystem`.
+///
+/// Both `cw` and `ch` are snapped to the nearest physical-pixel boundary (ceiling)
+/// to prevent sub-pixel accumulation across columns/rows.
+///
+/// - **cw** = `ch_advance(font_id, font_size)` snapped to physical-pixel ceiling.
+///   At 125% DPI: `6.825 × 1.25 = 8.53 physical px → ceil → 9 → /1.25 = 7.2 logical px`.
+///   Without the snap, each glyph overflows its cell by ≈0.4 px, breaking table
+///   column alignment after ~30 characters.
+/// - **ch** = `font_size × LINE_HEIGHT_MULT` snapped to physical-pixel ceiling.
+///   At 125% DPI: `19.5 × 1.25 = 24.375 physical px → ceil → 25 → /1.25 = 20.0 logical px`.
+///   Without the snap, GPUI flex layout introduces per-row rounding drift, causing
+///   tmux horizontal pane-border characters (`─`) to misalign vertically after N rows.
+///
+/// `scale_factor` is `window.scale_factor()` (device-pixel ratio, e.g. 1.25 on
+/// Windows 125 % DPI, 2.0 on macOS Retina).
+///
+/// Falls back to [`cell_width_for_font`] for `cw` on error.
+pub fn measure_cell_metrics(
+    ts: &std::sync::Arc<gpui::TextSystem>,
+    font_name: &str,
+    scale_factor: f32,
+) -> (f32, f32) {
+    // `gpui::font` requires `Into<SharedString>` which expects 'static for &str.
+    // Convert to owned String first to satisfy the lifetime bound.
+    let font_spec = gpui::font(font_name.to_string());
+    let font_id = ts.resolve_font(&font_spec);
+    let font_size = px(13.0);
+
+    // ch_advance returns Result<Pixels, _>.  Guard against both Err and Ok(0.0):
+    // GPUI may return Ok(Pixels(0.0)) while the font is still being measured
+    // (lazy load).  A zero cw causes (viewport / 0) = f32::INFINITY, which casts
+    // to u16::MAX = 65535 — sending a 65535-col resize to tmux and breaking layout.
+    let measured_cw = ts
+        .ch_advance(font_id, font_size)
+        .map(f32::from)
+        .unwrap_or(0.0);
+    let cw = if measured_cw > 0.5 {
+        // Snap to physical-pixel ceiling to eliminate sub-pixel glyph overflow.
+        // e.g. 6.825 × 1.25 = 8.53 → ceil → 9 → /1.25 = 7.2 logical px.
+        let sf = scale_factor.max(1.0);
+        (measured_cw * sf).ceil() / sf
+    } else {
+        cell_width_for_font(font_name)
+    };
+
+    // Cell height: font_size × multiplier, snapped to physical-pixel ceiling.
+    // CoreText omits line_gap from ascent+descent, so the previous `ascent + descent`
+    // formula produced cramped rows on macOS. A fixed multiplier is identical across
+    // DirectWrite / CoreText / FreeType.
+    //
+    // Without the snap, each row is 19.5 logical px, which at 125% DPI is
+    // 24.375 physical px — a non-integer.  GPUI rounds per-row in flex layout,
+    // so after N rows the accumulated pixel offset has subpixel drift, causing
+    // tmux pane-border characters (horizontal `─`) to misalign vertically.
+    //
+    // Snapped values:
+    //   100% DPI: ceil(19.5 × 1.0) / 1.0 = 20 / 1.0 = 20.0 px
+    //   125% DPI: ceil(19.5 × 1.25) / 1.25 = 25 / 1.25 = 20.0 px
+    //   200% DPI: ceil(19.5 × 2.0) / 2.0 = 39 / 2.0 = 19.5 px (no change)
+    let ch = {
+        let raw = f32::from(font_size) * LINE_HEIGHT_MULT;
+        let sf = scale_factor.max(1.0);
+        (raw * sf).ceil() / sf
+    };
+
+    (cw, ch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::{CellStyle, ResolvedColor, SnapshotCell};
+    use crate::{CellStyle, ResolvedColor, SnapshotCell};
 
     fn cell(c: char) -> SnapshotCell {
         SnapshotCell {
@@ -1397,7 +1485,7 @@ mod tests {
         );
         let (fg, bg) = resolve_run_colors(&run);
         // fg becomes the pane base color (transparent default bg), bg the ink.
-        assert_eq!(fg, Colors::shikkoku());
+        assert_eq!(fg, default_bg());
         assert_eq!(bg, Some(rgba(0xc80a0aff)));
     }
 
@@ -1514,13 +1602,13 @@ mod tests {
         assert!(is_geom_box_char('█')); // U+2588
     }
 
-    fn narrow_row(cols: usize) -> Vec<crate::terminal::SnapshotCell> {
-        vec![crate::terminal::SnapshotCell::blank(); cols]
+    fn narrow_row(cols: usize) -> Vec<crate::SnapshotCell> {
+        vec![crate::SnapshotCell::blank(); cols]
     }
 
     /// Row where the cell at `base` holds a wide glyph (display_width 2)
     /// followed by its spacer (display_width 0).
-    fn wide_row(cols: usize, base: usize) -> Vec<crate::terminal::SnapshotCell> {
+    fn wide_row(cols: usize, base: usize) -> Vec<crate::SnapshotCell> {
         let mut row = narrow_row(cols);
         row[base].c = 'あ';
         row[base].display_width = 2;
@@ -1609,7 +1697,7 @@ mod tests {
 
     fn cell_image(id: u32, prow: u16, pcol: u16) -> SnapshotCell {
         SnapshotCell {
-            image: Some(crate::terminal::kitty_graphics::PlaceholderCell {
+            image: Some(crate::kitty_graphics::PlaceholderCell {
                 id,
                 row: prow,
                 col: pcol,

@@ -73,6 +73,12 @@ pub struct SixelSequence {
     pub data: Vec<u8>,
 }
 
+impl Default for SixelScanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SixelScanner {
     pub fn new() -> Self {
         Self {
@@ -542,6 +548,12 @@ pub fn sgr_fg_bytes(fg: alacritty_terminal::vte::ansi::Color) -> Vec<u8> {
 /// Allocates synthetic image ids for sixel transmissions.
 pub struct SixelIdAllocator {
     next: u32,
+}
+
+impl Default for SixelIdAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SixelIdAllocator {

@@ -7,10 +7,23 @@ use std::path::Path;
 pub const TERMINAL_STATUSES: &[&str] = &["done", "cancelled", "paused"];
 pub const ACTIVE_STATUSES: &[&str] = &["pending", "in_progress", "blocked"];
 pub const TASK_ACTIVE_STATUSES: &[&str] = &["idle", "assigned", "pending_blocked"];
-pub const PROTECTED_STATUSES: &[&str] = &["pending", "in_progress", "blocked", "assigned", "work", "active"];
+pub const PROTECTED_STATUSES: &[&str] = &[
+    "pending",
+    "in_progress",
+    "blocked",
+    "assigned",
+    "work",
+    "active",
+];
 
 pub const ASHIGARU_IDS: &[&str] = &[
-    "ashigaru1", "ashigaru2", "ashigaru3", "ashigaru4", "ashigaru5", "ashigaru6", "ashigaru7",
+    "ashigaru1",
+    "ashigaru2",
+    "ashigaru3",
+    "ashigaru4",
+    "ashigaru5",
+    "ashigaru6",
+    "ashigaru7",
 ];
 
 /// Status from top-level `status` or nested `task.status`.
@@ -48,8 +61,7 @@ pub struct SplitCmdQueue {
 
 /// Split shogun_to_karo YAML into active vs terminal (done/cancelled/paused) entries.
 pub fn split_cmd_queue_yaml(raw: &str) -> Result<SplitCmdQueue, String> {
-    let val: Value =
-        serde_yml::from_str(raw).map_err(|e| format!("yaml parse error: {e}"))?;
+    let val: Value = serde_yml::from_str(raw).map_err(|e| format!("yaml parse error: {e}"))?;
 
     let (wrapper_key, mut queue) = match val {
         Value::Sequence(seq) => (None, seq),
@@ -105,10 +117,7 @@ pub fn rebuild_cmd_queue(split: &SplitCmdQueue) -> Result<String, String> {
         None => active_seq,
         Some(key) => {
             let mut map = serde_yml::Mapping::new();
-            map.insert(
-                Value::String(key.clone()),
-                active_seq,
-            );
+            map.insert(Value::String(key.clone()), active_seq);
             Value::Mapping(map)
         }
     };
@@ -122,10 +131,7 @@ pub fn serialize_archived_batch(split: &SplitCmdQueue) -> Result<String, String>
         None => archived_seq,
         Some(key) => {
             let mut map = serde_yml::Mapping::new();
-            map.insert(
-                Value::String(key.clone()),
-                archived_seq,
-            );
+            map.insert(Value::String(key.clone()), archived_seq);
             Value::Mapping(map)
         }
     };
@@ -144,8 +150,8 @@ pub fn all_ashigaru_idle_or_done(tasks_dir: &Path) -> Result<bool, String> {
         if !path.exists() {
             continue;
         }
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let raw =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let val: Value =
             serde_yml::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?;
         let status = item_status(&val).unwrap_or_default();
@@ -229,16 +235,8 @@ task:
     #[test]
     fn all_ashigaru_idle_or_done_detects_work() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("ashigaru1.yaml"),
-            "task:\n  status: work\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("ashigaru2.yaml"),
-            "task:\n  status: idle\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("ashigaru1.yaml"), "task:\n  status: work\n").unwrap();
+        std::fs::write(dir.path().join("ashigaru2.yaml"), "task:\n  status: idle\n").unwrap();
         assert!(!all_ashigaru_idle_or_done(dir.path()).unwrap());
     }
 }

@@ -138,6 +138,12 @@ pub struct OscScanner {
     payload: Vec<u8>,
 }
 
+impl Default for OscScanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OscScanner {
     pub fn new() -> Self {
         Self {

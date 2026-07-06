@@ -1,0 +1,28 @@
+# RikkaTerminal engine — the terminal-emulator core extracted from
+# shogun-desktop (alacritty_terminal wrapper + GPUI renderer + session
+# plumbing). Lives in the shogun-desktop monorepo for now; designed to be
+# lifted out as-is when RikkaTerminal becomes its own product.
+#
+# Layering rule: this crate knows nothing about SSH clients, settings files
+# or app windows. It exposes TerminalSession (build_terminal_session over any
+# Read/Write pair), the grid renderer, selection/IME/keys helpers, and the
+# escape-protocol machinery (kitty graphics, sixel, OSC 8/9/52/0/2, ?2026,
+# ?1004, XTVERSION).
+[package]
+name = "rikka-terminal"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+alacritty_terminal = "0.24"
+anyhow = "1"
+tokio = { version = "1", features = ["sync"] }
+image = "0.25"
+base64 = "0.22"
+flate2 = "1"
+parking_lot = "0.12"
+arboard = "3"

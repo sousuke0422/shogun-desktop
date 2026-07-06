@@ -5539,6 +5539,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rikka-terminal"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "arboard",
+ "base64",
+ "flate2",
+ "gpui",
+ "gpui-component",
+ "image",
+ "parking_lot",
+ "tokio",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6317,6 +6333,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_yml",
+ "tempfile",
 ]
 
 [[package]]
@@ -6339,6 +6356,7 @@ dependencies = [
  "portable-pty",
  "regex",
  "rfd",
+ "rikka-terminal",
  "russh",
  "serde",
  "serde_yml",

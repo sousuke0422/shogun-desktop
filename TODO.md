@@ -180,9 +180,14 @@
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）
 - [ ] **RikkaTerminal 構想**（2026-07-06 殿表明）— 本格ターミナルとして独立プロダクト化。
-      前段として shogun-desktop のターミナルロジックのクレート化
-      （`terminal/` 一式: pty_session・renderer・selection・kitty_graphics・
-      progress/notify・keys/ime — alacritty_terminal ラッパ＋GPUI 描画エンジン）。
+      **第一段完了 (2026-07-06 殿下知「モノレポ構造で外に出しやすく分割」)**:
+      workspace 化し `crates/rikka-terminal` へ terminal/ 一式を抽出
+      （lib = 旧 mod.rs。SSH/ConPTY spawn は app 側 `src/pty_spawn.rs` に分離、
+      theme::Colors は engine 既定色 default_bg/fg に置換、measure_cell_metrics
+      は renderer へ移動）。app は root の `pub use rikka_terminal as terminal;`
+      で旧パス互換。レイヤ規約は crates/rikka-terminal/Cargo.toml 冒頭に明記
+      （engine は SSH・settings・窓を知らない）。CI は --workspace 化。
+      残: リポ切り・クレート名/ライセンス確定・vendored gpui/alacritty の扱い。
       shogun-desktop は抽出クレートの利用者となり二重メンテを避ける。
       旧 aki-term 構想（wt 代替タブ付きターミナル・設計書あり実装未着手）は
       本構想に吸収候補。検討事項: リポ切りとクレート側ライセンス選定

@@ -553,6 +553,12 @@ enum ApcState {
     ApcEsc,
 }
 
+impl Default for ApcScanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ApcScanner {
     pub fn new() -> Self {
         Self {

@@ -12,232 +12,20 @@ use alacritty_terminal::{
     vte::ansi::{Processor, StdSyncHandler},
 };
 use anyhow::Result;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-use crate::native_ssh::NativeSshClient;
-use crate::ssh::{SshClient, SystemSshClient};
-use crate::terminal::notify;
-use crate::terminal::progress::{OscEvent, OscScanner, Progress};
-use crate::terminal::{
+use crate::notify;
+use crate::progress::{OscEvent, OscScanner, Progress};
+use crate::{
     ClipboardEvent, ClipboardListener, GridSnapshot, PtyResizer, TerminalSession, kitty_graphics,
     take_snapshot,
 };
 
-// ── system-SSH resizer ────────────────────────────────────────────────────────
-
-/// Newtype wrapper that asserts `Box<dyn MasterPty>` is `Send + Sync`.
+/// Assemble a live terminal session over any PTY-like byte transport.
 ///
-/// # Safety
-/// On Windows, portable-pty's ConPTY backend (`ConPtyMaster`) stores a Windows
-/// `HPCON` handle.  Windows HANDLEs are reference-counted objects that may be
-/// used from any thread; the Windows documentation explicitly states that
-/// `ResizePseudoConsole` (which `MasterPty::resize` maps to) is thread-safe.
-/// On Unix, the master file descriptor is guarded below by a `FairMutex`, which
-/// prevents concurrent syscalls and makes the usage safe.
-struct SendMaster(Box<dyn portable_pty::MasterPty>);
-unsafe impl Send for SendMaster {}
-unsafe impl Sync for SendMaster {}
-
-struct SystemResizer {
-    master: FairMutex<SendMaster>,
-}
-
-impl PtyResizer for SystemResizer {
-    fn resize(
-        &self,
-        cols: u16,
-        rows: u16,
-        pixel_width: u16,
-        pixel_height: u16,
-    ) -> anyhow::Result<()> {
-        self.master.lock().0.resize(PtySize {
-            rows,
-            cols,
-            pixel_width,
-            pixel_height,
-        })?;
-        Ok(())
-    }
-}
-
-// ── public entry points ───────────────────────────────────────────────────────
-
-/// Open a plain interactive shell on the SSH server, with the working directory
-/// set to `project_path`. Unlike `spawn`, this does **not** attach to a tmux
-/// session — it gives a raw interactive shell suitable for htop, vim, etc.
-pub fn spawn_shell(
-    ssh: &SshClient,
-    project_path: &str,
-    cols: u16,
-    rows: u16,
-    control_path: Option<String>,
-) -> Result<TerminalSession> {
-    match ssh {
-        SshClient::Native(client) => spawn_shell_native(client, project_path, cols, rows),
-        SshClient::System(client) => {
-            spawn_shell_system(client, project_path, cols, rows, control_path)
-        }
-    }
-}
-
-fn spawn_shell_native(
-    client: &NativeSshClient,
-    project_path: &str,
-    cols: u16,
-    rows: u16,
-) -> Result<TerminalSession> {
-    let (reader, writer, resizer) = client.open_shell_channel(project_path, cols, rows)?;
-    let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer));
-    build_terminal_session(cols, rows, reader, writer, Arc::from(resizer))
-}
-
-fn spawn_shell_system(
-    ssh: &SystemSshClient,
-    project_path: &str,
-    cols: u16,
-    rows: u16,
-    control_path: Option<String>,
-) -> Result<TerminalSession> {
-    let pty = native_pty_system();
-    let pair = pty.openpty(PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
-
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = CommandBuilder::new("cmd.exe");
-        c.arg("/c");
-        c.arg("ssh");
-        c
-    };
-    #[cfg(not(windows))]
-    let mut cmd = CommandBuilder::new("ssh");
-
-    cmd.arg("-t");
-    cmd.args(["-p", &ssh.port.to_string()]);
-    if ssh.ctrl_enabled.load(Ordering::Relaxed) {
-        if let Some(ctrl) = control_path {
-            cmd.args([
-                "-o",
-                "ControlMaster=auto",
-                "-o",
-                &format!("ControlPath={ctrl}"),
-                "-o",
-                "ControlPersist=30",
-            ]);
-        }
-    }
-    cmd.args(["-o", "ConnectTimeout=10"]);
-    if let Some(ref key) = ssh.key_path {
-        cmd.args(["-i", key]);
-    }
-    cmd.arg(format!("{}@{}", ssh.user, ssh.host));
-    // cd to project, then exec the user's default shell
-    cmd.arg(format!("cd {project_path} && exec $SHELL -l"));
-
-    let _child = pair.slave.spawn_command(cmd)?;
-    let writer_box: Box<dyn Write + Send> = pair.master.take_writer()?;
-    let reader: Box<dyn Read + Send> = Box::new(pair.master.try_clone_reader()?);
-    let resizer: Arc<dyn PtyResizer> = Arc::new(SystemResizer {
-        master: FairMutex::new(SendMaster(pair.master)),
-    });
-    let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer_box));
-    build_terminal_session(cols, rows, reader, writer, resizer)
-}
-
-pub fn spawn(
-    ssh: &SshClient,
-    tmux_session: &str,
-    cols: u16,
-    rows: u16,
-    control_path: Option<String>,
-) -> Result<TerminalSession> {
-    match ssh {
-        SshClient::Native(client) => spawn_native(client, tmux_session, cols, rows),
-        SshClient::System(client) => spawn_system(client, tmux_session, cols, rows, control_path),
-    }
-}
-
-fn spawn_native(
-    client: &NativeSshClient,
-    tmux_session: &str,
-    cols: u16,
-    rows: u16,
-) -> Result<TerminalSession> {
-    let (reader, writer, resizer) = client.open_pty_channel(tmux_session, cols, rows)?;
-    let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer));
-    build_terminal_session(cols, rows, reader, writer, Arc::from(resizer))
-}
-
-fn spawn_system(
-    ssh: &SystemSshClient,
-    tmux_session: &str,
-    cols: u16,
-    rows: u16,
-    control_path: Option<String>,
-) -> Result<TerminalSession> {
-    let pty = native_pty_system();
-    let pair = pty.openpty(PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
-
-    // On Windows, spawning ssh.exe directly via ConPTY can trigger
-    // 0xc0000142 (STATUS_DLL_INIT_FAILED). Routing through cmd.exe lets
-    // the console subsystem initialise correctly before ssh.exe starts.
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = CommandBuilder::new("cmd.exe");
-        c.arg("/c");
-        c.arg("ssh");
-        c
-    };
-    #[cfg(not(windows))]
-    let mut cmd = CommandBuilder::new("ssh");
-
-    cmd.arg("-t");
-    cmd.args(["-p", &ssh.port.to_string()]);
-    if ssh.ctrl_enabled.load(Ordering::Relaxed) {
-        if let Some(ctrl) = control_path {
-            cmd.args([
-                "-o",
-                "ControlMaster=auto",
-                "-o",
-                &format!("ControlPath={ctrl}"),
-                "-o",
-                "ControlPersist=30",
-            ]);
-        }
-    }
-    cmd.args(["-o", "ConnectTimeout=10"]);
-    if let Some(ref key) = ssh.key_path {
-        cmd.args(["-i", key]);
-    }
-    // PTY sessions are interactive: ssh prompts for the password via the
-    // terminal directly. SSH_ASKPASS is for headless exec only — do not set it here.
-    cmd.arg(format!("{}@{}", ssh.user, ssh.host));
-    cmd.arg(format!("tmux attach-session -t {tmux_session}"));
-
-    let _child = pair.slave.spawn_command(cmd)?;
-
-    // Extract writer and reader from the master, then wrap the master itself in
-    // the resizer so future `resize()` calls reach the OS PTY.
-    let writer_box: Box<dyn Write + Send> = pair.master.take_writer()?;
-    let reader: Box<dyn Read + Send> = Box::new(pair.master.try_clone_reader()?);
-    let resizer: Arc<dyn PtyResizer> = Arc::new(SystemResizer {
-        master: FairMutex::new(SendMaster(pair.master)),
-    });
-
-    let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer_box));
-    build_terminal_session(cols, rows, reader, writer, resizer)
-}
-
-fn build_terminal_session(
+/// The transport is just a `Read` end, a shared `Write` end and a
+/// [`PtyResizer`]; SSH/ConPTY specifics live in the embedding application
+/// (shogun-desktop: `pty_spawn`).
+pub fn build_terminal_session(
     cols: u16,
     rows: u16,
     reader: Box<dyn Read + Send>,
@@ -362,11 +150,11 @@ fn build_terminal_session(
             // kitty store and are laid down as Unicode placeholder cells fed
             // straight into the parser — grid/scrollback/renderer handling
             // is shared with kitty graphics. See terminal::sixel.
-            let mut sixel_scanner = crate::terminal::sixel::SixelScanner::new();
-            let mut sixel_ids = crate::terminal::sixel::SixelIdAllocator::new();
+            let mut sixel_scanner = crate::sixel::SixelScanner::new();
+            let mut sixel_ids = crate::sixel::SixelIdAllocator::new();
             // XTVERSION (CSI > 0 q): vte has no hook for it — answer from a
             // passive scanner so applications can identify the terminal.
-            let mut xtversion = crate::terminal::xtversion::XtversionScanner::new();
+            let mut xtversion = crate::xtversion::XtversionScanner::new();
             loop {
                 // While a synchronized update is pending, wait only until its
                 // deadline so an unterminated BSU can't freeze the screen.
@@ -429,7 +217,7 @@ fn build_terminal_session(
                             // as unhandled), store the image and lay down
                             // placeholder cells at the cursor.
                             if let Some(seq) = sixel_scanner.advance(byte)
-                                && let Some(img) = crate::terminal::sixel::decode(&seq.data)
+                                && let Some(img) = crate::sixel::decode(&seq.data)
                             {
                                 let cw = cell_px2.0.load(Ordering::Relaxed).max(1) as usize;
                                 let chp = cell_px2.1.load(Ordering::Relaxed).max(1) as usize;
@@ -453,12 +241,9 @@ fn build_terminal_session(
                                     // The injection changes the fg color to
                                     // carry the image id; save and restore
                                     // the application's SGR foreground.
-                                    let restore = crate::terminal::sixel::sgr_fg_bytes(
-                                        t.grid().cursor.template.fg,
-                                    );
-                                    for &b in
-                                        &crate::terminal::sixel::placeholder_bytes(id, cols, rows)
-                                    {
+                                    let restore =
+                                        crate::sixel::sgr_fg_bytes(t.grid().cursor.template.fg);
+                                    for &b in &crate::sixel::placeholder_bytes(id, cols, rows) {
                                         parser.advance(&mut *t, b);
                                     }
                                     for &b in &restore {
@@ -511,7 +296,7 @@ fn build_terminal_session(
 /// EOFs — exercises the real reader thread (scanners, parser, snapshots).
 #[cfg(test)]
 pub fn build_test_session_with_output(cols: u16, rows: u16, output: Vec<u8>) -> TerminalSession {
-    use crate::terminal::NoopResizer;
+    use crate::NoopResizer;
     use std::io::Cursor;
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> =
         Arc::new(FairMutex::new(Box::new(std::io::sink())));
@@ -603,7 +388,7 @@ mod tests {
     /// injected into the parser → snapshot, cursor left below the image.
     #[test]
     fn sixel_end_to_end_through_reader_thread() {
-        use crate::terminal::sixel::SIXEL_ID_BASE;
+        use crate::sixel::SIXEL_ID_BASE;
 
         // Red 1×6 column ('~' = all six bits), then ordinary text.
         let mut script = Vec::new();
@@ -650,7 +435,7 @@ mod tests {
     /// actual changes.
     #[test]
     fn focus_reporting_gated_and_deduplicated() {
-        use crate::terminal::NoopResizer;
+        use crate::NoopResizer;
 
         #[derive(Clone, Default)]
         struct CaptureWriter(Arc<FairMutex<Vec<u8>>>);
@@ -685,7 +470,7 @@ mod tests {
     /// Without ?1004 no focus bytes may reach the PTY (vim would see garbage).
     #[test]
     fn focus_reporting_silent_when_mode_off() {
-        use crate::terminal::NoopResizer;
+        use crate::NoopResizer;
 
         let bytes: Arc<FairMutex<Vec<u8>>> = Arc::default();
         struct W(Arc<FairMutex<Vec<u8>>>);
@@ -713,7 +498,7 @@ mod tests {
     /// sync deadline (the parse thread's recv_timeout path), not frozen.
     #[test]
     fn sync_update_timeout_flushes_buffer() {
-        use crate::terminal::NoopResizer;
+        use crate::NoopResizer;
 
         /// Yields one canned chunk, then blocks forever (PTY stays open).
         struct StallingReader(Option<Vec<u8>>);

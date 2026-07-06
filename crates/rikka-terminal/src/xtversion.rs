@@ -24,6 +24,12 @@ enum State {
     },
 }
 
+impl Default for XtversionScanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl XtversionScanner {
     pub fn new() -> Self {
         Self {

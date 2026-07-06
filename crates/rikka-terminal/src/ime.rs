@@ -14,8 +14,8 @@
 //! `ElementInputHandler::new(bounds, ime.clone())`, and observes it so
 //! composition changes trigger a re-render.
 
-use crate::terminal::TerminalSession;
-use crate::window::measure_cell_metrics;
+use crate::TerminalSession;
+use crate::renderer::measure_cell_metrics;
 use gpui::{Bounds, Context, Pixels, UTF16Selection, WeakEntity, Window, point, px, size};
 
 /// What a window must provide for its [`TerminalIme`] handler.

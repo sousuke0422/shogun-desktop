@@ -12,7 +12,7 @@
 //! The highlight itself is painted by `render_grid` (paint calls from the
 //! overlay canvas never reach the screen — see `render_terminal_tab`).
 
-use crate::terminal::{GridSnapshot, MouseReport, ReportButton, ReportMods, TerminalSession};
+use crate::{GridSnapshot, MouseReport, ReportButton, ReportMods, TerminalSession};
 use gpui::{
     App, Bounds, ClipboardItem, DispatchPhase, Entity, Modifiers, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, Window,
@@ -407,7 +407,7 @@ fn selection_text(snap: &GridSnapshot, start: (usize, usize), end: (usize, usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::SnapshotCell;
+    use crate::SnapshotCell;
 
     fn snap_from_lines(lines: &[&str]) -> GridSnapshot {
         let cols = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);

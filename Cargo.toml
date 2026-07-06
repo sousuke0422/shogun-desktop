@@ -1,3 +1,11 @@
+# Monorepo: the app plus extraction-ready library crates. The terminal
+# engine lives in crates/rikka-terminal (see its Cargo.toml for the layering
+# rule); vendored gpui / alacritty_terminal stay outside the workspace and
+# are wired in via [patch.crates-io] below.
+[workspace]
+members = ["crates/rikka-terminal", "crates/shogun-core"]
+exclude = ["crates/alacritty_terminal", "crates/gpui"]
+
 [package]
 name = "shogun-desktop"
 version = "0.4.0"
@@ -33,6 +41,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Temporarily vendored from shogun-suite (crates/shogun-core) until that
 # repo goes live on GitHub — then switch back to the cross-repo path dep.
 shogun-core = { path = "crates/shogun-core" }
+# Terminal engine (RikkaTerminal core) — extracted from src/terminal/.
+rikka-terminal = { path = "crates/rikka-terminal" }
 
 [target.'cfg(windows)'.dependencies]
 # OSC 9 / 777 desktop notifications → WinRT toast (MIT OR Apache-2.0).

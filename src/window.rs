@@ -1,4 +1,5 @@
 use crate::image_upload::{self, UploadState};
+use crate::pty_spawn as pty_session;
 use crate::settings::{ConnectionBackend, ControlPathType, load_settings, save_settings};
 use crate::ssh::SshClient;
 use crate::tabs::AgentCardData;
@@ -10,8 +11,6 @@ use crate::tabs::{
 use crate::terminal::TerminalSession;
 use crate::terminal::ime::{ImeHost, TerminalIme};
 use crate::terminal::keys::key_to_pty_bytes;
-use crate::terminal::pty_session;
-use crate::terminal::renderer::cell_width_for_font;
 use crate::terminal::selection::{self, SelectionHost, SelectionState};
 use crate::theme::Colors;
 use gpui::{
@@ -57,88 +56,9 @@ gpui::actions!(
         TerminalPaste
     ]
 );
-
-/// Line-height multiplier applied to `font_size` to compute the cell height.
-///
-/// Following Zed's terminal approach: `cell_height = font_size × LINE_HEIGHT_MULT`.
-///
-/// Rationale for 1.5:
-///   - OS-independent: avoids platform-specific differences between DirectWrite
-///     (ascent+descent ≈ 1.53×) and CoreText (leading not included in ascent+descent).
-///   - Empirically validated on Windows: 13pt × 1.5 = 19.5 ≈ 20.0 (CELL_H fallback).
-///   - macOS CoreText returns `ascent+descent` without `leading`, so the old formula
-///     produced cramped rows on Retina. A fixed multiplier removes the OS dependency.
-///   - Matches Alacritty / Windows Terminal's typical inter-line breathing room.
-const LINE_HEIGHT_MULT: f32 = 1.5;
-
-/// Measure cell dimensions from the active GPUI `TextSystem`.
-///
-/// Both `cw` and `ch` are snapped to the nearest physical-pixel boundary (ceiling)
-/// to prevent sub-pixel accumulation across columns/rows.
-///
-/// - **cw** = `ch_advance(font_id, font_size)` snapped to physical-pixel ceiling.
-///   At 125% DPI: `6.825 × 1.25 = 8.53 physical px → ceil → 9 → /1.25 = 7.2 logical px`.
-///   Without the snap, each glyph overflows its cell by ≈0.4 px, breaking table
-///   column alignment after ~30 characters.
-/// - **ch** = `font_size × LINE_HEIGHT_MULT` snapped to physical-pixel ceiling.
-///   At 125% DPI: `19.5 × 1.25 = 24.375 physical px → ceil → 25 → /1.25 = 20.0 logical px`.
-///   Without the snap, GPUI flex layout introduces per-row rounding drift, causing
-///   tmux horizontal pane-border characters (`─`) to misalign vertically after N rows.
-///
-/// `scale_factor` is `window.scale_factor()` (device-pixel ratio, e.g. 1.25 on
-/// Windows 125 % DPI, 2.0 on macOS Retina).
-///
-/// Falls back to [`cell_width_for_font`] for `cw` on error.
-pub fn measure_cell_metrics(
-    ts: &std::sync::Arc<gpui::TextSystem>,
-    font_name: &str,
-    scale_factor: f32,
-) -> (f32, f32) {
-    // `gpui::font` requires `Into<SharedString>` which expects 'static for &str.
-    // Convert to owned String first to satisfy the lifetime bound.
-    let font_spec = gpui::font(font_name.to_string());
-    let font_id = ts.resolve_font(&font_spec);
-    let font_size = px(13.0);
-
-    // ch_advance returns Result<Pixels, _>.  Guard against both Err and Ok(0.0):
-    // GPUI may return Ok(Pixels(0.0)) while the font is still being measured
-    // (lazy load).  A zero cw causes (viewport / 0) = f32::INFINITY, which casts
-    // to u16::MAX = 65535 — sending a 65535-col resize to tmux and breaking layout.
-    let measured_cw = ts
-        .ch_advance(font_id, font_size)
-        .map(f32::from)
-        .unwrap_or(0.0);
-    let cw = if measured_cw > 0.5 {
-        // Snap to physical-pixel ceiling to eliminate sub-pixel glyph overflow.
-        // e.g. 6.825 × 1.25 = 8.53 → ceil → 9 → /1.25 = 7.2 logical px.
-        let sf = scale_factor.max(1.0);
-        (measured_cw * sf).ceil() / sf
-    } else {
-        cell_width_for_font(font_name)
-    };
-
-    // Cell height: font_size × multiplier, snapped to physical-pixel ceiling.
-    // CoreText omits line_gap from ascent+descent, so the previous `ascent + descent`
-    // formula produced cramped rows on macOS. A fixed multiplier is identical across
-    // DirectWrite / CoreText / FreeType.
-    //
-    // Without the snap, each row is 19.5 logical px, which at 125% DPI is
-    // 24.375 physical px — a non-integer.  GPUI rounds per-row in flex layout,
-    // so after N rows the accumulated pixel offset has subpixel drift, causing
-    // tmux pane-border characters (horizontal `─`) to misalign vertically.
-    //
-    // Snapped values:
-    //   100% DPI: ceil(19.5 × 1.0) / 1.0 = 20 / 1.0 = 20.0 px
-    //   125% DPI: ceil(19.5 × 1.25) / 1.25 = 25 / 1.25 = 20.0 px
-    //   200% DPI: ceil(19.5 × 2.0) / 2.0 = 39 / 2.0 = 19.5 px (no change)
-    let ch = {
-        let raw = f32::from(font_size) * LINE_HEIGHT_MULT;
-        let sf = scale_factor.max(1.0);
-        (raw * sf).ceil() / sf
-    };
-
-    (cw, ch)
-}
+// Cell metrics measurement moved into the engine crate with the rest of the
+// renderer; re-exported here because half the app imports it from window.
+pub use crate::terminal::renderer::measure_cell_metrics;
 
 /// State for the Agents tab.
 pub struct AgentsState {

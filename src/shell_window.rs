@@ -1,9 +1,9 @@
+use crate::pty_spawn as pty_session;
 use crate::settings::load_settings;
 use crate::ssh::SshClient;
 use crate::tabs::shogun_tab::MONO_FONT;
 use crate::terminal::ime::{ImeHost, TerminalIme};
 use crate::terminal::keys::key_to_pty_bytes;
-use crate::terminal::pty_session;
 use crate::terminal::renderer::render_grid;
 use crate::terminal::selection::{self, SelectionHost, SelectionState};
 use crate::terminal::{GridSnapshot, TerminalSession};
