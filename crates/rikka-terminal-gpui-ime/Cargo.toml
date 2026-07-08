@@ -1,0 +1,18 @@
+[package]
+name = "rikka-terminal-gpui-ime"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "OS IME status/indicator integration for gpui windows (Windows TSF today; Linux/macOS as later rounds)"
+
+# The engine core stays IME-agnostic; this crate owns the platform glue that
+# makes the OS input indicator track gpui windows. Only the Windows backend
+# pulls a platform dependency — the platform-neutral core (lib.rs) builds
+# everywhere, so the abstraction is checkable off-Windows.
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_TextServices",
+]

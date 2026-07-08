@@ -2653,6 +2653,7 @@ dependencies = [
  "rand 0.9.4",
  "raw-window-handle",
  "resvg",
+ "rikka-terminal-gpui-ime",
  "schemars",
  "seahash",
  "serde",
@@ -5557,6 +5558,13 @@ dependencies = [
 [[package]]
 name = "rikka-terminal-agent-integration"
 version = "0.1.0"
+
+[[package]]
+name = "rikka-terminal-gpui-ime"
+version = "0.1.0"
+dependencies = [
+ "windows 0.61.3",
+]
 
 [[package]]
 name = "rikka-terminal-ssh-integration"

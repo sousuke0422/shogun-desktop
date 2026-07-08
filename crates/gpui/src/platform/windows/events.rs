@@ -30,6 +30,57 @@ pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
 const AUTO_HIDE_TASKBAR_THICKNESS_PX: i32 = 1;
 
+/// TEMPORARY field diagnostic for the stale taskbar IME indicator. Set
+/// `SHOGUN_IME_LOG=<path>` before launch to append every IME-relevant window
+/// message (name + IMN sub-code + raw params) as it reaches our window proc.
+///
+/// The decisive question: when the user toggles あ/A, does `WM_IME_NOTIFY`
+/// (IMN_SETCONVERSIONMODE / IMN_SETOPENSTATUS) actually arrive here? If yes,
+/// the notifications flow to `DefWindowProcW` and the fault is display-side
+/// (TSF focus tracking / DirectComposition redirection); if no, it is a
+/// focus / IME-context association gap. Cost-free (one env lookup) when unset.
+/// Remove once root-caused.
+fn ime_debug_probe(msg: u32, wparam: WPARAM, lparam: LPARAM) {
+    static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let Some(path) = PATH.get_or_init(|| std::env::var("SHOGUN_IME_LOG").ok()) else {
+        return;
+    };
+    let name = match msg {
+        WM_IME_SETCONTEXT => "WM_IME_SETCONTEXT",
+        WM_IME_NOTIFY => "WM_IME_NOTIFY",
+        WM_IME_STARTCOMPOSITION => "WM_IME_STARTCOMPOSITION",
+        WM_IME_ENDCOMPOSITION => "WM_IME_ENDCOMPOSITION",
+        WM_IME_COMPOSITION => "WM_IME_COMPOSITION",
+        WM_INPUTLANGCHANGE => "WM_INPUTLANGCHANGE",
+        WM_INPUTLANGCHANGEREQUEST => "WM_INPUTLANGCHANGEREQUEST",
+        WM_SETFOCUS => "WM_SETFOCUS",
+        WM_KILLFOCUS => "WM_KILLFOCUS",
+        WM_ACTIVATE => "WM_ACTIVATE",
+        _ => return,
+    };
+    let sub = if msg == WM_IME_NOTIFY {
+        match wparam.0 as u32 {
+            IMN_SETCONVERSIONMODE => " IMN_SETCONVERSIONMODE",
+            IMN_SETOPENSTATUS => " IMN_SETOPENSTATUS",
+            IMN_SETSENTENCEMODE => " IMN_SETSENTENCEMODE",
+            IMN_OPENCANDIDATE => " IMN_OPENCANDIDATE",
+            IMN_CLOSECANDIDATE => " IMN_CLOSECANDIDATE",
+            _ => " IMN_other",
+        }
+    } else {
+        ""
+    };
+    let line = format!("{name}{sub} wparam=0x{:x} lparam=0x{:x}\n", wparam.0, lparam.0);
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 impl WindowsWindowInner {
     pub(crate) fn handle_msg(
         self: &Rc<Self>,
@@ -38,6 +89,7 @@ impl WindowsWindowInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
+        ime_debug_probe(msg, wparam, lparam);
         let handled = match msg {
             WM_ACTIVATE => self.handle_activate_msg(wparam),
             WM_CREATE => self.handle_create_msg(handle),

@@ -6,6 +6,7 @@
 members = [
     "crates/rikka-terminal",
     "crates/rikka-terminal-agent-integration",
+    "crates/rikka-terminal-gpui-ime",
     "crates/rikka-terminal-ssh-integration",
     "crates/shogun-core",
 ]

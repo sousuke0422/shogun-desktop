@@ -661,6 +661,11 @@ features = ["wgsl-in"]
 [target.'cfg(target_os = "windows")'.dependencies.flume]
 version = "0.11"
 
+# TSF-based IME indicator integration (extracted so the engine core and gpui
+# stay thin). No-op crate off-Windows; wired only in the Windows backend.
+[target.'cfg(target_os = "windows")'.dependencies.rikka-terminal-gpui-ime]
+path = "../rikka-terminal-gpui-ime"
+
 [target.'cfg(target_os = "windows")'.dependencies.rand]
 version = "0.9"
 
