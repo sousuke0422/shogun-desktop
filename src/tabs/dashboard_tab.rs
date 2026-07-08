@@ -5,7 +5,7 @@ use crate::theme::Colors;
 use crate::window::{DashboardState, ShogunWindow};
 use gpui::{
     Context, Fill, Hsla, IntoElement, ParentElement, StyleRefinement, Styled, TextStyleRefinement,
-    Window, div, prelude::*, px, rgb,
+    Window, div, prelude::*, px,
 };
 use gpui_component::{
     Sizable, Theme, ThemeMode,
@@ -86,10 +86,17 @@ pub fn render_dashboard_tab(
             .into_any_element()
     } else {
         apply_dashboard_markdown_theme(window, cx);
+        // NOT `.scrollable(true)`: that mode virtualizes with an *internal*
+        // scroll (gpui::list), and TextView anchors its selection to the fixed
+        // viewport (`pos - bounds.origin`) with no scroll offset — so scrolling
+        // slides the text out from under a stuck highlight. Fitting the full
+        // height instead lets the outer `overflow_y_scrollbar` translate the
+        // whole element, so bounds.origin moves with the text and the selection
+        // tracks it.
         TextView::markdown("dashboard-md", state.content.clone(), window, cx)
             .style(dashboard_text_view_style())
             .text_color(Colors::zouge())
-            .scrollable(true)
+            .selectable(true)
             .into_any_element()
     };
 
@@ -100,14 +107,14 @@ pub fn render_dashboard_tab(
         .child(
             div()
                 .w_full()
-                .h(px(48.))
+                .h(px(crate::window::STATUS_BAR_HEIGHT_PX))
                 .flex()
                 .items_center()
                 .justify_between()
                 .px_3()
                 .bg(bg_color)
-                .text_color(rgb(0xFFFFFF))
-                .text_sm()
+                .text_color(Colors::zouge())
+                .text_size(px(12.))
                 .child(status_text)
                 .child(
                     Button::new("dashboard-refresh")
@@ -122,6 +129,13 @@ pub fn render_dashboard_tab(
             div()
                 .id("dashboard-pane-content")
                 .flex_1()
+                // `min-height: 0` is the canonical flexbox fix for a flex item
+                // that holds a taller-than-viewport scrollable child: without it
+                // the item's `min-height: auto` equals the full content height,
+                // which refuses to shrink and instead squeezes the sibling
+                // status bar below its 32 px. With it the content takes its flex
+                // allotment and scrolls internally, so the bar keeps its height.
+                .min_h_0()
                 .w_full()
                 .bg(Colors::shikkoku())
                 .overflow_y_scrollbar()

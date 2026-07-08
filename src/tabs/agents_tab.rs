@@ -234,14 +234,14 @@ pub fn render_agents_tab(state: &AgentsState, cx: &mut Context<ShogunWindow>) ->
         .child(
             div()
                 .w_full()
-                .h(px(48.))
+                .h(px(crate::window::STATUS_BAR_HEIGHT_PX))
                 .flex()
                 .items_center()
                 .justify_between()
                 .px_3()
                 .bg(bg_color)
-                .text_color(rgb(0xFFFFFF))
-                .text_sm()
+                .text_color(Colors::zouge())
+                .text_size(px(12.))
                 .child(status_text)
                 .child(
                     Button::new("agents-refresh")
@@ -256,6 +256,9 @@ pub fn render_agents_tab(state: &AgentsState, cx: &mut Context<ShogunWindow>) ->
             div()
                 .id("agents-pane-content")
                 .flex_1()
+                // See dashboard_tab: min-height:0 keeps the status bar from
+                // being squeezed by tall scrollable content.
+                .min_h_0()
                 .w_full()
                 .bg(Colors::shikkoku())
                 .overflow_y_scrollbar()
