@@ -3,25 +3,72 @@
 2026-07-03 時点。直近の実装状況は git log、経緯の詳細は multi-agent-shogun 側
 `memory/project_shogun_desktop_terminal_2026_07_02.md` を参照。
 
-## 1. 実機確認待ち（コード済み・検証未了）
+## 1. 実機確認バックログ
 
 ビルド: `cargo build --release`（Windows cargo.exe）→ 再起動して確認。
 
-- [ ] **ホイール方向の符号** — gpui wheel-up=正 前提で直結マッピング。逆なら
-      `shell_window.rs` の `on_scroll_wheel` で `lines` を符号反転するだけ
+### 1.1 Windows
+
+#### 1.1.1 ホイール方向の符号
+
+- トリガー: shell window でマウスホイール上/下を送る
+- 期待結果: 上=上方向スクロール、下=下方向スクロール（gpui wheel-up=正 前提の直結マッピング。逆なら `shell_window.rs` の `on_scroll_wheel` で `lines` を符号反転）
+- 対象窓: shell window
+- 対象OS: Windows
+
+#### 1.1.2 shell window 履歴スクロール
+
+- トリガー: shell window でマウスホイール上を送って履歴行を表示 → ステータスバーに「履歴 N行上」が出ることを確認 → 任意のキー入力
+- 期待結果: (1)履歴行が正しく描画される（7bf34c4 で display_iter グリッド座標の usize キャストバグは根治済）(2)ステータスバーに「履歴 N行上」が表示 (3)キー入力で最下部に復帰
+- 対象窓: shell window
+- 対象OS: Windows
+- 備考: ホイール符号・alacritty履歴側は計装実測で最初から正常だった
+
+#### 1.1.3 shell window Shift+PageUp/PageDown ページング
+
+- トリガー: shell window にフォーカス → Shift+PageUp / Shift+PageDown
+- 期待結果: 1ページ分の上下スクロール
+- 対象窓: shell window
+- 対象OS: Windows
+
+#### 1.1.4 Tailscale アイドル後の入力引っかかり
+
+- トリガー: Tailscale 経由で SSH 接続 → 数分間_idle_放置 → typing 再開
+- 期待結果: 入力が引っかからずスムーズに流れる（keepalive + 非同期書込で修正済み）
+- 対象窓: shell window（Tailscale 経由 SSH）
+- 対象OS: Windows
+
+### 1.2 macOS
+
+#### 1.2.1 デスクトップ通知配信（MBA 実機）
+
+- トリガー: ターミナルで `printf '\e]9;test notification\a'`（アプリが非フォーカス状態）
+- 期待結果: macOS の通知センターに「将軍デスクトップ」名義のトーストが表示
+- 対象窓: 全ターミナルタブ
+- 対象OS: macOS（MacBook Air）
+- 備考: mac-notification-sys 0.6.15 で実装済み。`set_application("app.rikkalab.shogun-desktop")`。focus suppression（active タブでは出ない）も実装済み
+
+### 1.3 検証済み疑い（要ダブルチェック）
+
+git log（2026-07-03 以降）および TODO 記述を突合した結果、「検証済み疑い」に該当する項目は
+無し。上記 5 件はいずれも git log に検証を示すコミット無く、純粋な「要検証」
+（OSC 9;4 進捗表示は 2026-07-08 実機確認済みのため 1.9 へ移動）。
+
+---
+
+### 1.9 検証済み（完了記録）
+
+- [x] **OSC 9;4 進捗表示 — 2026-07-08 実機確認済み（殿確認）**。
+      `printf '\e]9;4;1;50\a'` でタブ下端 + shell window ステータスバー下端に 3px
+      バーが表示。実装 2026-07-04（PTY 受動スキャナ→虹色スクロールバー）＋2026-07-08
+      に parser の空 percent field 修正・tmux 内で OSC 9;4 を出さず title spinner
+      （Braille）を出す agent 向けの title-spinner→不定バー fallback を追加
 - [x] ssh 系ペインの微スクロール — **2026-07-04 根治・実機確認済み**。真因は
       IME/選択 overlay canvas (absolute+size_full) 自体が overflow 源（taffy は
       absolute 子もコンテンツサイズに算入→padding 8px 分が常時スクロール可能・
       上端欠け・下隙間も同根）。bce57db で overlay を content box に inset
 - [x] アイドル時 CPU がほぼ 0%（16ms ポーリング全廃・イベント駆動化）
       — **2026-07-05 実機確認済み**（殿計測: アイドル時 ≤0.5%）
-- [ ] shell window: 履歴スクロール／ステータスバー「履歴 N行上」／キー入力で最下部復帰
-      — **2026-07-05 描画バグ根治（7bf34c4）**: take_snapshot が display_iter の
-      グリッド座標（履歴行=負のline）を生 usize キャストしており、履歴行が全部捨てられ
-      残りが上にずれて描画＝「スクロールで先に進む」ように見えた。screen row =
-      grid line + display_offset へ修正（cursor同様・回帰テスト付き）。
-      ホイール符号・alacritty履歴側は計装実測で最初から正常だった。実機確認待ち
-- [ ] shell window: Shift+PageUp/PageDown ページング
 - [x] btop でホイールがアプリ側スクロールになるか（マウスレポーティング転送）
       — **2026-07-05 実機確認済み**（殿確認）
 - [x] less / man でホイールが効くか（alternate scroll → 矢印変換）
@@ -37,7 +84,6 @@
       — **2026-07-05 実機確認済み**（殿確認）
 - [x] shell window の選択コピー・IME（前回実装分の目視）
       — **2026-07-05 実機確認済み**（殿確認）
-- [ ] tailscale アイドル後の入力引っかかり解消（keepalive + 非同期書込）
 - [x] **リサイズでグリッドが追従しない（殿報告 2026-07-05）** — 根治済み。真因は
       bce57db の overlay content-box 化の副作用: スクロールコンテナ内の absolute 子は
       taffy が **コンテンツサイズ**に合わせるため、overlay 高さ = グリッド行数×セル高で
@@ -96,7 +142,8 @@
       (`terminal/progress.rs`、vte は 9;4 を捨てるため素通し監視) → タブ下端 +
       shell window ステータスバー下端に 3px バー（通常=虹色スクロール・ゲーミング仕様/
       エラー=紅/警告=金箔/不定=全幅虹色。with_animation なので表示中のみフレーム駆動）。
-      実機確認待ち: `printf '\e]9;4;1;50\a'`
+      **2026-07-08 実機確認済み（殿確認）**。tmux 内で OSC 9;4 を出さず title spinner
+      を出す agent 向けに、title-spinner→不定バー fallback も追加
   - [ ] Phase 2: Windows タスクバー進捗 (ITaskbarList3::SetProgressValue)。
         HWND は vendored gpui に accessor を足すか EnumWindows+PID で取得
 - [x] **OSC 8 ハイパーリンク（2026-07-06 実装・実機確認済み）**: 明示 OSC 8 ＋
@@ -176,6 +223,15 @@
       set_application("app.rikkalab.shogun-desktop") でバンドル名義。**MBA実機確認待ち**。
       Linux も notify-send spawn（依存ゼロ・ゾンビ回収付き）実装済み — port 時に実機確認。
       アクション/アイコンが要る日が来たら zbus (blocking) へ昇格
+- [x] **box-drawing グリフの procedural 描画（角丸・斜線・混在 junction・線幅）**
+      — 2026-07-08 実装・実機確認済み（`/config`・codex 起動枠・btop で崩れず描画）。
+      geometry 優先＋font-fallback 方針: 角丸 ╭╮╯╰ = 制御点をセル中心に置く二次ベジェ
+      （中心線が角を内側にカット＝rounded ┌）、斜線 ╱╲╳ = `PathBuilder::stroke` 直線、
+      混在 heavy/light junction ┝〜╊（38 字）を `junction!(u,d,l,r)` マクロで腕別太さ
+      厳密化（従来は範囲 arm で一律 light 近似だった／Unicode 正式名と 1 字ずつ照合）。
+      線幅はセル幅基準（lw=cw/8, hw=cw/4）— 旧来の高さ基準は monospace で light 線が
+      約 2 倍太く見えた。geometry で拾えない字のみ `shape_line` でフォント描画。
+      `crates/rikka-terminal/src/renderer.rs`（paint_box_char / is_geom_box_char）
 - [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）
@@ -189,6 +245,11 @@
       （engine は SSH・settings・窓を知らない）。CI は --workspace 化。
       残: リポ切り・クレート名/ライセンス確定・vendored gpui/alacritty の扱い。
       shogun-desktop は抽出クレートの利用者となり二重メンテを避ける。
+      **2026-07-08 追補**: engine 純化を further — bashrc/shell 注入系（ZDOTDIR
+      ラッパー・remote_env_prefix・tmux title 転送）を `rikka-terminal-ssh-integration`、
+      エージェント進捗検出（Braille スピナー→AgentProgress）を
+      `rikka-terminal-agent-integration` へ分離。engine は両クレートを知らず、SSH/
+      settings/窓非依存の規約がより厳密になった（codex 対応の布石）。
       旧 aki-term 構想（wt 代替タブ付きターミナル・設計書あり実装未着手）は
       本構想に吸収候補。検討事項: リポ切りとクレート側ライセンス選定
       （shogun-desktop に GPL 化予定は無い — gpui が Apache-2.0 になり
