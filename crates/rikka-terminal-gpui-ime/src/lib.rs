@@ -1,96 +1,165 @@
-//! IME status integration for gpui windows — makes the OS input indicator (the
-//! Windows taskbar あ/A today; Linux/macOS as later rounds) track the focused
-//! gpui window.
+//! IME text-input integration for gpui windows — participates in the Windows
+//! Text Services Framework so the OS input indicator (taskbar あ/A) tracks the
+//! focused window and reflects its conversion mode.
 //!
-//! Why this exists: gpui's Windows backend composes text through IMM32, which
-//! is enough to *input* Japanese but leaves the modern TSF-driven taskbar
-//! indicator unaware of our windows. Windows 11's new IME (22H2+) no longer
-//! emits the legacy `IMN_SETOPENSTATUS` / `IMN_SETCONVERSIONMODE` notifications
-//! — a field trace of our window proc saw only candidate/composition messages,
-//! never those two — so the indicator never learns our conversion mode. The
-//! standard fix (per Microsoft's TSF guidance; winit and others are IMM32-only
-//! and don't do it) is to participate in the Text Services Framework: activate
-//! an `ITfThreadMgr` on the UI thread and give each window a focus document, so
-//! TSF tracks our windows and drives the indicator. Composition itself keeps
-//! running through gpui's IMM32 path; this only adds the missing TSF focus.
+//! Why: gpui's Windows backend composes through IMM32, which inputs Japanese
+//! fine but leaves the modern TSF-driven taskbar indicator unaware of our
+//! windows (a field trace saw candidate/composition messages arrive but never
+//! `IMN_SETCONVERSIONMODE` / `IMN_SETOPENSTATUS` — Win11's new IME keeps that
+//! state in TSF). Making TSF track the window requires giving it a focus
+//! document backed by a real [`ITextStoreACP`] text store — an *empty* focus
+//! document instead silently steals input. So this crate implements that text
+//! store and bridges it to gpui's text via [`TsfTextClient`].
 //!
-//! The engine core (`rikka-terminal`) stays free of all this. The Windows TSF
-//! backend lives behind a platform-neutral trait so a Linux (IBus/fcitx) or
-//! macOS backend can be dropped in as a separate round without touching gpui —
-//! and so the abstraction compiles and is checkable on non-Windows hosts.
+//! The Windows COM lives behind a platform-neutral trait, so a Linux (IBus) or
+//! macOS backend can be a later round, and the core here compiles everywhere.
+//!
+//! The Windows TSF text store is adapted from the arcweft project
+//! (<https://github.com/Sanzentyo/arcweft>, dual Apache-2.0/MIT, used here under
+//! MIT). See CREDITS.
 
 use std::cell::RefCell;
+use std::ops::Range;
 
-/// Per-thread hook that keeps the OS input indicator in sync with the focused
-/// window. One implementation per platform; [`NoopIme`] wherever unsupported.
-///
-/// TSF (and the equivalents on other platforms) is thread-affine and gpui runs
-/// its window procedure on a single thread, so the integration is modelled at
-/// thread scope with windows associated/dissociated by their native handle.
-pub trait ImeThreadIntegration {
-    /// A window on this thread was created; begin tracking it so the OS
-    /// indicator reflects its IME state while it is focused. `hwnd` is the
-    /// platform window handle as an `isize` (a Win32 `HWND`, etc.).
-    fn associate_window(&mut self, hwnd: isize);
-    /// A tracked window is going away; stop tracking it.
-    fn dissociate_window(&mut self, hwnd: isize);
+/// A snapshot of the focused input's editable text, selection and caret, in the
+/// UTF-16 code-unit offsets shared by TSF's ACP and gpui's `InputHandler` (so no
+/// conversion is needed between them).
+#[derive(Clone, Debug, Default)]
+pub struct TextSnapshot {
+    /// The editable text as UTF-16 code units.
+    pub text: Vec<u16>,
+    /// Selection/caret as UTF-16 offsets into `text` (`start == end` = caret).
+    pub selection: Range<usize>,
+    /// Screen-space caret rectangle for placing the candidate window. `None`
+    /// reports "no layout yet" to TSF (composition still works; the candidate
+    /// window falls back to a default position).
+    pub caret: Option<CaretRect>,
 }
 
-/// Fallback backend: does nothing. Used on platforms without a backend yet, and
-/// when platform initialisation fails — IME input keeps working through the
-/// existing path, only the indicator stays as it is today.
-pub struct NoopIme;
+/// Screen-space rectangle in physical pixels. Plain ints keep the trait
+/// platform-neutral (the Windows backend converts to `RECT`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaretRect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
 
-impl ImeThreadIntegration for NoopIme {
-    fn associate_window(&mut self, _hwnd: isize) {}
-    fn dissociate_window(&mut self, _hwnd: isize) {}
+/// An edit the IME asked us to make, in UTF-16 offsets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextEdit {
+    /// Replace `start..end` with `text` (a composition update or a commit).
+    Replace {
+        start: usize,
+        end: usize,
+        text: Vec<u16>,
+    },
+    /// Move the selection/caret to `start..end`.
+    SetSelection { start: usize, end: usize },
+}
+
+/// The application's editable text as the IME sees it. gpui implements this over
+/// its `InputHandler`.
+///
+/// Called only from the application's own control flow — on focus and when
+/// draining queued IME edits — never re-entrantly from inside a TSF COM
+/// callback. That is why the backend serves TSF reads from a cached
+/// [`TextSnapshot`] and queues writes for the app to apply later.
+pub trait TsfTextClient {
+    /// The focused input's current text, selection and caret rectangle.
+    fn snapshot(&mut self) -> TextSnapshot;
+    /// Apply queued IME edits to the focused input, in order.
+    fn apply(&mut self, edits: &[TextEdit]);
+}
+
+/// Platform backend: keeps the OS IME/indicator in sync with the focused input.
+trait Backend {
+    /// The window `hwnd` gained focus with the given initial text state.
+    fn focus(&mut self, hwnd: isize, snapshot: TextSnapshot);
+    /// The focused input lost focus.
+    fn blur(&mut self);
+    /// Remove and return edits the IME has queued since the last drain.
+    fn take_pending(&mut self) -> Vec<TextEdit>;
+    /// Replace the cached text state TSF reads from.
+    fn set_snapshot(&mut self, snapshot: TextSnapshot);
+}
+
+/// No-op backend: platforms without an implementation, or when init fails.
+struct NoopBackend;
+impl Backend for NoopBackend {
+    fn focus(&mut self, _hwnd: isize, _snapshot: TextSnapshot) {}
+    fn blur(&mut self) {}
+    fn take_pending(&mut self) -> Vec<TextEdit> {
+        Vec::new()
+    }
+    fn set_snapshot(&mut self, _snapshot: TextSnapshot) {}
 }
 
 #[cfg(windows)]
 mod windows;
 
 thread_local! {
-    /// One integration per UI thread, built lazily on first use. Keeping it
-    /// thread-local lets the gpui call sites stay free functions.
-    static CURRENT: RefCell<Option<Box<dyn ImeThreadIntegration>>> = const { RefCell::new(None) };
+    /// One backend per UI thread, built lazily on first focus. TSF objects are
+    /// thread-affine and gpui's window procedure is single-threaded, so a
+    /// thread-local keeps the call sites as free functions.
+    static BACKEND: RefCell<Option<Box<dyn Backend>>> = const { RefCell::new(None) };
 }
 
-/// Build the platform backend for this thread, falling back to [`NoopIme`].
-fn backend() -> Box<dyn ImeThreadIntegration> {
+fn make_backend() -> Box<dyn Backend> {
     #[cfg(windows)]
     {
-        match windows::WindowsTsfIme::new() {
-            Ok(ime) => Box::new(ime),
-            Err(_) => Box::new(NoopIme),
+        match windows::WindowsTsf::new() {
+            Ok(backend) => Box::new(backend),
+            Err(_) => Box::new(NoopBackend),
         }
     }
     #[cfg(not(windows))]
     {
-        Box::new(NoopIme)
+        Box::new(NoopBackend)
     }
 }
 
-/// Begin tracking a freshly created window (call from the platform's window
-/// creation path). Initialises this thread's backend on first use. No-op where
-/// no backend exists.
-pub fn associate_window(hwnd: isize) {
-    CURRENT.with(|c| {
-        let mut slot = c.borrow_mut();
+fn with_backend<R>(f: impl FnOnce(&mut dyn Backend) -> R) -> Option<R> {
+    BACKEND.with(|b| b.borrow_mut().as_mut().map(|be| f(be.as_mut())))
+}
+
+/// The window `hwnd` gained keyboard focus on an editable input; begin TSF
+/// tracking so the OS indicator reflects its IME mode. Loads the initial text
+/// state from `client`. Builds this thread's backend on first use.
+pub fn focus(hwnd: isize, client: &mut dyn TsfTextClient) {
+    let snapshot = client.snapshot();
+    BACKEND.with(|b| {
+        let mut slot = b.borrow_mut();
         if slot.is_none() {
-            *slot = Some(backend());
+            *slot = Some(make_backend());
         }
-        if let Some(ime) = slot.as_mut() {
-            ime.associate_window(hwnd);
+        if let Some(backend) = slot.as_mut() {
+            backend.focus(hwnd, snapshot);
         }
     });
 }
 
-/// Stop tracking a window (call from the window destroy path). No-op if the
-/// window was never associated or no backend is active.
-pub fn dissociate_window(hwnd: isize) {
-    CURRENT.with(|c| {
-        if let Some(ime) = c.borrow_mut().as_mut() {
-            ime.dissociate_window(hwnd);
-        }
+/// The focused input lost focus; end TSF tracking.
+pub fn blur() {
+    with_backend(|backend| backend.blur());
+}
+
+/// Apply any IME edits queued since the last call, then refresh the cached text
+/// state TSF reads from. Call from the app's control flow when it is safe to
+/// touch the input (e.g. after dispatching a window message).
+pub fn sync(client: &mut dyn TsfTextClient) {
+    let edits = with_backend(|backend| backend.take_pending()).unwrap_or_default();
+    if !edits.is_empty() {
+        client.apply(&edits);
+    }
+    let snapshot = client.snapshot();
+    with_backend(|backend| backend.set_snapshot(snapshot));
+}
+
+/// Tear down this thread's backend (e.g. on shutdown).
+pub fn shutdown() {
+    BACKEND.with(|b| {
+        b.borrow_mut().take();
     });
 }

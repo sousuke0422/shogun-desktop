@@ -44,3 +44,16 @@ Bundled color emoji font (rendered identically on every OS the app runs on).
   Emoji artwork: Copyright (c) Twitter, Inc and other contributors
   Artwork licensed under CC-BY 4.0 — https://creativecommons.org/licenses/by/4.0/
   Font code licensed under the Apache License, Version 2.0
+
+## Windows TSF Text Store (IME)
+
+The Windows Text Services Framework integration
+(crates/rikka-terminal-gpui-ime — the ITextStoreACP text store, thread-manager
+activation, and document/context focus that let the taskbar input indicator
+track our windows) is adapted from the arcweft project's app-side TSF text
+input.
+
+  arcweft
+  Copyright (c) Sanzentyo
+  Source: https://github.com/Sanzentyo/arcweft
+  Dual-licensed under Apache-2.0 OR MIT; used here under the MIT License

@@ -14,5 +14,13 @@ version = "0.61"
 features = [
     "Win32_Foundation",
     "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
     "Win32_UI_TextServices",
 ]
+
+# The #[implement] macro expands to `windows_core::…` paths and the
+# ITextStoreACP_Impl trait is bound on `windows_core::IUnknownImpl`, so the
+# crate must be a direct, name-resolvable dependency (not only via `windows`).
+[target.'cfg(windows)'.dependencies.windows-core]
+version = "0.61"
