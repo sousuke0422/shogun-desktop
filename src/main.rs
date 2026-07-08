@@ -5,6 +5,7 @@ pub mod native_ssh;
 mod notify_toast;
 mod pty_spawn;
 mod settings;
+mod shell_integration;
 mod shell_window;
 mod ssh;
 mod tabs;

@@ -1,0 +1,19 @@
+# rikka-terminal-agent-integration — infer a coding agent's progress from a
+# terminal's out-of-band signals (window-title spinners today; room for more).
+#
+# Companion to the rikka-terminal engine, kept SEPARATE from it on purpose: the
+# engine core stays agent-agnostic (it only emits terminal signals like the
+# OSC 0/2 title), while this crate holds the "which agent is this and what is it
+# doing" heuristics. New agents (Codex, …) are added here as matchers so both
+# the engine and the host stay agnostic.
+#
+# Layering rule: dependency-free and host-agnostic — it knows nothing about the
+# terminal engine, GPUI, or how a bar is drawn; it only classifies signals into
+# a normalized progress state.
+[package]
+name = "rikka-terminal-agent-integration"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]

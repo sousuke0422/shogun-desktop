@@ -3,7 +3,12 @@
 # rule); vendored gpui / alacritty_terminal stay outside the workspace and
 # are wired in via [patch.crates-io] below.
 [workspace]
-members = ["crates/rikka-terminal", "crates/shogun-core"]
+members = [
+    "crates/rikka-terminal",
+    "crates/rikka-terminal-agent-integration",
+    "crates/rikka-terminal-ssh-integration",
+    "crates/shogun-core",
+]
 exclude = ["crates/alacritty_terminal", "crates/gpui"]
 
 [package]
@@ -43,6 +48,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 shogun-core = { path = "crates/shogun-core" }
 # Terminal engine (RikkaTerminal core) — extracted from src/terminal/.
 rikka-terminal = { path = "crates/rikka-terminal" }
+# Agent-activity heuristics (Claude spinner → progress; future Codex etc.),
+# kept out of the agent-agnostic engine core.
+rikka-terminal-agent-integration = { path = "crates/rikka-terminal-agent-integration" }
+# Remote-shell TERM_PROGRAM injection over SSH (bashrc / ZDOTDIR wrappers),
+# kept out of the SSH-agnostic engine core.
+rikka-terminal-ssh-integration = { path = "crates/rikka-terminal-ssh-integration" }
 
 [target.'cfg(windows)'.dependencies]
 # OSC 9 / 777 desktop notifications → WinRT toast (MIT OR Apache-2.0).

@@ -5555,6 +5555,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rikka-terminal-agent-integration"
+version = "0.1.0"
+
+[[package]]
+name = "rikka-terminal-ssh-integration"
+version = "0.1.0"
+dependencies = [
+ "base64",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6357,6 +6368,8 @@ dependencies = [
  "regex",
  "rfd",
  "rikka-terminal",
+ "rikka-terminal-agent-integration",
+ "rikka-terminal-ssh-integration",
  "russh",
  "serde",
  "serde_yml",

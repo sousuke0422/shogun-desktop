@@ -1,0 +1,16 @@
+# rikka-terminal-ssh-integration — builds the remote command that injects a
+# terminal identity (TERM_PROGRAM) into a login shell over SSH, via kitty/
+# ghostty-style startup-file wrappers (bashrc / ZDOTDIR) delivered base64-safe.
+#
+# Companion to the rikka-terminal engine, kept SEPARATE on purpose: the engine
+# core "knows nothing about SSH clients" (its layering rule), so this remote-
+# shell injection machinery lives out here. The host passes in the identity and
+# project path; this crate returns a shell command string.
+[package]
+name = "rikka-terminal-ssh-integration"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+base64 = "0.22"
