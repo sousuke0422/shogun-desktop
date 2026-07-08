@@ -48,6 +48,14 @@ pub struct TerminalSettings {
     /// ss07 ::, ss08 .= — enable per feature to taste.
     #[serde(default)]
     pub font_features: String,
+    /// Ask the remote tmux to forward pane titles (`set-titles on`), so the
+    /// terminal can turn an agent's title spinner into a progress bar when the
+    /// agent can't use OSC 9;4 (Claude Code inside tmux). On by default; turning
+    /// it off stops shogun-desktop from touching the remote's global tmux
+    /// title settings. Implemented by injecting `RIKKA_TMUX_TITLES=1` — the
+    /// remote rc/attach routes act only when that var is set.
+    #[serde(default = "default_true")]
+    pub tmux_forward_titles: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
@@ -90,6 +98,17 @@ impl TerminalIdentity {
             TerminalIdentity::Ghostty => "ghostty 1.3.1".to_string(),
         }
     }
+
+    /// Returns `(TERM_PROGRAM, TERM_PROGRAM_VERSION)` env vars to inject.
+    pub fn term_program_env(self) -> (&'static str, &'static str) {
+        match self {
+            TerminalIdentity::Honest => (
+                rikka_terminal::xtversion::TERM_PROGRAM,
+                rikka_terminal::xtversion::TERM_PROGRAM_VERSION,
+            ),
+            TerminalIdentity::Ghostty => ("ghostty", "1.3.1"),
+        }
+    }
 }
 
 /// Parse the free-form feature string into (tag, value) pairs, dropping
@@ -125,6 +144,7 @@ impl Default for TerminalSettings {
             identity: TerminalIdentity::default(),
             term: TermName::default(),
             font_features: String::new(),
+            tmux_forward_titles: true,
         }
     }
 }
@@ -432,6 +452,7 @@ mod tests {
                 identity: TerminalIdentity::Ghostty,
                 term: TermName::XtermGhostty,
                 font_features: "ss01, ss03".into(),
+                tmux_forward_titles: false,
             },
             ..Default::default()
         };

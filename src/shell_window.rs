@@ -551,12 +551,13 @@ impl Render for ShellWindow {
                     .text_color(Colors::zouge())
                     .text_size(px(12.))
                     .child(status_text)
-                    // OSC 9;4 progress from the running application, drawn
-                    // along the status bar's bottom edge.
+                    // Progress from the running application: OSC 9;4 if it
+                    // sends one, else a title-spinner inferred bar (Claude in
+                    // tmux). Drawn along the status bar's bottom edge.
                     .children(
                         self.session
                             .as_ref()
-                            .and_then(|s| s.progress.get())
+                            .and_then(crate::window::terminal_progress)
                             .map(|p| crate::window::render_progress_bar("shell-progress", p)),
                     ),
             )

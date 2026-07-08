@@ -182,10 +182,18 @@ impl NativeSshClient {
         Ok(())
     }
 
-    /// Open a plain interactive shell channel (no tmux), with CWD set to `project_path`.
+    /// Open a plain interactive shell channel (no tmux), with CWD set to
+    /// `project_path` and TERM_PROGRAM reliably injected.
+    ///
+    /// russh sends `cmd` straight to the remote sshd — there is no `cmd.exe`
+    /// layer as with the system-ssh backend, so the (base64-wrapped) shell
+    /// integration command crosses intact regardless of its quoting.
     pub fn open_shell_channel(
         &self,
+        term_program: &str,
+        term_program_version: &str,
         project_path: &str,
+        forward_titles: bool,
         cols: u16,
         rows: u16,
     ) -> Result<(
@@ -193,7 +201,12 @@ impl NativeSshClient {
         Box<dyn Write + Send>,
         Box<dyn PtyResizer>,
     )> {
-        let cmd = format!("cd {project_path} && exec $SHELL -l");
+        let cmd = crate::shell_integration::shell_window_cmd(
+            term_program,
+            term_program_version,
+            project_path,
+            forward_titles,
+        );
         let (reader, writer, resizer) = self
             .rt
             .block_on(self.open_pty_async(&cmd, cols, rows))
@@ -204,6 +217,7 @@ impl NativeSshClient {
     pub fn open_pty_channel(
         &self,
         tmux_session: &str,
+        forward_titles: bool,
         cols: u16,
         rows: u16,
     ) -> Result<(
@@ -211,7 +225,12 @@ impl NativeSshClient {
         Box<dyn Write + Send>,
         Box<dyn PtyResizer>,
     )> {
-        let cmd = format!("tmux attach-session -t {tmux_session}");
+        let title_prefix = if forward_titles {
+            crate::pty_spawn::TMUX_ATTACH_TITLE_PREFIX
+        } else {
+            ""
+        };
+        let cmd = format!("{title_prefix}tmux attach-session -t {tmux_session}");
         let (reader, writer, resizer) = self
             .rt
             .block_on(self.open_pty_async(&cmd, cols, rows))

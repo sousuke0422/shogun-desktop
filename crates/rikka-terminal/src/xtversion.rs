@@ -6,6 +6,11 @@
 //! passive scanner watches the raw PTY stream and the reader thread writes
 //! the `DCS > | name version ST` reply back to the PTY.
 
+/// Engine name for `TERM_PROGRAM`.
+pub const TERM_PROGRAM: &str = "rikka-terminal";
+/// Engine version for `TERM_PROGRAM_VERSION` (same as crate version).
+pub const TERM_PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// The engine's honest XTVERSION identity: `rikka-terminal <version>`.
 pub fn engine_identity() -> String {
     format!("rikka-terminal {}", env!("CARGO_PKG_VERSION"))

@@ -47,6 +47,12 @@ pub const TERMINAL_KEY_CONTEXT: &str = "ShogunTerminal";
 /// remainder into a spurious few-pixel scroll range.
 pub const TERMINAL_PANE_PADDING_PX: f32 = 8.0;
 
+/// Height of the green/red connection status bar shown at the top of every
+/// tab except 設定 (the terminal 陣幕, the 戦況 dashboard header, the
+/// エージェント header). Shared so the bar is the same size everywhere —
+/// 32 px fits a `.small()` button (24 px) with breathing room.
+pub const STATUS_BAR_HEIGHT_PX: f32 = 32.0;
+
 gpui::actions!(
     shogun_terminal,
     [
@@ -1132,15 +1138,28 @@ impl ShogunWindow {
             .bg(Colors::shikkoku())
             .child(
                 div()
+                    // `.relative()` so the progress bar pins to this bar's
+                    // bottom edge — the same placement the shell window uses.
+                    .relative()
                     .w_full()
-                    .h(px(24.))
+                    .h(px(STATUS_BAR_HEIGHT_PX))
                     .bg(jinmaku_bg)
                     .flex()
                     .items_center()
-                    .px_2()
+                    // Match the 戦況 / エージェント headers' horizontal inset so
+                    // the status text starts at the same x on every tab.
+                    .px_3()
                     .text_color(Colors::zouge())
                     .text_size(px(12.))
-                    .child(jinmaku_text),
+                    .child(jinmaku_text)
+                    .children(
+                        session_opt
+                            .as_ref()
+                            .and_then(terminal_progress)
+                            .map(|p| {
+                                render_progress_bar(("jinmaku-progress", is_shogun as usize), p)
+                            }),
+                    ),
             )
             .child(div().flex_1().overflow_hidden().child(terminal_content))
             .child(upload_status);
@@ -1192,7 +1211,7 @@ impl ShogunWindow {
                     5 => self.multiagent_session.as_ref(),
                     _ => None,
                 }
-                .and_then(|s| s.progress.get());
+                .and_then(terminal_progress);
                 div()
                     .id(("tab", index))
                     .relative()
@@ -1218,6 +1237,27 @@ impl ShogunWindow {
                     }))
             }))
     }
+}
+
+/// Progress to display for a terminal session: an explicit OSC 9;4 report when
+/// the app sends one, otherwise a bar inferred from a window-title spinner.
+///
+/// The fallback covers agents that drop OSC 9;4 on some surfaces — Claude Code
+/// animates a Braille spinner in the title and emits no OSC 9;4 inside tmux, so
+/// its progress would otherwise never show in the 将軍 / 家老陣 tabs. The
+/// spinner→activity heuristic lives in `rikka-terminal-agent-integration`
+/// (kept out of the agent-agnostic engine core); this maps it to the existing
+/// indeterminate bar. Requires the tmux side to forward the title
+/// (`set-titles on`, done in the attach command).
+pub fn terminal_progress(
+    session: &crate::terminal::TerminalSession,
+) -> Option<(crate::terminal::progress::ProgressState, u8)> {
+    if let Some(explicit) = session.progress.get() {
+        return Some(explicit);
+    }
+    let title = session.title.lock();
+    rikka_terminal_agent_integration::progress_from_title(title.as_deref().unwrap_or(""))
+        .map(|_| (crate::terminal::progress::ProgressState::Indeterminate, 0))
 }
 
 /// Segment count of the rainbow fill — enough for a smooth spectrum at tab
@@ -1301,7 +1341,7 @@ impl Render for ShogunWindow {
 
         // ── PTY resize on viewport change ─────────────────────────────────────
         // Calculate the terminal dimensions from the current viewport.
-        // Chrome heights: jinmaku status bar (24) + key buttons (32) + tab bar (48) = 104 px.
+        // Chrome heights: jinmaku status bar (32) + key buttons (32) + tab bar (48) = 112 px.
         //
         // Cell dimensions are measured from the active font via TextSystem::ch_advance
         // (Windows Terminal–style; see measure_cell_metrics).
@@ -1323,7 +1363,7 @@ impl Render for ShogunWindow {
             let content_h = if mh > 0.0 {
                 mh.max(ch)
             } else {
-                ((vp.height / px(1.)) - 104.0 - TERMINAL_PANE_PADDING_PX).max(ch)
+                ((vp.height / px(1.)) - 112.0 - TERMINAL_PANE_PADDING_PX).max(ch)
             };
             let new_cols = ((content_w / cw) as u16).max(1);
             let new_rows = ((content_h / ch) as u16).max(1);
@@ -1430,6 +1470,17 @@ impl Render for ShogunWindow {
                             .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                 this.settings_tab.desktop_notifications_multiagent = *checked;
                                 this.desktop_notifications_multiagent = *checked;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        // Applies on the next connection (persisted by 保存),
+                        // like the TERM / identity fields.
+                        Switch::new("tmux-forward-titles")
+                            .checked(self.settings_tab.tmux_forward_titles)
+                            .label("tmux タイトル転送（エージェント進捗バー用・要再接続）")
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.settings_tab.tmux_forward_titles = *checked;
                                 cx.notify();
                             })),
                     );
@@ -1583,12 +1634,26 @@ impl Render for ShogunWindow {
 
         // Root carries the bundled-emoji fallback so every descendant text
         // run (UI chrome included) resolves emoji to the embedded font.
+        // (Terminal-tab progress is drawn on the 陣幕 status bar in
+        // `render_terminal_with_ui`, matching the shell window's placement.)
         crate::terminal::renderer::with_emoji_fallback(div())
             .size_full()
             .flex()
             .flex_col()
             .bg(Colors::shikkoku())
-            .child(div().flex_1().overflow_hidden().child(content))
+            .child(
+                // `.w_full()` is load-bearing: gpui's flex does not stretch
+                // cross-axis by default, so without a definite width here the
+                // nested `.w_full()` status bars (陣幕 / 戦況 / エージェント)
+                // resolve against an indefinite width and shrink to their text
+                // instead of spanning the pane. The tab bar looks fine only
+                // because it is a direct child of the size_full root.
+                div()
+                    .w_full()
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(content),
+            )
             .child(self.render_tab_bar(cx))
     }
 }

@@ -238,9 +238,16 @@ fn parse_progress(rest: &[u8]) -> Option<ProgressUpdate> {
     let mut parts = rest.split(|&b| b == b';');
     let state = parse_num(parts.next()?)?;
     // Percent clamps to 100 (apps occasionally emit 100+ during rounding).
-    // A present-but-unparseable percent makes the whole payload malformed.
+    // A present-but-unparseable percent makes the whole payload malformed —
+    // except an *empty* field, which is a trailing `;` with no value. Claude
+    // Code emits exactly that for stateful updates: `ESC]9;4;3;BEL`
+    // (indeterminate) and `ESC]9;4;0;BEL` (remove) carry an empty 4th arg, and
+    // the ConEmu spec leaves the progress optional for those states. Treating
+    // the empty field as absent (not malformed) is what kept Claude's
+    // indeterminate bar from ever showing.
     let percent = match parts.next() {
         None => None,
+        Some(f) if f.is_empty() => None,
         Some(f) => Some(parse_num(f)?.min(100) as u8),
     };
     match state {
@@ -326,6 +333,31 @@ mod tests {
         assert_eq!(
             scan(b"\x1b]9;4;4;10\x07"),
             vec![progress(ProgressUpdate::Warning(Some(10)))]
+        );
+    }
+
+    #[test]
+    fn trailing_empty_percent_is_tolerated() {
+        // Claude Code (2.x) builds progress as `db(9, 4, <state>, "")`, i.e.
+        // it always appends a trailing `;` with an empty value. That empty
+        // field must read as "no percent", not as a malformed payload — this
+        // is exactly why Claude's indeterminate bar never showed.
+        assert_eq!(
+            scan(b"\x1b]9;4;3;\x07"),
+            vec![progress(ProgressUpdate::Indeterminate)]
+        );
+        assert_eq!(
+            scan(b"\x1b]9;4;0;\x07"),
+            vec![progress(ProgressUpdate::Remove)]
+        );
+        assert_eq!(
+            scan(b"\x1b]9;4;2;\x07"),
+            vec![progress(ProgressUpdate::Error(None))]
+        );
+        // A real value alongside a further trailing `;` still parses.
+        assert_eq!(
+            scan(b"\x1b]9;4;1;42;\x07"),
+            vec![progress(ProgressUpdate::Set(42))]
         );
     }
 

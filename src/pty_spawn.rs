@@ -18,6 +18,15 @@ use crate::terminal::{PtyResizer, TerminalSession, pty_session::build_terminal_s
 
 use anyhow::Result;
 
+/// Prepended to every `tmux attach-session` so tmux forwards the active pane's
+/// title (with `#{pane_title}` verbatim, no chrome) to us. Without `set-titles
+/// on` the title never leaves tmux, so the title-spinner progress fallback
+/// (agents that drop OSC 9;4 in tmux — see `window::terminal_progress`) has
+/// nothing to read. Single-quoted only, so it survives the Windows
+/// `cmd.exe /c ssh …` path (no inner double quotes to break cmd's quoting).
+pub const TMUX_ATTACH_TITLE_PREFIX: &str =
+    "tmux set -g set-titles on && tmux set -g set-titles-string '#{pane_title}' && ";
+
 /// XTVERSION identity from settings — honest by default, or a deliberate
 /// Ghostty masquerade (see `settings::TerminalIdentity`).
 fn xtversion_identity() -> String {
@@ -26,6 +35,24 @@ fn xtversion_identity() -> String {
         .terminal
         .identity
         .xtversion()
+}
+
+/// `(TERM_PROGRAM, TERM_PROGRAM_VERSION)` to inject.
+fn term_program_identity() -> (&'static str, &'static str) {
+    crate::settings::load_settings()
+        .unwrap_or_default()
+        .terminal
+        .identity
+        .term_program_env()
+}
+
+/// Whether to ask the remote tmux to forward pane titles (for the title-spinner
+/// progress fallback). Default on; the settings toggle turns it off.
+fn tmux_forward_titles() -> bool {
+    crate::settings::load_settings()
+        .unwrap_or_default()
+        .terminal
+        .tmux_forward_titles
 }
 
 // ── system-SSH resizer ────────────────────────────────────────────────────────
@@ -91,7 +118,9 @@ fn spawn_shell_native(
     cols: u16,
     rows: u16,
 ) -> Result<TerminalSession> {
-    let (reader, writer, resizer) = client.open_shell_channel(project_path, cols, rows)?;
+    let (prog, ver) = term_program_identity();
+    let (reader, writer, resizer) =
+        client.open_shell_channel(prog, ver, project_path, tmux_forward_titles(), cols, rows)?;
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer));
     build_terminal_session(
         cols,
@@ -152,12 +181,23 @@ fn spawn_shell_system(
             .term
             .as_str(),
     );
+    let (prog, ver) = term_program_identity();
+    // cmd.env() covers local PTY use (e.g. non-SSH terminals sharing this crate).
+    // The remote command uses the ZDOTDIR-wrapper integration so TERM_PROGRAM
+    // survives login-shell startup scripts that would otherwise clear it.
+    cmd.env("TERM_PROGRAM", prog);
+    cmd.env("TERM_PROGRAM_VERSION", ver);
+    cmd.env("COLORTERM", "truecolor");
     if let Some(ref key) = ssh.key_path {
         cmd.args(["-i", key]);
     }
     cmd.arg(format!("{}@{}", ssh.user, ssh.host));
-    // cd to project, then exec the user's default shell
-    cmd.arg(format!("cd {project_path} && exec $SHELL -l"));
+    cmd.arg(crate::shell_integration::shell_window_cmd(
+        prog,
+        ver,
+        project_path,
+        tmux_forward_titles(),
+    ));
 
     let _child = pair.slave.spawn_command(cmd)?;
     let writer_box: Box<dyn Write + Send> = pair.master.take_writer()?;
@@ -188,7 +228,8 @@ fn spawn_native(
     cols: u16,
     rows: u16,
 ) -> Result<TerminalSession> {
-    let (reader, writer, resizer) = client.open_pty_channel(tmux_session, cols, rows)?;
+    let (reader, writer, resizer) =
+        client.open_pty_channel(tmux_session, tmux_forward_titles(), cols, rows)?;
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer));
     build_terminal_session(
         cols,
@@ -252,13 +293,25 @@ fn spawn_system(
             .term
             .as_str(),
     );
+    let (prog, ver) = term_program_identity();
+    cmd.env("TERM_PROGRAM", prog);
+    cmd.env("TERM_PROGRAM_VERSION", ver);
+    cmd.env("COLORTERM", "truecolor");
     if let Some(ref key) = ssh.key_path {
         cmd.args(["-i", key]);
     }
     // PTY sessions are interactive: ssh prompts for the password via the
     // terminal directly. SSH_ASKPASS is for headless exec only — do not set it here.
     cmd.arg(format!("{}@{}", ssh.user, ssh.host));
-    cmd.arg(format!("tmux attach-session -t {tmux_session}"));
+    let env_prefix = crate::shell_integration::remote_env_prefix(prog, ver);
+    let title_prefix = if tmux_forward_titles() {
+        TMUX_ATTACH_TITLE_PREFIX
+    } else {
+        ""
+    };
+    cmd.arg(format!(
+        "{env_prefix}{title_prefix}tmux attach-session -t {tmux_session}"
+    ));
 
     let _child = pair.slave.spawn_command(cmd)?;
 
