@@ -198,10 +198,15 @@ fn paint_box_char(
     let xm = ox + cw * 0.5;
     let ym = oy + ch * 0.5;
 
-    // Light line weight: 1/8 cell height, min 1 px
-    let lw = (ch / 8.0).max(1.0);
-    // Heavy line weight: 1/4 cell height, min 2 px
-    let hw = (ch / 4.0).max(2.0);
+    // Line weight scales with the NARROWER cell dimension — the width, in a
+    // monospace cell. Basing it on the (much taller) line-height made a "light"
+    // line ~1/8 of the height ≈ 2–3 px, i.e. visibly too fat; the width keeps a
+    // light line near 1 px the way a real terminal draws it. Heavy is 2× light.
+    let base = cw.min(ch);
+    // Light line weight: 1/8 cell width, min 1 px
+    let lw = (base / 8.0).max(1.0);
+    // Heavy line weight: 1/4 cell width, min 2 px
+    let hw = (base / 4.0).max(2.0);
 
     // Helper: build a Bounds<Pixels> from raw f32 corners
     macro_rules! rect {
@@ -265,6 +270,51 @@ fn paint_box_char(
     let d2x = ox + cw * 0.6;
     let d1y = oy + ch * 0.4;
     let d2y = oy + ch * 0.6;
+
+    // Curved / diagonal glyphs need real paths — filled quads can't draw a
+    // curve or a 45° line, which is why these were originally omitted (and left
+    // to a font that may not have them). `PathBuilder::stroke` + the tessellator
+    // draw them, matching what Windows Terminal does procedurally.
+    macro_rules! arc {
+        // Rounded corner: a quadratic Bézier between two edge midpoints whose
+        // control point is the cell centre (xm, ym) — the box-arc glyphs ╭╮╯╰.
+        ($p1:expr, $p2:expr) => {{
+            let mut pb = gpui::PathBuilder::stroke(px(lw));
+            pb.move_to($p1);
+            pb.curve_to($p2, point(px(xm), px(ym)));
+            if let Ok(p) = pb.build() {
+                window.paint_path(p, fg);
+            }
+        }};
+    }
+    macro_rules! diag {
+        ($ax:expr, $ay:expr, $bx:expr, $by:expr) => {{
+            let mut pb = gpui::PathBuilder::stroke(px(lw));
+            pb.move_to(point(px($ax), px($ay)));
+            pb.line_to(point(px($bx), px($by)));
+            if let Ok(p) = pb.build() {
+                window.paint_path(p, fg);
+            }
+        }};
+    }
+    // Mixed light/heavy junction: draw each present arm at its own weight
+    // (0.0 = that arm is absent). All arms meet at the cell centre.
+    macro_rules! junction {
+        ($u:expr, $d:expr, $l:expr, $r:expr) => {{
+            if $u > 0.0 {
+                q!(v_top!(xm, $u));
+            }
+            if $d > 0.0 {
+                q!(v_bot!(xm, $d));
+            }
+            if $l > 0.0 {
+                q!(h_left!(ym, $l));
+            }
+            if $r > 0.0 {
+                q!(h_right!(ym, $r));
+            }
+        }};
+    }
 
     match c {
         // ── Light & heavy horizontal / vertical ──────────────────────────────
@@ -390,23 +440,51 @@ fn paint_box_char(
             q!(v_full!(xm, hw));
         }
 
-        // mixed T-junctions → approximate with light
-        '┝'..='┞'
-        | '┟'..='┠'
-        | '┡'..='┢'
-        | '┦'..='┧'
-        | '┨'..='┩'
-        | '┪'
-        | '┭'..='┯'
-        | '┰'..='┲'
-        | '┵'..='┷'
-        | '┸'..='┺'
-        | '┽'..='┿'
-        | '╀'..='╉'
-        | '╊' => {
-            q!(h_full!(ym, lw));
-            q!(v_full!(xm, lw));
-        }
+        // ── Mixed light/heavy junctions ──────────────────────────────────────
+        // Each arm drawn at its own weight per the Unicode name (u, d, l, r).
+        // ├-family (vertical + right):
+        '┝' => junction!(lw, lw, 0.0, hw), // vertical light, right heavy
+        '┞' => junction!(hw, lw, 0.0, lw), // up heavy, right+down light
+        '┟' => junction!(lw, hw, 0.0, lw), // down heavy, right+up light
+        '┠' => junction!(hw, hw, 0.0, lw), // vertical heavy, right light
+        '┡' => junction!(hw, lw, 0.0, hw), // down light, right+up heavy
+        '┢' => junction!(lw, hw, 0.0, hw), // up light, right+down heavy
+        // ┤-family (vertical + left):
+        '┥' => junction!(lw, lw, hw, 0.0), // vertical light, left heavy
+        '┦' => junction!(hw, lw, lw, 0.0), // up heavy, left+down light
+        '┧' => junction!(lw, hw, lw, 0.0), // down heavy, left+up light
+        '┨' => junction!(hw, hw, lw, 0.0), // vertical heavy, left light
+        '┩' => junction!(hw, lw, hw, 0.0), // down light, left+up heavy
+        '┪' => junction!(lw, hw, hw, 0.0), // up light, left+down heavy
+        // ┬-family (down + horizontal, no up):
+        '┭' => junction!(0.0, lw, hw, lw), // left heavy, right+down light
+        '┮' => junction!(0.0, lw, lw, hw), // right heavy, left+down light
+        '┯' => junction!(0.0, lw, hw, hw), // down light, horizontal heavy
+        '┰' => junction!(0.0, hw, lw, lw), // down heavy, horizontal light
+        '┱' => junction!(0.0, hw, hw, lw), // right light, left+down heavy
+        '┲' => junction!(0.0, hw, lw, hw), // left light, right+down heavy
+        // ┴-family (up + horizontal, no down):
+        '┵' => junction!(lw, 0.0, hw, lw), // left heavy, right+up light
+        '┶' => junction!(lw, 0.0, lw, hw), // right heavy, left+up light
+        '┷' => junction!(lw, 0.0, hw, hw), // up light, horizontal heavy
+        '┸' => junction!(hw, 0.0, lw, lw), // up heavy, horizontal light
+        '┹' => junction!(hw, 0.0, hw, lw), // right light, left+up heavy
+        '┺' => junction!(hw, 0.0, lw, hw), // left light, right+up heavy
+        // ┼-family (cross, all four arms):
+        '┽' => junction!(lw, lw, hw, lw), // left heavy, rest light
+        '┾' => junction!(lw, lw, lw, hw), // right heavy, rest light
+        '┿' => junction!(lw, lw, hw, hw), // vertical light, horizontal heavy
+        '╀' => junction!(hw, lw, lw, lw), // up heavy, rest light
+        '╁' => junction!(lw, hw, lw, lw), // down heavy, rest light
+        '╂' => junction!(hw, hw, lw, lw), // vertical heavy, horizontal light
+        '╃' => junction!(hw, lw, hw, lw), // left+up heavy, right+down light
+        '╄' => junction!(hw, lw, lw, hw), // right+up heavy, left+down light
+        '╅' => junction!(lw, hw, hw, lw), // left+down heavy, right+up light
+        '╆' => junction!(lw, hw, lw, hw), // right+down heavy, left+up light
+        '╇' => junction!(hw, lw, hw, hw), // down light, up+horizontal heavy
+        '╈' => junction!(lw, hw, hw, hw), // up light, down+horizontal heavy
+        '╉' => junction!(hw, hw, hw, lw), // right light, left+vertical heavy
+        '╊' => junction!(hw, hw, lw, hw), // left light, right+vertical heavy
 
         // ── Half-lines ────────────────────────────────────────────────────────
         '╴' => q!(h_left!(ym, lw)),
@@ -697,6 +775,20 @@ fn paint_box_char(
             q!(rect!(ox, ym, x1, y1));
         }
 
+        // ── Rounded corners (arcs) — Bézier over the cell centre ──────────────
+        '╭' => arc!(point(px(x1), px(ym)), point(px(xm), px(y1))), // arc down + right
+        '╮' => arc!(point(px(ox), px(ym)), point(px(xm), px(y1))), // arc down + left
+        '╯' => arc!(point(px(ox), px(ym)), point(px(xm), px(oy))), // arc up + left
+        '╰' => arc!(point(px(x1), px(ym)), point(px(xm), px(oy))), // arc up + right
+
+        // ── Diagonals ─────────────────────────────────────────────────────────
+        '╱' => diag!(x1, oy, ox, y1), // upper-right → lower-left
+        '╲' => diag!(ox, oy, x1, y1), // upper-left → lower-right
+        '╳' => {
+            diag!(x1, oy, ox, y1);
+            diag!(ox, oy, x1, y1);
+        }
+
         _ => return false,
     }
     true
@@ -928,7 +1020,31 @@ pub fn render_grid(
                             let mut x_off = x;
                             for (c, dw) in run.text.chars().zip(run.char_widths.iter().copied()) {
                                 let char_cw = cw * dw as f32;
-                                paint_box_char(c, x_off, oy, char_cw, ch, fg_rgba, window);
+                                if !paint_box_char(c, x_off, oy, char_cw, ch, fg_rgba, window) {
+                                    // Geometry doesn't cover this code point (the
+                                    // arcs ╭╮╯╰, diagonals ╱╲╳, and a few mixed
+                                    // heavy/light junctions). `paint_box_char`'s
+                                    // `false` is the "fall back to the font" signal
+                                    // — honor it, cell-pinned, so the glyph shows
+                                    // instead of leaving the cell blank.
+                                    let fg_hsla: gpui::Hsla = fg_rgba.into();
+                                    let text_run = gpui::TextRun {
+                                        len: c.len_utf8(),
+                                        font: terminal_font(&font_name),
+                                        color: fg_hsla,
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    };
+                                    let line = window.text_system().shape_line(
+                                        c.to_string().into(),
+                                        font_size,
+                                        &[text_run],
+                                        Some(px(char_cw)),
+                                    );
+                                    let _ =
+                                        line.paint(point(px(x_off), px(oy)), line_height, window, cx);
+                                }
                                 x_off += char_cw;
                             }
                             continue;
