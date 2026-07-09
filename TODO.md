@@ -275,6 +275,12 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       残: 実運用 soak（殿が SHOGUN_TSF=1 で常用して様子見）→問題なければ既定 on 判断
       （殿裁可事項）・GetTextExt へ実 caret 供給（候補窓が既定位置に出る、M2）・
       Linux(IBus)/mac は同 trait の別 backend として後日ラウンド可能
+- [x] **DECSCUSR カーソル形状 — 2026-07-09 実装＋e2e 目視済**（beam `│`・underline
+      `_`・block・**?25l 非表示もこれで初対応** — 従来は隠しても block が出続けて
+      いた）。RenderableCursor.shape を snapshot に載せ、Block=reverse-video /
+      Beam・Underline=既定 fg の細 quad（太さ cw/8）/ Hidden=無描画。
+      HollowBlock は engine が focus を持たないため Block 扱い。blink 位相は
+      未対応（形状のみ・steady 描画）。`e2e/cursor-shape-test.ps1`
 - [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）

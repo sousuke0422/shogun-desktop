@@ -943,6 +943,7 @@ pub fn render_grid(
     // marks the frame boundary on drop. No-op when the env var is unset.
     let _ft_build = crate::frametime::build_guard(snap.cells.len());
     let (cursor_row, cursor_col) = snap.cursor;
+    let cursor_shape = snap.cursor_shape;
     let grid_cols = snap.cols;
     let font_name = font.to_string();
     // SGR blink phase from the wall clock (600ms on / 600ms off), so the
@@ -957,8 +958,23 @@ pub fn render_grid(
         .font_family(font.to_string())
         .text_size(px(13.))
         .children(snap.cells.iter().enumerate().map(move |(row_idx, row)| {
-            let cur_col = if row_idx == cursor_row {
+            // Reverse-video marking is the Block presentation only; Beam /
+            // Underline draw a thin quad instead (below), and Hidden (?25l)
+            // draws nothing.
+            let cur_col = if row_idx == cursor_row && cursor_shape == crate::CursorShapeKind::Block
+            {
                 Some(cursor_col)
+            } else {
+                None
+            };
+            // Thin-cursor overlay for this row (beam = vertical bar at the
+            // cell's left edge, underline = bar along its bottom).
+            let thin_cursor = if row_idx == cursor_row {
+                match cursor_shape {
+                    crate::CursorShapeKind::Beam => Some((cursor_col, true)),
+                    crate::CursorShapeKind::Underline => Some((cursor_col, false)),
+                    _ => None,
+                }
             } else {
                 None
             };
@@ -1330,6 +1346,26 @@ pub fn render_grid(
                             },
                             rgba(LINK_HOVER_RGBA),
                         ));
+                    }
+
+                    // Thin cursor (DECSCUSR beam/underline): a quad in the
+                    // default foreground color; the text underneath keeps its
+                    // own colors (unlike the reverse-video block).
+                    if let Some((ccol, beam)) = thin_cursor {
+                        let x = ox + ccol as f32 * cw;
+                        let t = (cw / 8.0).max(1.0);
+                        let b = if beam {
+                            Bounds {
+                                origin: point(px(x), px(oy)),
+                                size: size(px(t), px(ch)),
+                            }
+                        } else {
+                            Bounds {
+                                origin: point(px(x), px(oy + ch - t)),
+                                size: size(px(cw), px(t)),
+                            }
+                        };
+                        window.paint_quad(fill(b, default_fg()));
                     }
 
                     // IME preedit: drawn over the cursor row starting at the

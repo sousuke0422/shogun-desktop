@@ -288,6 +288,23 @@ impl TerminalSession {
     }
 }
 
+/// Cursor presentation, mirrored from the grid (DECSCUSR shape + DECTCEM
+/// visibility). Blink is intentionally not modelled yet — shapes render
+/// steady.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum CursorShapeKind {
+    /// Reverse-video cell (also stands in for HollowBlock — the engine does
+    /// not model window focus).
+    #[default]
+    Block,
+    /// Thin vertical bar at the cell's left edge.
+    Beam,
+    /// Thin bar along the cell's bottom edge.
+    Underline,
+    /// `?25l` — the cursor is not drawn at all.
+    Hidden,
+}
+
 #[derive(Clone)]
 pub struct GridSnapshot {
     #[allow(dead_code)]
@@ -297,6 +314,8 @@ pub struct GridSnapshot {
     pub cells: Vec<Vec<SnapshotCell>>,
     #[allow(dead_code)]
     pub cursor: (usize, usize),
+    /// How to draw the cursor cell (DECSCUSR / DECTCEM).
+    pub cursor_shape: CursorShapeKind,
     /// Lines scrolled back into history (0 = live view at the bottom).
     pub display_offset: usize,
     /// Any visible cell carries SGR blink — the refresh task adds a phase
@@ -319,6 +338,7 @@ impl GridSnapshot {
             rows,
             cells: vec![vec![SnapshotCell::blank(); cols]; rows],
             cursor: (0, 0),
+            cursor_shape: CursorShapeKind::default(),
             display_offset: 0,
             has_blink: false,
             links: Vec::new(),
@@ -761,6 +781,18 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
     }
 
     let cur = content.cursor.point;
+    // RenderableCursor folds DECTCEM in for us: `?25l` arrives as Hidden.
+    let cursor_shape = {
+        use alacritty_terminal::vte::ansi::CursorShape as Shape;
+        match content.cursor.shape {
+            Shape::Beam => CursorShapeKind::Beam,
+            Shape::Underline => CursorShapeKind::Underline,
+            Shape::Hidden => CursorShapeKind::Hidden,
+            // HollowBlock only differs for unfocused windows, which the
+            // engine does not model — draw it solid.
+            _ => CursorShapeKind::Block,
+        }
+    };
     GridSnapshot {
         cols,
         rows,
@@ -768,6 +800,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         // Same grid→screen shift; scrolled back far enough the cursor row
         // passes `rows` and simply stops matching any painted row.
         cursor: ((cur.line.0 + display_offset) as usize, cur.column.0),
+        cursor_shape,
         display_offset: term.grid().display_offset(),
         has_blink,
         links,
@@ -1548,6 +1581,26 @@ mod tests {
         assert_eq!(left.unwrap(), b"\x1b[<66;6;4M");
         let right = hwheel_pty_bytes(*term.mode(), -2, 0, 0, ReportMods::default());
         assert_eq!(right.unwrap(), b"\x1b[<67;1;1M\x1b[<67;1;1M");
+    }
+
+    #[test]
+    fn cursor_shape_tracks_decscusr_and_visibility() {
+        let mut term = make_term(80, 24);
+        assert_eq!(take_snapshot(&term).cursor_shape, CursorShapeKind::Block);
+        // DECSCUSR: 5 = blinking beam, 3 = blinking underline (blink phase is
+        // not modelled; only the shape is mirrored).
+        advance_bytes(&mut term, b"\x1b[5 q");
+        assert_eq!(take_snapshot(&term).cursor_shape, CursorShapeKind::Beam);
+        advance_bytes(&mut term, b"\x1b[3 q");
+        assert_eq!(
+            take_snapshot(&term).cursor_shape,
+            CursorShapeKind::Underline
+        );
+        // DECTCEM hide/show arrives through RenderableCursor as Hidden.
+        advance_bytes(&mut term, b"\x1b[?25l");
+        assert_eq!(take_snapshot(&term).cursor_shape, CursorShapeKind::Hidden);
+        advance_bytes(&mut term, b"\x1b[?25h\x1b[2 q");
+        assert_eq!(take_snapshot(&term).cursor_shape, CursorShapeKind::Block);
     }
 
     #[test]
