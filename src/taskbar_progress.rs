@@ -71,7 +71,13 @@ mod imp {
             if !cached_ok {
                 inner.windows.remove(title);
                 if let Some(h) = find_window_by_title(title) {
-                    inner.windows.insert(title.to_string(), Entry { hwnd: h, last: None });
+                    inner.windows.insert(
+                        title.to_string(),
+                        Entry {
+                            hwnd: h,
+                            last: None,
+                        },
+                    );
                 }
             }
             let Some(entry) = inner.windows.get_mut(title) else {

@@ -343,7 +343,10 @@ impl Render for ShellWindow {
         // Taskbar-button progress (OSC 9;4 Phase 2) on this window's button.
         {
             let effective = self.applied_title.as_deref().unwrap_or("シェル");
-            let p = self.session.as_ref().and_then(crate::window::terminal_progress);
+            let p = self
+                .session
+                .as_ref()
+                .and_then(crate::window::terminal_progress);
             crate::taskbar_progress::update(effective, p);
         }
 
@@ -564,19 +567,16 @@ impl Render for ShellWindow {
                     // TSF (gated): feed the caret rect (client physical px) so
                     // the IME candidate window opens at the terminal cursor.
                     if crate::tsf::enabled() && focus_handle.is_focused(window) {
-                        let caret = ime.update(cx, |ime, cx| {
-                            ime.bounds_for_range(0..0, bounds, window, cx)
-                        });
+                        let caret = ime
+                            .update(cx, |ime, cx| ime.bounds_for_range(0..0, bounds, window, cx));
                         let scale = window.scale_factor();
-                        crate::tsf::set_caret(caret.map(|b| {
-                            rikka_terminal_gpui_ime::CaretRect {
-                                left: (f32::from(b.origin.x) * scale) as i32,
-                                top: (f32::from(b.origin.y) * scale) as i32,
-                                right: ((f32::from(b.origin.x) + f32::from(b.size.width))
-                                    * scale) as i32,
-                                bottom: ((f32::from(b.origin.y) + f32::from(b.size.height))
-                                    * scale) as i32,
-                            }
+                        crate::tsf::set_caret(caret.map(|b| rikka_terminal_gpui_ime::CaretRect {
+                            left: (f32::from(b.origin.x) * scale) as i32,
+                            top: (f32::from(b.origin.y) * scale) as i32,
+                            right: ((f32::from(b.origin.x) + f32::from(b.size.width)) * scale)
+                                as i32,
+                            bottom: ((f32::from(b.origin.y) + f32::from(b.size.height)) * scale)
+                                as i32,
                         }));
                     }
                     selection::register_mouse_selection(

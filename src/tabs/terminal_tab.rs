@@ -165,8 +165,7 @@ pub fn render_terminal_tab(
                                     top: (f32::from(b.origin.y) * scale) as i32,
                                     right: ((f32::from(b.origin.x) + f32::from(b.size.width))
                                         * scale) as i32,
-                                    bottom: ((f32::from(b.origin.y)
-                                        + f32::from(b.size.height))
+                                    bottom: ((f32::from(b.origin.y) + f32::from(b.size.height))
                                         * scale) as i32,
                                 }
                             }));

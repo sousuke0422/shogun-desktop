@@ -164,7 +164,12 @@ pub fn shell_window_cmd(
     // valid until the shell finishes reading it.
     let script = format!(
         "rm -f \"$RIKKA_BOOT\"\n{}",
-        shell_window_script(term_program, term_program_version, project_path, forward_titles)
+        shell_window_script(
+            term_program,
+            term_program_version,
+            project_path,
+            forward_titles
+        )
     );
     let b64 = base64::engine::general_purpose::STANDARD.encode(script.as_bytes());
     // Quote-free, so it survives Windows `cmd.exe /c ssh … "<this>"`. mktemp

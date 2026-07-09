@@ -684,7 +684,9 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     fn GetScreenExt(&self, _vcView: u32) -> WindowsResult<RECT> {
         let state = self.state_ref()?;
         let hwnd = state.hwnd;
-        let caret = state.caret.ok_or_else(|| WindowsError::from(TS_E_NOLAYOUT))?;
+        let caret = state
+            .caret
+            .ok_or_else(|| WindowsError::from(TS_E_NOLAYOUT))?;
         Ok(client_rect_to_screen(hwnd, caret))
     }
 
@@ -851,7 +853,10 @@ fn client_rect_to_screen(hwnd_raw: isize, c: CaretRect) -> RECT {
     } else {
         unsafe { GetForegroundWindow() }
     };
-    let mut lt = POINT { x: c.left, y: c.top };
+    let mut lt = POINT {
+        x: c.left,
+        y: c.top,
+    };
     let mut rb = POINT {
         x: c.right,
         y: c.bottom,
@@ -898,7 +903,11 @@ pub(crate) fn self_check() -> String {
     let _ = writeln!(
         out,
         "  sink advised by TSF: {}",
-        if sink_advised { "yes" } else { "not yet (may be lazy)" }
+        if sink_advised {
+            "yes"
+        } else {
+            "not yet (may be lazy)"
+        }
     );
     <WindowsTsf as crate::Backend>::blur(&mut tsf);
     let _ = writeln!(out, "  blur/pop: ok");

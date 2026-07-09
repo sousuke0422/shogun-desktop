@@ -1127,37 +1127,33 @@ impl ShogunWindow {
             div().into_any_element()
         };
 
-        let mut root = v_flex()
-            .flex_1()
-            .size_full()
-            .bg(Colors::shikkoku())
-            .child(
-                div()
-                    // `.relative()` so the progress bar pins to this bar's
-                    // bottom edge — the same placement the shell window uses.
-                    .relative()
-                    .w_full()
-                    .h(px(STATUS_BAR_HEIGHT_PX))
-                    .bg(jinmaku_bg)
-                    .flex()
-                    .items_center()
-                    // Match the 戦況 / エージェント headers' horizontal inset so
-                    // the status text starts at the same x on every tab.
-                    .px_3()
-                    .text_color(Colors::zouge())
-                    .text_size(px(12.))
-                    .child(jinmaku_text)
-                    .children(
-                        session_opt
-                            .as_ref()
-                            .and_then(terminal_progress)
-                            .map(|p| {
-                                render_progress_bar(("jinmaku-progress", is_shogun as usize), p)
-                            }),
-                    ),
-            )
-            .child(div().flex_1().overflow_hidden().child(terminal_content))
-            .child(upload_status);
+        let mut root =
+            v_flex()
+                .flex_1()
+                .size_full()
+                .bg(Colors::shikkoku())
+                .child(
+                    div()
+                        // `.relative()` so the progress bar pins to this bar's
+                        // bottom edge — the same placement the shell window uses.
+                        .relative()
+                        .w_full()
+                        .h(px(STATUS_BAR_HEIGHT_PX))
+                        .bg(jinmaku_bg)
+                        .flex()
+                        .items_center()
+                        // Match the 戦況 / エージェント headers' horizontal inset so
+                        // the status text starts at the same x on every tab.
+                        .px_3()
+                        .text_color(Colors::zouge())
+                        .text_size(px(12.))
+                        .child(jinmaku_text)
+                        .children(session_opt.as_ref().and_then(terminal_progress).map(|p| {
+                            render_progress_bar(("jinmaku-progress", is_shogun as usize), p)
+                        })),
+                )
+                .child(div().flex_1().overflow_hidden().child(terminal_content))
+                .child(upload_status);
 
         if is_shogun {
             root =
@@ -1711,11 +1707,7 @@ impl Render for ShogunWindow {
                 // resolve against an indefinite width and shrink to their text
                 // instead of spanning the pane. The tab bar looks fine only
                 // because it is a direct child of the size_full root.
-                div()
-                    .w_full()
-                    .flex_1()
-                    .overflow_hidden()
-                    .child(content),
+                div().w_full().flex_1().overflow_hidden().child(content),
             )
             .child(self.render_tab_bar(cx))
     }

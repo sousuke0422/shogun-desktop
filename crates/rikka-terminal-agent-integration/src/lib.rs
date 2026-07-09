@@ -89,7 +89,10 @@ mod tests {
             progress_from_title("⠂ リセット処理の問題を調査"),
             Some(AgentProgress::Working)
         );
-        assert_eq!(progress_from_title("⠋ Thinking…"), Some(AgentProgress::Working));
+        assert_eq!(
+            progress_from_title("⠋ Thinking…"),
+            Some(AgentProgress::Working)
+        );
     }
 
     #[test]

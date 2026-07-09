@@ -1048,8 +1048,12 @@ pub fn render_grid(
                                         &[text_run],
                                         Some(px(char_cw)),
                                     );
-                                    let _ =
-                                        line.paint(point(px(x_off), px(oy)), line_height, window, cx);
+                                    let _ = line.paint(
+                                        point(px(x_off), px(oy)),
+                                        line_height,
+                                        window,
+                                        cx,
+                                    );
                                 }
                                 x_off += char_cw;
                             }
