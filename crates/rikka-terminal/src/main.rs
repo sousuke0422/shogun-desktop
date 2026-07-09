@@ -1030,10 +1030,13 @@ fn main() {
         gpui_component::init(cx);
         gpui_component::theme::Theme::change(gpui_component::theme::ThemeMode::Dark, None, cx);
         hub::init(cx);
-        let specs = if launch.tabs.is_empty() {
+        // `rt <dir>` opens the default shell there (code-style; one tab
+        // per directory).
+        let specs = cli::expand_dir_tabs(launch.tabs.clone());
+        let specs = if specs.is_empty() {
             vec![cli::TabSpec::default()]
         } else {
-            launch.tabs.clone()
+            specs
         };
         let initial: Vec<TabEntry> = specs
             .iter()

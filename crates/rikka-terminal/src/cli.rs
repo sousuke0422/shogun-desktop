@@ -186,8 +186,39 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
     Ok(launch)
 }
 
+/// `code`-style directory positionals (an rt extension over wt): when a
+/// tab's command line is nothing but existing directories, it wasn't a
+/// command — open the default shell there instead, one tab per directory.
+/// Executing a directory could never succeed, so no wt behavior is lost.
+/// An explicit `-d` wins (the positionals stay a command line then).
+pub fn expand_dir_tabs(tabs: Vec<TabSpec>) -> Vec<TabSpec> {
+    tabs.into_iter()
+        .flat_map(|spec| {
+            let all_dirs = !spec.cmdline.is_empty()
+                && spec.dir.is_none()
+                && spec
+                    .cmdline
+                    .iter()
+                    .all(|tok| std::path::Path::new(tok).is_dir());
+            if !all_dirs {
+                return vec![spec];
+            }
+            spec.cmdline
+                .iter()
+                .map(|dir| TabSpec {
+                    profile: spec.profile.clone(),
+                    dir: Some(dir.clone()),
+                    title: spec.title.clone(),
+                    cmdline: Vec::new(),
+                })
+                .collect()
+        })
+        .collect()
+}
+
 pub const HELP: &str = "rt — RikkaTerminal (wt 互換 CLI)\n\n\
-rt [options] [new-tab [tab-options] [command...]] [; new-tab ...]\n\n\
+rt [options] [new-tab [tab-options] [command...]] [; new-tab ...]\n\
+rt <dir> [...]  — code コマンド流: そのディレクトリでシェルを開く (1個1タブ)\n\n\
 options:\n  -M, --maximized      最大化で起動\n  -F, --fullscreen     フルスクリーンで起動\n  \
 --pos x,y            ウィンドウ位置 (px)\n  --size c,r           サイズ (セル数)\n\n\
 new-tab (nt):\n  -p, --profile <shell>          シェル (pwsh / powershell / cmd / 実行ファイル)\n  \
@@ -290,6 +321,38 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(l.tabs[0], TabSpec::default());
+    }
+
+    #[test]
+    fn bare_directory_positional_becomes_cwd() {
+        let tmp = std::env::temp_dir();
+        let t = tmp.to_string_lossy().to_string();
+        let l = parse(v(&[&t])).unwrap();
+        let tabs = expand_dir_tabs(l.tabs);
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].dir.as_deref(), Some(t.as_str()));
+        assert!(tabs[0].cmdline.is_empty());
+    }
+
+    #[test]
+    fn multiple_directories_become_one_tab_each() {
+        let a = std::env::temp_dir().to_string_lossy().to_string();
+        let l = parse(v(&[&a, &a])).unwrap();
+        let tabs = expand_dir_tabs(l.tabs);
+        assert_eq!(tabs.len(), 2);
+        assert!(tabs.iter().all(|t| t.dir.as_deref() == Some(a.as_str())));
+    }
+
+    #[test]
+    fn commands_and_explicit_dir_are_untouched() {
+        let tmp = std::env::temp_dir().to_string_lossy().to_string();
+        // A real command stays a command.
+        let l = parse(v(&["ping", "localhost"])).unwrap();
+        assert_eq!(expand_dir_tabs(l.tabs.clone()), l.tabs);
+        // Explicit -d wins: the positional stays a command line even if it
+        // happens to name a directory.
+        let l = parse(v(&["nt", "-d", &tmp, &tmp])).unwrap();
+        assert_eq!(expand_dir_tabs(l.tabs.clone()), l.tabs);
     }
 
     #[test]
