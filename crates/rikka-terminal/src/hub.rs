@@ -18,7 +18,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
 
@@ -28,15 +28,12 @@ use rikka_terminal_core::TerminalSession;
 
 use crate::{FRAME_COALESCE, TabsWindow};
 
-pub type SessionId = u64;
-
 /// Redraw hook: scheduled by the driver task (on the foreground executor,
 /// which hands it an `AsyncApp`), installed by whichever window hosts the
 /// tab right now.
 pub type Waker = Box<dyn Fn(&mut AsyncApp)>;
 
 pub struct TabSession {
-    pub id: SessionId,
     pub session: TerminalSession,
     pub waker: Mutex<Option<Waker>>,
     closed: Arc<AtomicBool>,
@@ -54,8 +51,6 @@ impl TabSession {
 #[derive(Clone)]
 pub struct TabEntry(pub Arc<TabSession>);
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
 /// Wrap a fresh session into a tab and spawn its (sole,永住) driver task.
 pub fn new_tab(cx: &mut App, session: TerminalSession) -> TabEntry {
     let closed = Arc::new(AtomicBool::new(false));
@@ -63,7 +58,6 @@ pub fn new_tab(cx: &mut App, session: TerminalSession) -> TabEntry {
     let notify = Arc::clone(&session.notify);
     let snapshot = Arc::clone(&session.snapshot);
     let tab = Arc::new(TabSession {
-        id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
         session,
         waker: Mutex::new(None),
         closed: Arc::clone(&closed),
