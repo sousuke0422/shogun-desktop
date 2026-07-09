@@ -395,12 +395,17 @@ Air は 60Hz（ProMotion なし）→ 省電力側の検証機。
       overlay 化は不可（絶対配置 overlay canvas の paint は画面に届かない
       実測 2026-07-03）。着手前にフレーム時間の実測必須（btop 全画面等）。
 4. [x] **コアレス 16ms→8ms — 2026-07-09 実施**（`FRAME_COALESCE`、両窓共通定数）。
-      60Hz 環境での after 計測: gap p50=16.7ms（**アクティブディスプレイの vsync 壁**
-      — gpui VSyncProvider は DwmFlush 追従で 60fps 固定ではない）、**p95 は 30〜33
-      → 18〜20ms に改善**（vsync 2 枚落ちがほぼ消滅）。計測時は 200Hz DP モニタが
-      落ちており 60Hz 側で測定 — **120fps 成立の最終確認は 200Hz モニタ復帰時に
-      `e2e/frametime-run.ps1` 再実行**（期待: gap p50≈8.3ms）。アイドル挙動不変
-      （notify 待機のまま）。第2段 = タイマ撤去・vsync 直駆動は据え置き
+      60Hz 環境での after 計測: gap p50=16.7ms（アクティブディスプレイの vsync 壁
+      — gpui VSyncProvider は DwmFlush 追従で 60fps 固定ではない）、p95 は 30〜33
+      → 18〜20ms に改善（vsync 2 枚落ちがほぼ消滅）。
+      **200Hz モニタ復帰後の最終計測（2026-07-09）: 第1段成立** — yes/cat 洪水中
+      gap p50=5.0ms（≒毎 vsync・200fps）p99≤8.6ms、clear+seq 連打中 p50=9.1ms
+      （≈110fps、8ms coalesce 経路の素の値）。stalls>50ms は持続洪水中ゼロ。
+      render コストは 200fps 駆動でも build 0.1ms / paint p99≤1.0ms と余裕。
+      副観測: 洪水中 5ms は coalesce より速い = notify 以外の dirty 源
+      （スクロールバーのフェード等）が gpui を vsync 全速で回している。
+      アイドル挙動不変（notify 待機のまま）。
+      第2段 = タイマ撤去・vsync 直駆動（全経路 5ms 化の余地）は据え置き
 
 ## 4. リリース / インフラ（殿の作業を含む）
 
