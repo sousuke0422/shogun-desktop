@@ -274,8 +274,14 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       本構想に吸収候補。検討事項: リポ切りとクレート側ライセンス選定
       （shogun-desktop に GPL 化予定は無い — gpui が Apache-2.0 になり
       旧 Zed-GPL 前提は消滅）、vendored gpui/alacritty パッチの扱い
-- [ ] terminal_tab.rs の旧 scroll-lock ロジック整理 — 符号が逆疑い＋padding 修正後は
-      ほぼ死にコード
+- [x] terminal_tab.rs の旧 scroll-lock ロジック整理 — **2026-07-09 除去**。読解で確定:
+      ①符号は実際に逆だった（gpui wheel-up=正は btop 実機で確証済み、なのに
+      wheel-down で lock）②ただし tab pane は display_iter=可視グリッドのみ＋
+      PTY-fit サイズでローカル overflow が発生せず、lock/prev_offset/last_gen は
+      全て inert（last_gen は書込専用＋render の `let _` 警告封じ）。
+      wheel は PTY 転送のみ残し、フィールド 6 個と End キー握り潰しを削除 —
+      **End は今後 `\x1b[F` として PTY に届く**（従来はタブ pane で端末に届かない
+      隠れバグだった）。shell window の scroll-lock は別系統・現役のまま
 
 ## 3. 高リフレッシュ・ヌルヌル構想（殿表明・順序が肝）
 
@@ -291,8 +297,16 @@ scrollback/画像 store は上限固定でセッション寿命による肥大�
       （generation を UI が消費するまで snapshot を skip する合流で削れる見込み）
 - [ ] 行 run 再構築の per-frame CPU（下記 dirty-row cache 案と同件）
 - [ ] FairMutex（term/snapshot）の洪水時コンボイ
-- [ ] 計測方法: `cat` 大容量 / tmux 全画面再描画連打 / `yes` 洪水で
-      フレームタイム p99 を取る（8.3ms 予算・まず計測ハーネスから）
+- [x] **計測ハーネス — 2026-07-09 実装**（`crates/rikka-terminal/src/frametime.rs`）。
+      `SHOGUN_FRAMETIME=<path>` で起動→負荷（`cat` 大容量 / tmux 全画面再描画連打 /
+      `yes` 洪水）→300 build 毎に stats 行が追記される:
+      `[ft] frames=300 rows_avg=41 build_ms p50/p95/p99/max | paint_ms … | gap_ms … stalls>50ms=N`。
+      build=render_grid の要素構築（coalesce_runs はここ）・paint=行 canvas 描画合計・
+      gap=build 間隔（500ms 超はアイドル境界として除外、50ms 超 stall を別カウント —
+      **数秒級ブロッキング硬直は gap に出る**）。Drop ガード方式で gpui 無改変。
+      v1 注意: 全可視グリッドが単一系列に混ざるため負荷測定は 1 窓ずつ。
+      実測ラン（8.3ms 予算判定）はこれから
+- [ ] 計測ラン: 上記ハーネスで p99 を採る（8.3ms 予算・負荷 3 種）
 
 段階目標（殿裁定 2026-07-03: いきなり 200Hz 級は狙わない）:
 **第1段 = 120fps（予算 8.3ms）で「ヌルヌル」を成立させる**。
