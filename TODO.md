@@ -317,7 +317,15 @@ scrollback/画像 store は上限固定でセッション寿命による肥大�
       **数秒級ブロッキング硬直は gap に出る**）。Drop ガード方式で gpui 無改変。
       v1 注意: 全可視グリッドが単一系列に混ざるため負荷測定は 1 窓ずつ。
       実測ラン（8.3ms 予算判定）はこれから
-- [ ] 計測ラン: 上記ハーネスで p99 を採る（8.3ms 予算・負荷 3 種）
+- [x] **計測ラン — 2026-07-09 自律 e2e で実施**（`e2e/frametime-run.ps1`: 負荷 3 種 =
+      yes 洪水 12s / cat 40MB / clear+seq 連打 12s、shell window・Tailscale SSH 経由）。
+      **実測**: build_ms p99=0.1〜0.2 / paint_ms p99≤1.6 (max 21ms は初回 shaping の
+      1 発のみ) / gap_ms p50=16.7（60fps 刻み）・洪水中 p95≈30〜33ms・stalls>50ms=0
+      （洪水遷移窓で 4 回・max 266ms のみ）。**結論**: ①render CPU (build+paint<1ms)
+      は 8.3ms 予算に対し余裕 20 倍超 → dirty-row cache (下記③) は現サイズでは
+      効果薄・棚上げ ②実効レートの律速は 16ms coalesce (下記④が本命) ③数秒級
+      freeze は洪水下でも皆無 = 既存 IO/parse 分離+?2026 が効いている。
+      注意: SSH 経路がスループット律速の可能性あり（より厳密には loopback 再測）
 
 段階目標（殿裁定 2026-07-03: いきなり 200Hz 級は狙わない）:
 **第1段 = 120fps（予算 8.3ms）で「ヌルヌル」を成立させる**。
