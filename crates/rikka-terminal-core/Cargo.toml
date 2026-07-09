@@ -9,7 +9,7 @@
 # escape-protocol machinery (kitty graphics, sixel, OSC 8/9/52/0/2, ?2026,
 # ?1004, XTVERSION).
 [package]
-name = "rikka-terminal"
+name = "rikka-terminal-core"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"

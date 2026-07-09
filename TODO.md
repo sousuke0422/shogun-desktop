@@ -243,7 +243,7 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       厳密化（従来は範囲 arm で一律 light 近似だった／Unicode 正式名と 1 字ずつ照合）。
       線幅はセル幅基準（lw=cw/8, hw=cw/4）— 旧来の高さ基準は monospace で light 線が
       約 2 倍太く見えた。geometry で拾えない字のみ `shape_line` でフォント描画。
-      `crates/rikka-terminal/src/renderer.rs`（paint_box_char / is_geom_box_char）
+      `crates/rikka-terminal-core/src/renderer.rs`（paint_box_char / is_geom_box_char）
 - [ ] **タスクバー IME インジケータ（あ/A）追従 — TSF text store 実装中**
       （2026-07-09 着手・M1a 実機検証待ち）。真因は実機トレースで確定: Win11 新
       MS-IME は IMN_SETOPENSTATUS/SETCONVERSIONMODE を送らず（candidate/
@@ -311,7 +311,7 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       （lib = 旧 mod.rs。SSH/ConPTY spawn は app 側 `src/pty_spawn.rs` に分離、
       theme::Colors は engine 既定色 default_bg/fg に置換、measure_cell_metrics
       は renderer へ移動）。app は root の `pub use rikka_terminal as terminal;`
-      で旧パス互換。レイヤ規約は crates/rikka-terminal/Cargo.toml 冒頭に明記
+      で旧パス互換。レイヤ規約は crates/rikka-terminal-core/Cargo.toml 冒頭に明記
       （engine は SSH・settings・窓を知らない）。CI は --workspace 化。
       残: リポ切り・クレート名/ライセンス確定・vendored gpui/alacritty の扱い。
       shogun-desktop は抽出クレートの利用者となり二重メンテを避ける。
@@ -320,6 +320,11 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       エージェント進捗検出（Braille スピナー→AgentProgress）を
       `rikka-terminal-agent-integration` へ分離。engine は両クレートを知らず、SSH/
       settings/窓非依存の規約がより厳密になった（codex 対応の布石）。
+      **2026-07-09 追補**: クレート名確定 — engine を `rikka-terminal-core` に
+      リネームし衛星（-ssh-integration / -agent-integration / -gpui-ime）と
+      ファミリー統一。**プロダクト名/実行時 identity（TERM_PROGRAM・XTVERSION
+      の "rikka-terminal"）は据え置き** — パッケージ名のみの変更。app は
+      `pub use rikka_terminal_core as terminal;` で旧パス互換のまま。
       旧 aki-term 構想（wt 代替タブ付きターミナル・設計書あり実装未着手）は
       本構想に吸収候補。検討事項: リポ切りとクレート側ライセンス選定
       （shogun-desktop に GPL 化予定は無い — gpui が Apache-2.0 になり
@@ -347,7 +352,7 @@ scrollback/画像 store は上限固定でセッション寿命による肥大�
       （generation を UI が消費するまで snapshot を skip する合流で削れる見込み）
 - [ ] 行 run 再構築の per-frame CPU（下記 dirty-row cache 案と同件）
 - [ ] FairMutex（term/snapshot）の洪水時コンボイ
-- [x] **計測ハーネス — 2026-07-09 実装**（`crates/rikka-terminal/src/frametime.rs`）。
+- [x] **計測ハーネス — 2026-07-09 実装**（`crates/rikka-terminal-core/src/frametime.rs`）。
       `SHOGUN_FRAMETIME=<path>` で起動→負荷（`cat` 大容量 / tmux 全画面再描画連打 /
       `yes` 洪水）→300 build 毎に stats 行が追記される:
       `[ft] frames=300 rows_avg=41 build_ms p50/p95/p99/max | paint_ms … | gap_ms … stalls>50ms=N`。

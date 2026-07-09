@@ -1,10 +1,10 @@
 # Monorepo: the app plus extraction-ready library crates. The terminal
-# engine lives in crates/rikka-terminal (see its Cargo.toml for the layering
+# engine lives in crates/rikka-terminal-core (see its Cargo.toml for the layering
 # rule); vendored gpui / alacritty_terminal stay outside the workspace and
 # are wired in via [patch.crates-io] below.
 [workspace]
 members = [
-    "crates/rikka-terminal",
+    "crates/rikka-terminal-core",
     "crates/rikka-terminal-agent-integration",
     "crates/rikka-terminal-gpui-ime",
     "crates/rikka-terminal-ssh-integration",
@@ -48,7 +48,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # repo goes live on GitHub — then switch back to the cross-repo path dep.
 shogun-core = { path = "crates/shogun-core" }
 # Terminal engine (RikkaTerminal core) — extracted from src/terminal/.
-rikka-terminal = { path = "crates/rikka-terminal" }
+rikka-terminal-core = { path = "crates/rikka-terminal-core" }
 # Agent-activity heuristics (Claude spinner → progress; future Codex etc.),
 # kept out of the agent-agnostic engine core.
 rikka-terminal-agent-integration = { path = "crates/rikka-terminal-agent-integration" }

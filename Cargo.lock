@@ -5540,7 +5540,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "rikka-terminal"
+name = "rikka-terminal-agent-integration"
+version = "0.1.0"
+
+[[package]]
+name = "rikka-terminal-core"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
@@ -5554,10 +5558,6 @@ dependencies = [
  "parking_lot",
  "tokio",
 ]
-
-[[package]]
-name = "rikka-terminal-agent-integration"
-version = "0.1.0"
 
 [[package]]
 name = "rikka-terminal-gpui-ime"
@@ -6376,8 +6376,8 @@ dependencies = [
  "portable-pty",
  "regex",
  "rfd",
- "rikka-terminal",
  "rikka-terminal-agent-integration",
+ "rikka-terminal-core",
  "rikka-terminal-gpui-ime",
  "rikka-terminal-ssh-integration",
  "russh",

@@ -93,7 +93,7 @@ impl TerminalIdentity {
     /// The XTVERSION reply body (`DCS >| <this> ST`).
     pub fn xtversion(self) -> String {
         match self {
-            TerminalIdentity::Honest => rikka_terminal::xtversion::engine_identity(),
+            TerminalIdentity::Honest => rikka_terminal_core::xtversion::engine_identity(),
             // Current Ghostty release; apps key off the name.
             TerminalIdentity::Ghostty => "ghostty 1.3.1".to_string(),
         }
@@ -103,8 +103,8 @@ impl TerminalIdentity {
     pub fn term_program_env(self) -> (&'static str, &'static str) {
         match self {
             TerminalIdentity::Honest => (
-                rikka_terminal::xtversion::TERM_PROGRAM,
-                rikka_terminal::xtversion::TERM_PROGRAM_VERSION,
+                rikka_terminal_core::xtversion::TERM_PROGRAM,
+                rikka_terminal_core::xtversion::TERM_PROGRAM_VERSION,
             ),
             TerminalIdentity::Ghostty => ("ghostty", "1.3.1"),
         }

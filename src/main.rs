@@ -11,9 +11,9 @@ mod ssh;
 mod tabs;
 mod taskbar_progress;
 mod tsf;
-// Terminal engine extracted to the rikka-terminal workspace crate; keep the
-// old `crate::terminal::` paths alive via a root re-export.
-pub use rikka_terminal as terminal;
+// Terminal engine extracted to the rikka-terminal-core workspace crate; keep
+// the old `crate::terminal::` paths alive via a root re-export.
+pub use rikka_terminal_core as terminal;
 mod theme;
 mod window;
 
@@ -65,7 +65,7 @@ fn load_system_font(family: &str) -> Option<Vec<u8>> {
 fn main() {
     // OpenType features apply engine-globally; set them before the first
     // frame (saving settings re-applies at runtime).
-    rikka_terminal::renderer::set_font_features(settings::parse_font_features(
+    rikka_terminal_core::renderer::set_font_features(settings::parse_font_features(
         &settings::load_settings()
             .unwrap_or_default()
             .terminal
