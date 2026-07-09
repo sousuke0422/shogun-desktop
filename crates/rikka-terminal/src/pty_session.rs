@@ -8,6 +8,7 @@ use parking_lot::FairMutex;
 
 use alacritty_terminal::{
     Term,
+    grid::Dimensions as _,
     term::{Config, test::TermSize},
     vte::ansi::{Processor, StdSyncHandler},
 };
@@ -33,11 +34,21 @@ pub fn build_terminal_session(
     resizer: Arc<dyn PtyResizer>,
     xtversion_identity: &str,
 ) -> Result<TerminalSession> {
-    // ── OSC 52 clipboard handler ──────────────────────────────────────────────
+    // Created ahead of the clipboard/query handler thread below. The terminal
+    // itself is late-bound through `term_slot` (Weak, so the slot never keeps
+    // a dead session's Term alive): the thread must exist before the Term —
+    // it owns the sender side of the event channel the Term's listener uses.
+    let cell_size_px = Arc::new((AtomicU16::new(0), AtomicU16::new(0)));
+    let term_slot: Arc<std::sync::OnceLock<std::sync::Weak<FairMutex<Term<ClipboardListener>>>>> =
+        Arc::new(std::sync::OnceLock::new());
+
+    // ── OSC 52 clipboard / protocol-query handler ─────────────────────────────
     // Channel capacity of 16 is enough to absorb bursts without blocking the
     // PTY reader thread. Events are silently dropped when the buffer is full.
     let (cb_tx, cb_rx) = std::sync::mpsc::sync_channel::<ClipboardEvent>(16);
     let writer_for_cb = Arc::clone(&writer);
+    let term_for_cb = Arc::clone(&term_slot);
+    let cell_px_for_cb = Arc::clone(&cell_size_px);
     std::thread::spawn(move || {
         while let Ok(event) = cb_rx.recv() {
             match event {
@@ -57,9 +68,46 @@ pub fn build_terminal_session(
                     let _ = w.write_all(response.as_bytes());
                 }
                 ClipboardEvent::PtyWrite(text) => {
-                    // Generic write-back (OSC color queries etc.).
+                    // Generic write-back (kitty CSI ? u reply, CSI 18 t etc.).
                     let mut w = writer_for_cb.lock();
                     let _ = w.write_all(text.as_bytes());
+                }
+                ClipboardEvent::ColorQuery(idx, formatter) => {
+                    // OSC 10/11/4 query (vim probes the background for its
+                    // theme). Resolve against the live palette; briefly
+                    // blocking on the term lock here is fine — this thread
+                    // holds nothing the parse thread needs.
+                    let Some(term) = term_for_cb.get().and_then(|w| w.upgrade()) else {
+                        continue;
+                    };
+                    let rgb = {
+                        let term = term.lock();
+                        crate::query_color_rgb(term.colors(), idx)
+                    };
+                    if let Some(rgb) = rgb {
+                        let response = formatter(rgb);
+                        let mut w = writer_for_cb.lock();
+                        let _ = w.write_all(response.as_bytes());
+                    }
+                }
+                ClipboardEvent::TextAreaSize(formatter) => {
+                    // CSI 14 t: pixel size = cells × the renderer's cell size
+                    // (the same numbers TIOCGWINSZ advertises via resize()).
+                    let Some(term) = term_for_cb.get().and_then(|w| w.upgrade()) else {
+                        continue;
+                    };
+                    let (lines, cols) = {
+                        let term = term.lock();
+                        (term.screen_lines() as u16, term.columns() as u16)
+                    };
+                    let response = formatter(alacritty_terminal::event::WindowSize {
+                        num_lines: lines,
+                        num_cols: cols,
+                        cell_width: cell_px_for_cb.0.load(Ordering::Relaxed),
+                        cell_height: cell_px_for_cb.1.load(Ordering::Relaxed),
+                    });
+                    let mut w = writer_for_cb.lock();
+                    let _ = w.write_all(response.as_bytes());
                 }
             }
         }
@@ -88,6 +136,8 @@ pub fn build_terminal_session(
         &TermSize::new(cols as usize, rows as usize),
         listener,
     )));
+    // Late-bind the terminal into the query-handler thread (see above).
+    let _ = term_slot.set(Arc::downgrade(&term));
     let snapshot = Arc::new(FairMutex::new(GridSnapshot::blank(
         cols as usize,
         rows as usize,
@@ -99,7 +149,6 @@ pub fn build_terminal_session(
     let progress = Arc::new(Progress::default());
     let notifications: notify::NotificationQueue = Default::default();
     let images = Arc::new(kitty_graphics::KittyImageStore::default());
-    let cell_size_px = Arc::new((AtomicU16::new(0), AtomicU16::new(0)));
     let xtversion = crate::xtversion::XtversionScanner::new(xtversion_identity);
 
     {

@@ -30,8 +30,20 @@ pub enum ClipboardEvent {
     /// The callback formats the OSC 52 response string when called with the
     /// clipboard text (generated internally by alacritty_terminal).
     Load(Arc<dyn Fn(&str) -> String + Sync + Send + 'static>),
-    /// Generic PTY write-back (used by OSC color queries etc.).
+    /// Generic PTY write-back (used by protocol query replies).
     PtyWrite(String),
+    /// OSC 4/10/11/12 color query. The callback formats the reply for the
+    /// resolved color; resolution runs on the handler thread against the live
+    /// palette (see [`query_color_rgb`]).
+    ColorQuery(
+        usize,
+        Arc<dyn Fn(alacritty_terminal::vte::ansi::Rgb) -> String + Sync + Send + 'static>,
+    ),
+    /// `CSI 14 t` (text-area size in pixels). The callback formats the reply
+    /// from a [`alacritty_terminal::event::WindowSize`].
+    TextAreaSize(
+        Arc<dyn Fn(alacritty_terminal::event::WindowSize) -> String + Sync + Send + 'static>,
+    ),
 }
 
 /// EventListener implementation that forwards clipboard-related events to a
@@ -59,6 +71,14 @@ impl EventListener for ClipboardListener {
             }
             Event::PtyWrite(text) => {
                 let _ = self.tx.try_send(ClipboardEvent::PtyWrite(text));
+            }
+            // OSC 10/11 etc. — vim queries the background to pick its theme.
+            Event::ColorRequest(idx, formatter) => {
+                let _ = self.tx.try_send(ClipboardEvent::ColorQuery(idx, formatter));
+            }
+            // CSI 14 t — image tooling sizes itself from the pixel report.
+            Event::TextAreaSizeRequest(formatter) => {
+                let _ = self.tx.try_send(ClipboardEvent::TextAreaSize(formatter));
             }
             Event::Title(title) => *self.title.lock() = Some(title),
             Event::ResetTitle => *self.title.lock() = None,
@@ -316,6 +336,9 @@ pub struct GridSnapshot {
     pub cursor: (usize, usize),
     /// How to draw the cursor cell (DECSCUSR / DECTCEM).
     pub cursor_shape: CursorShapeKind,
+    /// The cursor blinks (DECSCUSR 1/3/5 or DECSET ?12) — rides the same
+    /// 600 ms phase and 300 ms refresh timer as SGR blink.
+    pub cursor_blink: bool,
     /// Lines scrolled back into history (0 = live view at the bottom).
     pub display_offset: usize,
     /// Any visible cell carries SGR blink — the refresh task adds a phase
@@ -339,6 +362,7 @@ impl GridSnapshot {
             cells: vec![vec![SnapshotCell::blank(); cols]; rows],
             cursor: (0, 0),
             cursor_shape: CursorShapeKind::default(),
+            cursor_blink: false,
             display_offset: 0,
             has_blink: false,
             links: Vec::new(),
@@ -801,6 +825,9 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         // passes `rows` and simply stops matching any painted row.
         cursor: ((cur.line.0 + display_offset) as usize, cur.column.0),
         cursor_shape,
+        // Hidden gates the blink flag so `?25l` apps don't arm the refresh
+        // timer for a cursor that never draws.
+        cursor_blink: term.cursor_style().blinking && cursor_shape != CursorShapeKind::Hidden,
         display_offset: term.grid().display_offset(),
         has_blink,
         links,
@@ -1088,6 +1115,46 @@ fn fallback_indexed_color(idx: u8) -> Option<ResolvedColor> {
         }
     };
     Some(ResolvedColor::Rgb(r, g, b))
+}
+
+/// Resolve an OSC color-query index the way the renderer would paint it: an
+/// explicitly set palette entry (OSC 4/10/11 set) wins; otherwise indices
+/// 0–255 use the engine's standard palette, and the dynamic specials mirror
+/// the renderer defaults (`renderer::default_fg` #E8DCC8 / `default_bg`
+/// #1A1A1A; the cursor is drawn in fg). `None` = stay silent, matching
+/// xterm's behavior for unset specials.
+pub(crate) fn query_color_rgb(
+    colors: &alacritty_terminal::term::color::Colors,
+    idx: usize,
+) -> Option<alacritty_terminal::vte::ansi::Rgb> {
+    use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+    if idx >= alacritty_terminal::term::color::COUNT {
+        return None;
+    }
+    if let Some(rgb) = colors[idx] {
+        return Some(rgb);
+    }
+    if idx < 256 {
+        return match fallback_indexed_color(idx as u8) {
+            Some(ResolvedColor::Rgb(r, g, b)) => Some(Rgb { r, g, b }),
+            _ => None,
+        };
+    }
+    if idx == NamedColor::Foreground as usize || idx == NamedColor::Cursor as usize {
+        Some(Rgb {
+            r: 0xE8,
+            g: 0xDC,
+            b: 0xC8,
+        })
+    } else if idx == NamedColor::Background as usize {
+        Some(Rgb {
+            r: 0x1A,
+            g: 0x1A,
+            b: 0x1A,
+        })
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -1601,6 +1668,101 @@ mod tests {
         assert_eq!(take_snapshot(&term).cursor_shape, CursorShapeKind::Hidden);
         advance_bytes(&mut term, b"\x1b[?25h\x1b[2 q");
         assert_eq!(take_snapshot(&term).cursor_shape, CursorShapeKind::Block);
+    }
+
+    #[test]
+    fn cursor_blink_tracks_decscusr_and_decset_12() {
+        let mut term = make_term(80, 24);
+        assert!(!take_snapshot(&term).cursor_blink);
+        // DECSCUSR 1 = blinking block, 2 = steady block.
+        advance_bytes(&mut term, b"\x1b[1 q");
+        assert!(take_snapshot(&term).cursor_blink);
+        advance_bytes(&mut term, b"\x1b[2 q");
+        assert!(!take_snapshot(&term).cursor_blink);
+        // DECSET ?12 folds into the same cursor style.
+        advance_bytes(&mut term, b"\x1b[?12h");
+        assert!(take_snapshot(&term).cursor_blink);
+        // Hidden gates the flag: no refresh-timer churn for `?25l` apps.
+        advance_bytes(&mut term, b"\x1b[?25l");
+        assert!(!take_snapshot(&term).cursor_blink);
+    }
+
+    #[test]
+    fn color_query_and_winops_events_reach_the_channel() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let listener = ClipboardListener {
+            tx,
+            title: Arc::default(),
+        };
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 24), listener);
+        let mut parser = Processor::<StdSyncHandler>::new();
+        // OSC 11 background query — vim's theme probe.
+        for &b in b"\x1b]11;?\x1b\\".iter() {
+            parser.advance(&mut term, b);
+        }
+        let Ok(ClipboardEvent::ColorQuery(idx, formatter)) = rx.try_recv() else {
+            panic!("expected ColorQuery");
+        };
+        {
+            use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+            assert_eq!(idx, NamedColor::Background as usize);
+            let reply = formatter(Rgb {
+                r: 0x1a,
+                g: 0x1a,
+                b: 0x1a,
+            });
+            assert!(reply.starts_with("\x1b]11;rgb:1a1a/1a1a/1a1a"), "{reply:?}");
+        }
+        // CSI 14 t — text-area size in pixels.
+        for &b in b"\x1b[14t".iter() {
+            parser.advance(&mut term, b);
+        }
+        let Ok(ClipboardEvent::TextAreaSize(formatter)) = rx.try_recv() else {
+            panic!("expected TextAreaSize");
+        };
+        let reply = formatter(alacritty_terminal::event::WindowSize {
+            num_lines: 24,
+            num_cols: 80,
+            cell_width: 8,
+            cell_height: 16,
+        });
+        assert_eq!(reply, "\x1b[4;384;640t");
+    }
+
+    #[test]
+    fn query_color_resolution_order() {
+        use alacritty_terminal::term::color::Colors;
+        use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+        let mut colors = Colors::default();
+        // Unset specials fall back to the renderer defaults…
+        assert_eq!(
+            query_color_rgb(&colors, NamedColor::Background as usize),
+            Some(Rgb {
+                r: 0x1A,
+                g: 0x1A,
+                b: 0x1A
+            })
+        );
+        assert_eq!(
+            query_color_rgb(&colors, NamedColor::Foreground as usize),
+            Some(Rgb {
+                r: 0xE8,
+                g: 0xDC,
+                b: 0xC8
+            })
+        );
+        // …indexed colors to the standard palette (196 = pure red in the
+        // 6×6×6 cube)…
+        assert_eq!(
+            query_color_rgb(&colors, 196),
+            Some(Rgb { r: 255, g: 0, b: 0 })
+        );
+        // …and an explicitly set entry wins over every fallback.
+        colors[NamedColor::Background as usize] = Some(Rgb { r: 1, g: 2, b: 3 });
+        assert_eq!(
+            query_color_rgb(&colors, NamedColor::Background as usize),
+            Some(Rgb { r: 1, g: 2, b: 3 })
+        );
     }
 
     #[test]
