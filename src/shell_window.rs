@@ -13,9 +13,10 @@ use crate::window::{
     TerminalSendBacktab, TerminalSendTab, measure_cell_metrics,
 };
 use gpui::{
-    App, Bounds, Context, ElementInputHandler, Entity, FocusHandle, IntoElement, KeyDownEvent,
-    ParentElement, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement,
-    Styled, Window, WindowBounds, WindowOptions, canvas, div, prelude::*, px, size,
+    App, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
+    IntoElement, KeyDownEvent, ParentElement, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent,
+    StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, canvas, div,
+    prelude::*, px, size,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{Root, v_flex};
@@ -552,6 +553,25 @@ impl Render for ShellWindow {
                         ElementInputHandler::new(bounds, ime.clone()),
                         cx,
                     );
+
+                    // TSF (gated): feed the caret rect (client physical px) so
+                    // the IME candidate window opens at the terminal cursor.
+                    if crate::tsf::enabled() && focus_handle.is_focused(window) {
+                        let caret = ime.update(cx, |ime, cx| {
+                            ime.bounds_for_range(0..0, bounds, window, cx)
+                        });
+                        let scale = window.scale_factor();
+                        crate::tsf::set_caret(caret.map(|b| {
+                            rikka_terminal_gpui_ime::CaretRect {
+                                left: (f32::from(b.origin.x) * scale) as i32,
+                                top: (f32::from(b.origin.y) * scale) as i32,
+                                right: ((f32::from(b.origin.x) + f32::from(b.size.width))
+                                    * scale) as i32,
+                                bottom: ((f32::from(b.origin.y) + f32::from(b.size.height))
+                                    * scale) as i32,
+                            }
+                        }));
+                    }
                     selection::register_mouse_selection(
                         window,
                         view.clone(),

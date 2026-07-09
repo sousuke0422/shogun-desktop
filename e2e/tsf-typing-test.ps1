@@ -182,6 +182,34 @@ switch ($Stage) {
         Shot-Window $shell 'typ5-cleaned.png'
         Tail-Log
     }
+    'convert' {
+        # Candidate-window placement check: compose, hit Space so the IME opens
+        # its candidate list, and screenshot where it appears (should hug the
+        # terminal caret once GetTextExt serves a real rect).
+        $shell = [IntPtr]([Int64](Get-Content (Join-Path $OutDir 'shell.hwnd')))
+        [E2E]::SetForegroundWindow($shell) | Out-Null
+        Start-Sleep -Milliseconds 600
+        Click-Frac $shell 0.5 0.5
+        if ([E2E]::GetForegroundWindow() -ne $shell) {
+            Write-Output 'FAIL: shell not foreground'; exit 1
+        }
+        Press 0xF4 0x29
+        Start-Sleep -Milliseconds 600
+        foreach ($vk in 0x41, 0x49, 0x55, 0x45, 0x4F) { Press ([byte]$vk) }
+        Start-Sleep -Milliseconds 600
+        Press 0x20   # Space 1: convert to the first candidate
+        Start-Sleep -Milliseconds 700
+        Press 0x20   # Space 2: MS-IME opens the candidate list
+        Start-Sleep -Milliseconds 1200
+        Shot-Window $shell 'cnv1-candidates.png'
+        Press 0x1B   # Escape: back to hiragana
+        Press 0x1B   # Escape: cancel composition
+        Start-Sleep -Milliseconds 400
+        Press 0xF4 0x29
+        Start-Sleep -Milliseconds 400
+        Shot-Window $shell 'cnv2-cleaned.png'
+        Tail-Log
+    }
     'close' {
         foreach ($w in Get-AppWindows) {
             Write-Output "closing hwnd=$([Int64]$w.Hwnd) title=$($w.Title)"

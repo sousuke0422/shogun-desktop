@@ -13,6 +13,7 @@ description = "OS IME status/indicator integration for gpui windows (Windows TSF
 version = "0.61"
 features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_System_Com",
     "Win32_System_Ole",
     "Win32_System_Variant",

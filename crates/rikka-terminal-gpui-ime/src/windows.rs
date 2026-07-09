@@ -23,6 +23,7 @@ use std::ptr;
 use std::rc::Rc;
 
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_NOTIMPL, HWND, POINT, RECT};
+use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
     CoUninitialize, FORMATETC, IDataObject,
@@ -32,7 +33,8 @@ use windows::Win32::UI::TextServices::{
     ITfContext, ITfContextOwnerCompositionSink, ITfContextOwnerCompositionSink_Impl,
     ITfDocumentMgr, ITfRange, ITfThreadMgr, TEXT_STORE_LOCK_FLAGS, TEXT_STORE_TEXT_CHANGE_FLAGS,
     TF_E_DISCONNECTED, TS_AE_NONE, TS_ATTRVAL, TS_E_NOLAYOUT, TS_E_NOLOCK, TS_E_SYNCHRONOUS,
-    TS_LF_SYNC, TS_RT_PLAIN, TS_RUNINFO, TS_S_ASYNC, TS_SELECTION_ACP, TS_STATUS, TS_TEXTCHANGE,
+    TS_LC_CHANGE, TS_LF_SYNC, TS_RT_PLAIN, TS_RUNINFO, TS_S_ASYNC, TS_SELECTION_ACP, TS_STATUS,
+    TS_TEXTCHANGE,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use windows::core::{
@@ -304,6 +306,30 @@ impl crate::Backend for WindowsTsf {
             crate::tsf_log!("tsf: drained {} event(s)", events.len());
         }
         events
+    }
+
+    fn set_caret(&mut self, caret: Option<CaretRect>) {
+        let sink = {
+            let mut state = self.state.borrow_mut();
+            if state.caret == caret {
+                return;
+            }
+            state.caret = caret;
+            // Tell the TIP the layout moved so it re-queries GetTextExt and
+            // repositions the candidate window — but never from inside a lock
+            // (set_caret runs in app control flow, so lock is None; the check
+            // is belt-and-braces).
+            if state.lock == Lock::None {
+                state.sink.clone()
+            } else {
+                None
+            }
+        };
+        if let Some(sink) = sink {
+            unsafe {
+                let _ = sink.OnLayoutChange(TS_LC_CHANGE, 0);
+            }
+        }
     }
 }
 
@@ -635,12 +661,21 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         }
         let state = self.state_ref()?;
         state.require_read()?;
+        let hwnd = state.hwnd;
         let caret = state.caret.ok_or_else(|| {
             crate::tsf_log!("store: GetTextExt -> TS_E_NOLAYOUT (no caret rect)");
             WindowsError::from(TS_E_NOLAYOUT)
         })?;
+        let screen = client_rect_to_screen(hwnd, caret);
+        crate::tsf_log!(
+            "store: GetTextExt -> screen ({},{})-({},{})",
+            screen.left,
+            screen.top,
+            screen.right,
+            screen.bottom
+        );
         unsafe {
-            *prc = rect_of(caret);
+            *prc = screen;
             *pfClipped = BOOL(0);
         }
         Ok(())
@@ -648,8 +683,9 @@ impl ITextStoreACP_Impl for TextStore_Impl {
 
     fn GetScreenExt(&self, _vcView: u32) -> WindowsResult<RECT> {
         let state = self.state_ref()?;
+        let hwnd = state.hwnd;
         let caret = state.caret.ok_or_else(|| WindowsError::from(TS_E_NOLAYOUT))?;
-        Ok(rect_of(caret))
+        Ok(client_rect_to_screen(hwnd, caret))
     }
 
     fn GetWnd(&self, _vcView: u32) -> WindowsResult<HWND> {
@@ -806,12 +842,29 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     }
 }
 
-fn rect_of(c: CaretRect) -> RECT {
+/// Convert an app-supplied caret rect (client-area physical px) to the screen
+/// coordinates TSF expects. `hwnd_raw == 0` falls back to the foreground
+/// window, matching `GetWnd`.
+fn client_rect_to_screen(hwnd_raw: isize, c: CaretRect) -> RECT {
+    let hwnd = if hwnd_raw != 0 {
+        HWND(hwnd_raw as *mut core::ffi::c_void)
+    } else {
+        unsafe { GetForegroundWindow() }
+    };
+    let mut lt = POINT { x: c.left, y: c.top };
+    let mut rb = POINT {
+        x: c.right,
+        y: c.bottom,
+    };
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut lt);
+        let _ = ClientToScreen(hwnd, &mut rb);
+    }
     RECT {
-        left: c.left,
-        top: c.top,
-        right: c.right,
-        bottom: c.bottom,
+        left: lt.x,
+        top: lt.y,
+        right: rb.x,
+        bottom: rb.y,
     }
 }
 

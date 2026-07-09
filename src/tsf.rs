@@ -50,6 +50,14 @@ pub fn on_input_blur() {
     }
 }
 
+/// Update the focused terminal's caret rectangle (client-area physical px) so
+/// the IME candidate window opens at the cursor. No-op when the gate is off.
+pub fn set_caret(rect: Option<rikka_terminal_gpui_ime::CaretRect>) {
+    if enabled() {
+        rikka_terminal_gpui_ime::set_caret(rect);
+    }
+}
+
 /// Drain queued IME events, oldest first (always empty when the gate is off).
 pub fn drain() -> Vec<ImeEvent> {
     if enabled() {

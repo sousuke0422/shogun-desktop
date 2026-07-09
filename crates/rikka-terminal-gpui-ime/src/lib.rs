@@ -43,8 +43,10 @@ pub struct TextSnapshot {
     pub caret: Option<CaretRect>,
 }
 
-/// Screen-space rectangle in physical pixels. Plain ints keep the trait
-/// platform-neutral (the Windows backend converts to `RECT`).
+/// Caret rectangle in **client-area physical pixels** of the focused window.
+/// The Windows backend converts client→screen itself (it knows the HWND), so
+/// the app only needs its own coordinates and the scale factor. Plain ints
+/// keep the type platform-neutral.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CaretRect {
     pub left: i32,
@@ -84,6 +86,10 @@ trait Backend {
     /// performs any deferred document reset (safe here: no TSF lock is held in
     /// app control flow).
     fn take_events(&mut self) -> Vec<ImeEvent>;
+    /// Update the caret rectangle (client-area physical px) used to answer
+    /// `GetTextExt` — where the IME places its candidate window. `None` =
+    /// unknown (TSF gets "no layout" and falls back to a default position).
+    fn set_caret(&mut self, caret: Option<CaretRect>);
 }
 
 /// No-op backend: platforms without an implementation, or when init fails.
@@ -94,6 +100,7 @@ impl Backend for NoopBackend {
     fn take_events(&mut self) -> Vec<ImeEvent> {
         Vec::new()
     }
+    fn set_caret(&mut self, _caret: Option<CaretRect>) {}
 }
 
 #[cfg(windows)]
@@ -207,6 +214,13 @@ pub fn blur() {
 /// document reset.
 pub fn drain_events() -> Vec<ImeEvent> {
     with_backend(|backend| backend.take_events()).unwrap_or_default()
+}
+
+/// Update the focused input's caret rectangle (client-area physical px) so
+/// the IME candidate window opens at the cursor. Call from app control flow
+/// (e.g. a paint pass) whenever the caret is known; cheap and deduplicated.
+pub fn set_caret(caret: Option<CaretRect>) {
+    with_backend(|backend| backend.set_caret(caret));
 }
 
 /// Tear down this thread's backend and waker (e.g. on shutdown).
