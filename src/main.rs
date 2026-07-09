@@ -63,6 +63,10 @@ fn load_system_font(family: &str) -> Option<Vec<u8>> {
 }
 
 fn main() {
+    // Panics land in %TEMP%/shogun-tsf/panic.log — field diagnosis for the
+    // "grid goes permanently black" class (a dead parse thread is invisible
+    // from a GUI shell).
+    rikka_terminal_core::install_panic_log();
     // OpenType features apply engine-globally; set them before the first
     // frame (saving settings re-applies at runtime).
     rikka_terminal_core::renderer::set_font_features(settings::parse_font_features(

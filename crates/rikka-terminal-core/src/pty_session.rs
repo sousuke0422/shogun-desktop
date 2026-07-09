@@ -1,4 +1,11 @@
 use std::io::{Read, Write};
+/// `std::thread::spawn` with a name, so panics attribute themselves in the
+/// panic log (see [`crate::install_panic_log`]) — an anonymous dead parse
+/// thread otherwise reports itself only as a frozen grid.
+fn spawn_named(name: &str, f: impl FnOnce() + Send + 'static) {
+    let _ = std::thread::Builder::new().name(name.to_string()).spawn(f);
+}
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
@@ -49,7 +56,7 @@ pub fn build_terminal_session(
     let writer_for_cb = Arc::clone(&writer);
     let term_for_cb = Arc::clone(&term_slot);
     let cell_px_for_cb = Arc::clone(&cell_size_px);
-    std::thread::spawn(move || {
+    spawn_named("rikka-clipboard", move || {
         while let Ok(event) = cb_rx.recv() {
             match event {
                 ClipboardEvent::Store(text) => {
@@ -170,7 +177,7 @@ pub fn build_terminal_session(
         // timeout can flush the buffer, and a thread parked in `read()`
         // would never fire one.
         let (chunk_tx, chunk_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
-        std::thread::spawn(move || {
+        spawn_named("rikka-pty-io", move || {
             let mut reader = reader;
             let mut buf = [0u8; 4096];
             loop {
@@ -185,7 +192,7 @@ pub fn build_terminal_session(
                 }
             }
         });
-        std::thread::spawn(move || {
+        spawn_named("rikka-parse", move || {
             use std::sync::mpsc::RecvTimeoutError;
             let mut parser = Processor::<StdSyncHandler>::new();
             // OSC 9 / 9;4 / 777 observer — the vte stack drops these

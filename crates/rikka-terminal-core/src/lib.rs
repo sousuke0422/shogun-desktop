@@ -614,6 +614,36 @@ fn side_of(right: bool) -> alacritty_terminal::index::Side {
     }
 }
 
+/// Append every panic (any thread) to `%TEMP%/shogun-tsf/panic.log` — the
+/// GUI shells have no visible stderr, and a dead parse thread otherwise
+/// reports itself only as a frozen grid (or, when it dies right after a
+/// frame-opening ED2, a permanently black one). Chains the default hook.
+/// Call once at startup, from every product shell.
+pub fn install_panic_log() {
+    let dir = std::env::temp_dir().join("shogun-tsf");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("panic.log");
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let thread = std::thread::current();
+            let _ = writeln!(
+                f,
+                "==== panic thread={} at {:?} ====\n{info}\n{}\n",
+                thread.name().unwrap_or("<unnamed>"),
+                std::time::SystemTime::now(),
+                std::backtrace::Backtrace::force_capture(),
+            );
+        }
+        prev(info);
+    }));
+}
+
 /// Encode a press-type report (wheel tick, button press) in the negotiated
 /// coordinate encoding, by precedence: SGR (`?1006`) > UTF-8 (`?1005`) > X10.
 /// `None` when the coordinates do not fit the encoding's range.
