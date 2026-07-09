@@ -180,11 +180,24 @@ pub fn build_terminal_session(
         spawn_named("rikka-pty-io", move || {
             let mut reader = reader;
             let mut buf = [0u8; 4096];
+            // RIKKA_PTY_DUMP=<path>: tee the raw PTY output for protocol
+            // forensics (what did the app REALLY emit, post-transport).
+            let mut dump = std::env::var_os("RIKKA_PTY_DUMP").and_then(|p| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(p)
+                    .ok()
+            });
             loop {
                 match reader.read(&mut buf) {
                     // Dropping the sender signals EOF to the parse thread.
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        if let Some(f) = dump.as_mut() {
+                            use std::io::Write as _;
+                            let _ = f.write_all(&buf[..n]);
+                        }
                         if chunk_tx.send(buf[..n].to_vec()).is_err() {
                             break;
                         }
@@ -213,6 +226,9 @@ pub fn build_terminal_session(
             // XTVERSION (CSI > 0 q): vte has no hook for it — answer from a
             // passive scanner so applications can identify the terminal.
             let mut xtversion = xtversion;
+            // XTWINOPS op 16 (cell pixel size): alacritty drops it, yazi
+            // needs it to size sixel rasters on Windows. See winops.
+            let mut winops = crate::winops::WinopsScanner::new();
             loop {
                 // While a synchronized update is pending, wait only until its
                 // deadline so an unterminated BSU can't freeze the screen.
@@ -269,6 +285,11 @@ pub fn build_terminal_session(
                             if let Some(reply) = xtversion.advance(byte) {
                                 responses.push(reply);
                             }
+                            if winops.advance(byte) {
+                                let cw = cell_px2.0.load(Ordering::Relaxed) as usize;
+                                let chp = cell_px2.1.load(Ordering::Relaxed) as usize;
+                                responses.push(crate::winops::cell_size_reply(cw, chp));
+                            }
                             parser.advance(&mut *t, byte);
                             // Sixel: on a completed DCS (the parser has just
                             // consumed the terminator and discarded the DCS
@@ -277,6 +298,17 @@ pub fn build_terminal_session(
                             if let Some(seq) = sixel_scanner.advance(byte)
                                 && let Some(img) = crate::sixel::decode(&seq.data)
                             {
+                                // A ?2026 synchronized update buffers bytes
+                                // inside the Processor, so the term's cursor
+                                // still predates the frame's CUP — inject
+                                // against that and the placement lands in
+                                // stale coordinates (the yazi empty/corrupt
+                                // preview). Flush the buffered prefix first:
+                                // the frame tears once per image, but the
+                                // cursor and SGR are true.
+                                if parser.sync_timeout().sync_timeout().is_some() {
+                                    parser.stop_sync(&mut *t);
+                                }
                                 let cw = cell_px2.0.load(Ordering::Relaxed).max(1) as usize;
                                 let chp = cell_px2.1.load(Ordering::Relaxed).max(1) as usize;
                                 // Before the first resize the cell size is

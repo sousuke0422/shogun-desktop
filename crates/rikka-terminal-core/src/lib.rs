@@ -8,6 +8,7 @@ pub mod pty_session;
 pub mod renderer;
 pub mod selection;
 pub mod sixel;
+pub mod winops;
 pub mod xtversion;
 
 use std::io::Write;
