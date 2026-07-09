@@ -2088,4 +2088,123 @@ mod tests {
         let snap = take_snapshot(&term);
         assert_eq!(snap.cursor, (0, 0));
     }
+
+    // ── field bug hunt (2026-07-10): "alt screen + 右クリ/選択で内容消失" ──
+    // Pin every engine-side defense on the selection × alt-screen ×
+    // scrollback axes, so if the field bug lives in this layer one of these
+    // trips, and if they all hold the engine is exonerated headlessly.
+
+    fn snap_row(snap: &GridSnapshot, row: usize) -> String {
+        snap.cells[row].iter().map(|c| c.c).collect()
+    }
+
+    fn simple_selection(term: &mut Term<VoidListener>, from: (i32, usize), to: (i32, usize)) {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut sel = Selection::new(
+            SelectionType::Simple,
+            Point::new(Line(from.0), Column(from.1)),
+            Side::Left,
+        );
+        sel.update(Point::new(Line(to.0), Column(to.1)), Side::Right);
+        term.selection = Some(sel);
+    }
+
+    #[test]
+    fn selection_left_in_scrollback_never_highlights_whole_screen() {
+        use alacritty_terminal::grid::Scroll;
+        let mut term = make_term(20, 4);
+        for i in 0..12 {
+            advance_bytes(&mut term, format!("line{i}\r\n").as_bytes());
+        }
+        // Scroll back and select what is on screen (history lines) — the
+        // shift+drag flow, via the same viewport mapping the app uses.
+        term.scroll_display(Scroll::Delta(6));
+        let a = viewport_point(&term, 0, 0);
+        let b = viewport_point(&term, 1, 5);
+        simple_selection(&mut term, (a.line.0, a.column.0), (b.line.0, b.column.0));
+        // Jump back to the live bottom: the selected lines are now above the
+        // viewport. The snapshot must clamp (start pinned to (0,0)) or drop
+        // the selection — a sign-wrapped row that paints the entire screen
+        // as selected is exactly the "content vanished" failure.
+        term.scroll_display(Scroll::Bottom);
+        let snap = take_snapshot(&term);
+        if let Some((start, end)) = snap.selection {
+            assert!(end.0 < snap.rows, "selection end wrapped: {end:?}");
+            assert!(start.0 <= end.0, "inverted selection: {start:?}..{end:?}");
+        }
+        assert_eq!(&snap_row(&snap, 0)[..5], "line9");
+    }
+
+    #[test]
+    fn alt_swap_drops_selection_and_shows_alt_content() {
+        let mut term = make_term(20, 4);
+        advance_bytes(&mut term, b"primary text\r\n");
+        simple_selection(&mut term, (0, 0), (0, 6));
+        assert!(take_snapshot(&term).selection.is_some());
+        // Entering the alt screen swaps grids; a selection anchored in the
+        // primary grid must not survive into alt coordinates.
+        advance_bytes(&mut term, b"\x1b[?1049h");
+        assert!(term.selection.is_none(), "swap_alt must clear selection");
+        // The alt cursor inherits the primary position — home it first so the
+        // content lands on row 0.
+        advance_bytes(&mut term, b"\x1b[HALTVIEW");
+        let snap = take_snapshot(&term);
+        assert!(snap.selection.is_none());
+        assert_eq!(&snap_row(&snap, 0)[..7], "ALTVIEW");
+        // And leaving restores the primary content untouched.
+        advance_bytes(&mut term, b"\x1b[?1049l");
+        let snap = take_snapshot(&term);
+        assert_eq!(&snap_row(&snap, 0)[..12], "primary text");
+    }
+
+    #[test]
+    fn alt_screen_redraw_under_live_selection_never_blanks() {
+        let mut term = make_term(20, 4);
+        advance_bytes(&mut term, b"\x1b[?1049h");
+        advance_bytes(&mut term, b"SCREEN-A");
+        // Local selection over alt-screen text (the shift+drag flow).
+        simple_selection(&mut term, (0, 0), (0, 7));
+        let snap = take_snapshot(&term);
+        assert_eq!(&snap_row(&snap, 0)[..8], "SCREEN-A");
+        assert!(snap.selection.is_some());
+        // A full TUI repaint (claude/btop style: clear, home, redraw) with
+        // the selection still held: content must show the new frame — never
+        // a blank grid, never a screen-wide highlight.
+        advance_bytes(&mut term, b"\x1b[2J\x1b[HSCREEN-B");
+        let snap = take_snapshot(&term);
+        assert_eq!(&snap_row(&snap, 0)[..8], "SCREEN-B");
+        if let Some((start, end)) = snap.selection {
+            assert!(end.0 < snap.rows && start.0 <= end.0);
+        }
+        // Selection ops arriving mid-frame (the right-click/copy path calls
+        // these on the UI thread) must stay panic-free on the alt grid.
+        let _ = term.selection_to_string();
+        term.selection = None;
+        let snap = take_snapshot(&term);
+        assert_eq!(&snap_row(&snap, 0)[..8], "SCREEN-B");
+    }
+
+    #[test]
+    fn selection_ops_after_alt_resize_stay_in_bounds() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        let mut term = make_term(20, 6);
+        advance_bytes(&mut term, b"\x1b[?1049h");
+        advance_bytes(&mut term, b"WIDE-ALT-CONTENT");
+        // Selection anchored near the bottom, then the pane shrinks (the
+        // context-menu/resize suspicion): to_range must clamp, snapshot must
+        // stay renderable.
+        simple_selection(&mut term, (5, 0), (5, 10));
+        term.resize(TermSize::new(10, 3));
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.rows, 3);
+        if let Some((start, end)) = snap.selection {
+            assert!(end.0 < 3, "selection outlived the shrink: {end:?}");
+            assert!(start.0 <= end.0);
+        }
+        if let Some(sel) = term.selection.as_mut() {
+            sel.update(Point::new(Line(2), Column(9)), Side::Right);
+        }
+        let _ = term.selection_to_string();
+    }
 }
