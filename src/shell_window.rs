@@ -555,14 +555,7 @@ impl Render for ShellWindow {
                     self.selection.hover_link_for(0),
                     images.as_deref(),
                     ime_preedit,
-                ))
-                // Right-click menu dispatching the same actions as the
-                // keyboard shortcuts (see render_terminal_tab).
-                .context_menu(move |menu, _window, _cx| {
-                    menu.action_context(menu_focus.clone())
-                        .menu("コピー", Box::new(TerminalCopy))
-                        .menu("ペースト", Box::new(TerminalPaste))
-                });
+                ));
 
             // Overlay: registers the IME input handler (GPUI only routes
             // WM_CHAR / IME composition to a registered handler) and the
@@ -639,6 +632,21 @@ impl Render for ShellWindow {
                 .size_full()
                 .child(pane)
                 .child(overlay)
+                // Right-click menu dispatching the same actions as the
+                // keyboard shortcuts (see render_terminal_tab). Attached to
+                // the NON-scrolling wrapper, never to the scroll container:
+                // an open menu injects a window-sized absolute subtree as a
+                // child, taffy counts absolute children toward a scroll
+                // container's content size (inflow ⊔ absolute — the same
+                // trap as the 8px micro-scroll), and the per-output
+                // scroll_to_bottom() then pins the pane to the phantom
+                // bottom, scrolling the grid clean out of view — the
+                // "right-click blanks the alt screen" field bug (2026-07-10).
+                .context_menu(move |menu, _window, _cx| {
+                    menu.action_context(menu_focus.clone())
+                        .menu("コピー", Box::new(TerminalCopy))
+                        .menu("ペースト", Box::new(TerminalPaste))
+                })
                 .into_any_element()
         } else {
             div()
