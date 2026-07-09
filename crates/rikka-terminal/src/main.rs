@@ -46,13 +46,15 @@ const TAB_STRIP_H: f32 = 40.0;
 const TAB_H: f32 = 32.0;
 // ── chrome palette: Files (files.community) = WinUI TabView restyled ─────────
 // Tokens lifted from TabView_themeresources.xaml / Common_themeresources_any
-// (both MIT), dark theme. The one deliberate deviation: the selected tab's
-// background is our pane surface instead of SolidBackgroundFillColorTertiary,
-// because the whole point of that brush is "selected tab merges with the
-// surface below it" and our surface below is the pane.
-const CHROME_BG: u32 = 0x161618;
-/// Pane surface; the selected tab shares it (the WinUI merge illusion).
-const PANE_BG: u32 = 0x1A1A1A;
+// (both MIT), dark theme — including the dark-gray surface ladder:
+// SolidBackgroundFillColorBase for the window chrome and
+// SolidBackgroundFillColorTertiary for the content layer, which is exactly
+// the brush WinUI points TabViewItemHeaderBackgroundSelected at, so the
+// selected tab merges with the pane by construction.
+const CHROME_BG: u32 = 0x202020;
+/// Pane surface = SolidBackgroundFillColorTertiary; the selected tab shares
+/// it (the WinUI merge).
+const PANE_BG: u32 = 0x282828;
 /// LayerOnMicaBaseAltFillColorSecondary — unselected tab hover.
 const TAB_HOVER: u32 = 0xFFFFFF0F;
 /// SubtleFillColorSecondary — small button (close / add / caption) hover.
@@ -77,7 +79,7 @@ fn acrylic() -> bool {
 /// Strip fill: solid chrome, or a 72% tint over acrylic.
 fn chrome_fill() -> gpui::Rgba {
     if acrylic() {
-        gpui::rgba(0x161618B8)
+        gpui::rgba(0x202020B8)
     } else {
         rgb(CHROME_BG)
     }
@@ -87,7 +89,7 @@ fn chrome_fill() -> gpui::Rgba {
 /// or a 78% tint over acrylic.
 fn pane_fill() -> gpui::Rgba {
     if acrylic() {
-        gpui::rgba(0x1A1A1AC8)
+        gpui::rgba(0x282828C8)
     } else {
         rgb(PANE_BG)
     }
