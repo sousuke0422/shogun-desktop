@@ -243,7 +243,10 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       MIT adapt・CREDITS 帰属・26 メソッド + lock model・Windows compile 済
       400586b）。M1a (4d0ef14) = SHOGUN_TSF env ゲートで shell window の
       focus_in/out から focus/blur のみ配線（gpui 無改変・既定挙動不変）。
-      **検証法**: `$env:SHOGUN_TSF="1"` で起動→shell 窓 focus→半角/全角で
+      **COM 配管は headless smoke で実証済**（`cargo run --example tsf_smoke`
+      → 全段 OK・sink advised: yes = TSF が store に実際に食いつく）。
+      **検証法**: `$env:SHOGUN_TSF="1"`（＋`$env:SHOGUN_TSF_LOG="C:\...\tsf.log"`
+      推奨）で起動→shell 窓 or 本窓ターミナルタブ focus→半角/全角で
       タスクバー表示が追従するか（ゲート下は入力が死ぬのが正常 = focus-only）。
       追従すれば M1b: ITfContextOwnerCompositionSink で preedit/commit 判別
       → preedit は ime.marked 相当へ・commit は PTY 送信・sync() drain 配線・
