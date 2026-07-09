@@ -3,9 +3,14 @@
 //! Activates an `ITfThreadMgr` on the UI thread and, while an input is focused,
 //! gives it a document whose context is backed by an `ITextStoreACP` text store
 //! (this module). That is what makes TSF — and therefore the taskbar input
-//! indicator — track our window and reflect its conversion mode. TSF reads the
-//! text from a cached snapshot and queues edits; the app drains and applies
-//! them via [`crate::TsfTextClient`] outside the COM callbacks.
+//! indicator — track our window (verified on hardware: A→あ→A). Once TSF is
+//! engaged the IME composes *into the store*: the same COM object also
+//! implements `ITfContextOwnerCompositionSink`, so composition boundaries are
+//! known and the store synthesizes [`ImeEvent`]s — `Preedit` while composing,
+//! `Commit` when the composition ends (or on direct insertion). The app drains
+//! them via [`crate::drain_events`]; the drain is also where the document is
+//! reset to empty after a commit (safe: no TSF lock is held in app control
+//! flow, and the reset is announced through `OnTextChange`).
 //!
 //! Adapted from the arcweft project (dual Apache-2.0/MIT; used under MIT — see
 //! CREDITS). Offsets are UTF-16 code units throughout, matching both TSF's ACP
@@ -23,9 +28,11 @@ use windows::Win32::System::Com::{
     CoUninitialize, FORMATETC, IDataObject,
 };
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_ThreadMgr, ITextStoreACP, ITextStoreACP_Impl, ITextStoreACPSink, ITfContext,
-    ITfDocumentMgr, ITfThreadMgr, TEXT_STORE_LOCK_FLAGS, TF_E_DISCONNECTED, TS_AE_NONE, TS_ATTRVAL,
-    TS_E_NOLAYOUT, TS_E_NOLOCK, TS_RT_PLAIN, TS_RUNINFO, TS_SELECTION_ACP, TS_STATUS, TS_TEXTCHANGE,
+    CLSID_TF_ThreadMgr, ITextStoreACP, ITextStoreACP_Impl, ITextStoreACPSink, ITfCompositionView,
+    ITfContext, ITfContextOwnerCompositionSink, ITfContextOwnerCompositionSink_Impl,
+    ITfDocumentMgr, ITfRange, ITfThreadMgr, TEXT_STORE_LOCK_FLAGS, TEXT_STORE_TEXT_CHANGE_FLAGS,
+    TF_E_DISCONNECTED, TS_AE_NONE, TS_ATTRVAL, TS_E_NOLAYOUT, TS_E_NOLOCK, TS_E_SYNCHRONOUS,
+    TS_LF_SYNC, TS_RT_PLAIN, TS_RUNINFO, TS_S_ASYNC, TS_SELECTION_ACP, TS_STATUS, TS_TEXTCHANGE,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use windows::core::{
@@ -33,7 +40,7 @@ use windows::core::{
     Result as WindowsResult, implement,
 };
 
-use crate::{CaretRect, TextEdit, TextSnapshot};
+use crate::{CaretRect, ImeEvent, TextSnapshot};
 
 // ── shared text-store state ────────────────────────────────────────────────
 
@@ -50,11 +57,20 @@ struct Shared {
     hwnd: isize,
     destroyed: bool,
     lock: Lock,
+    /// An async lock (upgrade) requested from inside `OnLockGranted`; granted
+    /// after the current grant returns.
+    pending_lock: Option<u32>,
     sink: Option<ITextStoreACPSink>,
     text: Vec<u16>,
     selection: Range<usize>,
     caret: Option<CaretRect>,
-    pending: Vec<TextEdit>,
+    /// Inside a composition (between OnStartComposition and OnEndComposition).
+    composing: bool,
+    /// Events for the app, drained by [`crate::drain_events`].
+    events: Vec<ImeEvent>,
+    /// A commit happened; the document must be reset to empty at the next
+    /// drain (outside any TSF lock), announced via `OnTextChange`.
+    needs_reset: bool,
 }
 
 type SharedHandle = Rc<RefCell<Shared>>;
@@ -65,11 +81,14 @@ impl Shared {
             hwnd: 0,
             destroyed: false,
             lock: Lock::None,
+            pending_lock: None,
             sink: None,
             text: Vec::new(),
             selection: 0..0,
             caret: None,
-            pending: Vec::new(),
+            composing: false,
+            events: Vec::new(),
+            needs_reset: false,
         }
     }
 
@@ -91,6 +110,17 @@ impl Shared {
 
     fn len(&self) -> usize {
         self.text.len()
+    }
+
+    /// Queue a preedit update, coalescing consecutive preedits (each keystroke
+    /// otherwise queues a full copy).
+    fn push_preedit(&mut self) {
+        let s = String::from_utf16_lossy(&self.text);
+        if let Some(ImeEvent::Preedit(last)) = self.events.last_mut() {
+            *last = s;
+        } else {
+            self.events.push(ImeEvent::Preedit(s));
+        }
     }
 }
 
@@ -157,12 +187,12 @@ impl WindowsTsf {
         let client_id = unsafe { thread_mgr.Activate()? };
         let document_mgr = unsafe { thread_mgr.CreateDocumentMgr()? };
         Ok(Self {
-            _apartment: apartment,
             thread_mgr,
             client_id,
             document_mgr,
             document: None,
             state: Rc::new(RefCell::new(Shared::new())),
+            _apartment: apartment,
         })
     }
 
@@ -202,10 +232,13 @@ impl crate::Backend for WindowsTsf {
             let mut state = self.state.borrow_mut();
             state.hwnd = hwnd;
             state.destroyed = false;
+            let len = snapshot.text.len();
             state.text = snapshot.text;
-            state.selection = clamp_range(snapshot.selection, state_len(&state.text));
+            state.selection = clamp_range(snapshot.selection, len);
             state.caret = snapshot.caret;
-            state.pending.clear();
+            state.composing = false;
+            state.events.clear();
+            state.needs_reset = false;
         }
         // A failed activation leaves us in the pre-focus (IMM32) state rather
         // than a half-focused one, so input keeps working.
@@ -226,27 +259,52 @@ impl crate::Backend for WindowsTsf {
         let mut state = self.state.borrow_mut();
         state.sink = None;
         state.lock = Lock::None;
+        state.pending_lock = None;
+        state.composing = false;
+        // Undrained events belong to the input that just went away — a commit
+        // delivered to whatever gets focus next would go to the wrong PTY.
+        state.events.clear();
+        state.needs_reset = false;
     }
 
-    fn take_pending(&mut self) -> Vec<TextEdit> {
-        let edits: Vec<TextEdit> = self.state.borrow_mut().pending.drain(..).collect();
-        if !edits.is_empty() {
-            crate::tsf_log!("tsf: take_pending -> {} edit(s)", edits.len());
+    fn take_events(&mut self) -> Vec<ImeEvent> {
+        // Take the queue and finish any deferred document reset while no TSF
+        // lock can be active (we are in app control flow).
+        let (events, reset_len, sink) = {
+            let mut state = self.state.borrow_mut();
+            if state.lock != Lock::None {
+                // Paranoia: never reset mid-lock; try again next drain.
+                return std::mem::take(&mut state.events);
+            }
+            let events = std::mem::take(&mut state.events);
+            let mut reset_len = 0usize;
+            if state.needs_reset {
+                reset_len = state.len();
+                state.text.clear();
+                state.selection = 0..0;
+                state.needs_reset = false;
+            }
+            (events, reset_len, state.sink.clone())
+        };
+        if reset_len > 0
+            && let Some(sink) = sink
+        {
+            let change = TS_TEXTCHANGE {
+                acpStart: 0,
+                acpOldEnd: to_i32(reset_len),
+                acpNewEnd: 0,
+            };
+            unsafe {
+                let _ = sink.OnTextChange(TEXT_STORE_TEXT_CHANGE_FLAGS(0), &change);
+                let _ = sink.OnSelectionChange();
+            }
+            crate::tsf_log!("tsf: document reset after commit ({reset_len} u16 cleared)");
         }
-        edits
+        if !events.is_empty() {
+            crate::tsf_log!("tsf: drained {} event(s)", events.len());
+        }
+        events
     }
-
-    fn set_snapshot(&mut self, snapshot: TextSnapshot) {
-        let mut state = self.state.borrow_mut();
-        let len = snapshot.text.len();
-        state.text = snapshot.text;
-        state.selection = clamp_range(snapshot.selection, len);
-        state.caret = snapshot.caret;
-    }
-}
-
-fn state_len(text: &[u16]) -> usize {
-    text.len()
 }
 
 fn clamp_range(r: Range<usize>, len: usize) -> Range<usize> {
@@ -260,7 +318,7 @@ impl Drop for WindowsTsf {
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.destroyed = true;
             state.sink = None;
-            state.pending.clear();
+            state.events.clear();
         }
         <Self as crate::Backend>::blur(self);
         unsafe {
@@ -269,9 +327,9 @@ impl Drop for WindowsTsf {
     }
 }
 
-// ── the ITextStoreACP text store ───────────────────────────────────────────
+// ── the ITextStoreACP text store + composition sink ────────────────────────
 
-#[implement(ITextStoreACP)]
+#[implement(ITextStoreACP, ITfContextOwnerCompositionSink)]
 struct TextStore {
     state: SharedHandle,
 }
@@ -287,6 +345,47 @@ impl TextStore {
         self.state
             .try_borrow()
             .map_err(|_| WindowsError::from(E_FAIL))
+    }
+}
+
+#[allow(non_snake_case)]
+impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
+    fn OnStartComposition(
+        &self,
+        _pcomposition: Ref<'_, ITfCompositionView>,
+    ) -> WindowsResult<BOOL> {
+        crate::tsf_log!("store: OnStartComposition");
+        self.state()?.composing = true;
+        // TRUE = allow the composition.
+        Ok(BOOL(1))
+    }
+
+    fn OnUpdateComposition(
+        &self,
+        _pcomposition: Ref<'_, ITfCompositionView>,
+        _prangenew: Ref<'_, ITfRange>,
+    ) -> WindowsResult<()> {
+        // The text itself arrives through SetText; nothing to do here.
+        Ok(())
+    }
+
+    fn OnEndComposition(&self, _pcomposition: Ref<'_, ITfCompositionView>) -> WindowsResult<()> {
+        let mut state = self.state()?;
+        state.composing = false;
+        let text = String::from_utf16_lossy(&state.text);
+        crate::tsf_log!("store: OnEndComposition ({} u16)", state.text.len());
+        if text.is_empty() {
+            // Cancelled composition: just clear any preedit the app shows.
+            state.push_preedit();
+        } else {
+            // With the document reset after every commit, the whole document
+            // is exactly the finished composition.
+            state.events.push(ImeEvent::Commit(text));
+            state.needs_reset = true;
+        }
+        drop(state);
+        crate::wake();
+        Ok(())
     }
 }
 
@@ -320,23 +419,51 @@ impl ITextStoreACP_Impl for TextStore_Impl {
 
     fn RequestLock(&self, dwlockflags: u32) -> WindowsResult<HRESULT> {
         crate::tsf_log!("store: RequestLock(flags={dwlockflags:#x})");
-        let sink = {
+        {
             let mut state = self.state()?;
-            // Bit 0x4 = TS_LF_WRITE (TS_LF_READWRITE = READ | WRITE).
-            state.lock = if dwlockflags & 0x4 != 0 {
-                Lock::ReadWrite
-            } else {
-                Lock::Read
+            if state.lock != Lock::None {
+                // Re-entrant request from inside OnLockGranted (an upgrade).
+                return if dwlockflags & TS_LF_SYNC != 0 {
+                    // A synchronous lock cannot be granted while one is held.
+                    Ok(TS_E_SYNCHRONOUS)
+                } else {
+                    state.pending_lock = Some(dwlockflags);
+                    Ok(TS_S_ASYNC)
+                };
+            }
+        }
+        let mut flags = dwlockflags;
+        let mut first_result: Option<HRESULT> = None;
+        loop {
+            let sink = {
+                let mut state = self.state()?;
+                // Bit 0x4 = TS_LF_WRITE (TS_LF_READWRITE = READ | WRITE).
+                state.lock = if flags & 0x4 != 0 {
+                    Lock::ReadWrite
+                } else {
+                    Lock::Read
+                };
+                state.sink.clone()
             };
-            state.sink.clone()
-        };
-        let result = if let Some(sink) = sink {
-            unsafe { sink.OnLockGranted(TEXT_STORE_LOCK_FLAGS(dwlockflags)) }
-        } else {
-            Err(WindowsError::from(TF_E_DISCONNECTED))
-        };
-        self.state()?.lock = Lock::None;
-        Ok(result.map_or_else(|error| error.code(), |()| HRESULT(0)))
+            let result = if let Some(sink) = sink {
+                unsafe { sink.OnLockGranted(TEXT_STORE_LOCK_FLAGS(flags)) }
+            } else {
+                Err(WindowsError::from(TF_E_DISCONNECTED))
+            };
+            let hr = result.map_or_else(|error| error.code(), |()| HRESULT(0));
+            if first_result.is_none() {
+                first_result = Some(hr);
+            }
+            let next = {
+                let mut state = self.state()?;
+                state.lock = Lock::None;
+                state.pending_lock.take()
+            };
+            match next {
+                Some(f) => flags = f, // grant the queued upgrade now
+                None => return Ok(first_result.unwrap_or(HRESULT(0))),
+            }
+        }
     }
 
     fn GetStatus(&self) -> WindowsResult<TS_STATUS> {
@@ -399,7 +526,6 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         let len = state.len();
         let start = acp_to_off(native.acpStart, len);
         let end = acp_to_off(native.acpEnd, len);
-        state.pending.push(TextEdit::SetSelection { start, end });
         state.selection = start.min(end)..start.max(end);
         Ok(())
     }
@@ -432,7 +558,7 @@ impl ITextStoreACP_Impl for TextStore_Impl {
             }
         }
         unsafe {
-            *pcchPlainRet = to_i32(take) as u32;
+            *pcchPlainRet = take as u32;
             *pulRunInfoOut = 0;
             *pacpNext = to_i32(start + take);
             if !prgRunInfo.is_null() && ulRunInfoReq > 0 && take > 0 {
@@ -464,16 +590,21 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         };
         let new_len = text.len();
         crate::tsf_log!("store: SetText({start}..{end}, {new_len} u16)");
-        state.pending.push(TextEdit::Replace {
-            start,
-            end,
-            text: text.clone(),
-        });
-        // Mirror into the cached snapshot so subsequent reads in the same lock
-        // see the edit.
-        state.text.splice(start..end, text);
+        state.text.splice(start..end, text.iter().copied());
         let caret = start + new_len;
         state.selection = caret..caret;
+        if state.composing {
+            // Live preedit update; the commit comes at OnEndComposition.
+            state.push_preedit();
+        } else if new_len > 0 {
+            // Direct insertion without a composition (e.g. some TIPs commit
+            // punctuation or reconversion results straight in).
+            let committed = String::from_utf16_lossy(&state.text[start..start + new_len]);
+            state.events.push(ImeEvent::Commit(committed));
+            state.needs_reset = true;
+        }
+        drop(state);
+        crate::wake();
         Ok(TS_TEXTCHANGE {
             acpStart: to_i32(start),
             acpOldEnd: to_i32(end),

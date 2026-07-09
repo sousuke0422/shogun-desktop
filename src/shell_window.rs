@@ -93,9 +93,23 @@ impl ShellWindow {
         let terminal_focus = cx.focus_handle();
         // TSF (Windows): make the taskbar IME indicator track this window while
         // the shell input is focused — app-driven so gpui stays untouched
-        // (see `crate::tsf`; gated by SHOGUN_TSF).
+        // (see `crate::tsf`; gated by SHOGUN_TSF). The waker only schedules a
+        // notify; the render then drains the queued IME events (pump below).
+        let tsf_view = cx.weak_entity();
+        let tsf_async = cx.to_async();
         window
-            .on_focus_in(&terminal_focus, cx, |_, _| crate::tsf::on_input_focus())
+            .on_focus_in(&terminal_focus, cx, move |_, _| {
+                let view = tsf_view.clone();
+                let async_cx = tsf_async.clone();
+                crate::tsf::on_input_focus(Box::new(move || {
+                    let view = view.clone();
+                    async_cx
+                        .spawn(async move |cx| {
+                            let _ = view.update(cx, |_, cx| cx.notify());
+                        })
+                        .detach();
+                }));
+            })
             .detach();
         window
             .on_focus_out(&terminal_focus, cx, |_, _, _| crate::tsf::on_input_blur())
@@ -287,6 +301,33 @@ impl ShellWindow {
 impl Render for ShellWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = self.last_gen;
+
+        // TSF (gated): apply queued IME events while our input owns focus —
+        // preedit renders inline via ime.marked, commits go to the PTY.
+        // Updating `ime` before the preedit read below makes the preedit
+        // visible in this same frame.
+        if crate::tsf::enabled() && self.terminal_focus.is_focused(window) {
+            for ev in crate::tsf::drain() {
+                match ev {
+                    rikka_terminal_gpui_ime::ImeEvent::Preedit(s) => {
+                        let marked = (!s.is_empty()).then_some(s);
+                        self.ime.update(cx, |ime, cx| {
+                            ime.marked = marked;
+                            cx.notify();
+                        });
+                    }
+                    rikka_terminal_gpui_ime::ImeEvent::Commit(s) => {
+                        if let Some(session) = self.session.as_ref() {
+                            session.send_bytes(s.as_bytes());
+                        }
+                        self.ime.update(cx, |ime, cx| {
+                            ime.marked = None;
+                            cx.notify();
+                        });
+                    }
+                }
+            }
+        }
 
         // OSC 0/2: mirror the application-set title into the OS window
         // title (de-duplicated — render runs every frame).

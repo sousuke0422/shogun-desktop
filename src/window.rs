@@ -225,9 +225,23 @@ impl ShogunWindow {
         let terminal_focus = cx.focus_handle();
         // TSF (Windows): make the taskbar IME indicator track this window while
         // a terminal tab's input is focused — app-driven so gpui stays
-        // untouched (see `crate::tsf`; gated by SHOGUN_TSF).
+        // untouched (see `crate::tsf`; gated by SHOGUN_TSF). The waker only
+        // schedules a notify; render then drains the queued IME events.
+        let tsf_view = cx.weak_entity();
+        let tsf_async = cx.to_async();
         window
-            .on_focus_in(&terminal_focus, cx, |_, _| crate::tsf::on_input_focus())
+            .on_focus_in(&terminal_focus, cx, move |_, _| {
+                let view = tsf_view.clone();
+                let async_cx = tsf_async.clone();
+                crate::tsf::on_input_focus(Box::new(move || {
+                    let view = view.clone();
+                    async_cx
+                        .spawn(async move |cx| {
+                            let _ = view.update(cx, |_, cx| cx.notify());
+                        })
+                        .detach();
+                }));
+            })
             .detach();
         window
             .on_focus_out(&terminal_focus, cx, |_, _, _| crate::tsf::on_input_blur())
@@ -1312,6 +1326,37 @@ pub fn render_progress_bar(
 
 impl Render for ShogunWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // TSF (gated): apply queued IME events while our terminal input owns
+        // focus — preedit renders inline via ime.marked, commits go to the
+        // active tab's PTY.
+        if crate::tsf::enabled() && self.terminal_focus.is_focused(window) {
+            for ev in crate::tsf::drain() {
+                match ev {
+                    rikka_terminal_gpui_ime::ImeEvent::Preedit(s) => {
+                        let marked = (!s.is_empty()).then_some(s);
+                        self.ime.update(cx, |ime, cx| {
+                            ime.marked = marked;
+                            cx.notify();
+                        });
+                    }
+                    rikka_terminal_gpui_ime::ImeEvent::Commit(s) => {
+                        let session = match self.selected_tab {
+                            0 => self.shogun_session.as_ref(),
+                            5 => self.multiagent_session.as_ref(),
+                            _ => None,
+                        };
+                        if let Some(session) = session {
+                            session.send_bytes(s.as_bytes());
+                        }
+                        self.ime.update(cx, |ime, cx| {
+                            ime.marked = None;
+                            cx.notify();
+                        });
+                    }
+                }
+            }
+        }
+
         // ── PTY resize on viewport change ─────────────────────────────────────
         // Calculate the terminal dimensions from the current viewport.
         // Chrome heights: jinmaku status bar (32) + key buttons (32) + tab bar (48) = 112 px.

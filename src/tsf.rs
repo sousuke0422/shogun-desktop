@@ -2,47 +2,59 @@
 //!
 //! gpui composes through IMM32, which leaves the Windows taskbar input
 //! indicator (あ/A) unaware of our windows. Giving TSF a focus document backed
-//! by a real text store makes the indicator track us. We drive focus/blur from
-//! the app's own window focus events so gpui stays untouched.
+//! by a real text store makes the indicator track us (hardware-verified:
+//! A→あ→A). Once TSF is engaged the IME composes into that store instead of
+//! the IMM32 path, so the app drains [`ImeEvent`]s: `Preedit` renders inline
+//! at the terminal cursor (the existing `ime.marked` path) and `Commit` goes
+//! to the PTY. We drive focus/blur from the app's own window focus events so
+//! gpui stays untouched.
 //!
-//! Gated by the `SHOGUN_TSF` env var while the input path is still being wired
-//! (M1a is focus-only — it verifies the indicator tracks; input application
-//! follows), so default behaviour is unchanged and input keeps using IMM32.
+//! Gated by the `SHOGUN_TSF` env var until the TSF input path has soaked;
+//! default behaviour is unchanged (pure IMM32).
 
 use std::sync::OnceLock;
 
-use rikka_terminal_gpui_ime::{TextEdit, TextSnapshot, TsfTextClient};
+use rikka_terminal_gpui_ime::{ImeEvent, TextSnapshot, TsfTextClient};
 
-/// Opt-in while the TSF input path is under construction.
+/// Opt-in while the TSF input path is under validation.
 pub fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("SHOGUN_TSF").is_some())
 }
 
-/// A terminal has no editable document — the store reports "empty" and (for
-/// now) discards edits. Replaced by a PTY-committing client once composition
-/// tracking lands (M1b).
+/// A terminal has no editable document — the store starts empty and is reset
+/// after every commit, so the document is always exactly the live composition.
 struct EmptyClient;
 
 impl TsfTextClient for EmptyClient {
     fn snapshot(&mut self) -> TextSnapshot {
         TextSnapshot::default()
     }
-
-    fn apply(&mut self, _edits: &[TextEdit]) {}
 }
 
-/// A terminal input gained keyboard focus.
-pub fn on_input_focus() {
+/// A terminal input gained keyboard focus. `waker` must schedule (not run) a
+/// re-render of the owning window; it is invoked whenever the IME queues new
+/// events, so the window's render can drain them promptly via [`drain`].
+pub fn on_input_focus(waker: Box<dyn Fn()>) {
     if enabled() {
-        // hwnd 0 → the store uses GetForegroundWindow (the focused window).
+        rikka_terminal_gpui_ime::set_waker(waker);
+        // hwnd 0 → the store answers GetWnd with the foreground window.
         rikka_terminal_gpui_ime::focus(0, &mut EmptyClient);
     }
 }
 
-/// A terminal input lost keyboard focus.
+/// The focused terminal input lost focus.
 pub fn on_input_blur() {
     if enabled() {
         rikka_terminal_gpui_ime::blur();
+    }
+}
+
+/// Drain queued IME events, oldest first (always empty when the gate is off).
+pub fn drain() -> Vec<ImeEvent> {
+    if enabled() {
+        rikka_terminal_gpui_ime::drain_events()
+    } else {
+        Vec::new()
     }
 }
