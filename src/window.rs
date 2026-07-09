@@ -1255,6 +1255,37 @@ pub fn terminal_progress(
         .map(|_| (crate::terminal::progress::ProgressState::Indeterminate, 0))
 }
 
+/// Pick the more urgent of two progress reports for the shared taskbar
+/// button: Error > Normal (higher percent wins) > Warning > Indeterminate.
+fn taskbar_aggregate(
+    a: Option<(crate::terminal::progress::ProgressState, u8)>,
+    b: Option<(crate::terminal::progress::ProgressState, u8)>,
+) -> Option<(crate::terminal::progress::ProgressState, u8)> {
+    use crate::terminal::progress::ProgressState as S;
+    fn rank(s: S) -> u8 {
+        match s {
+            S::Error => 3,
+            S::Normal => 2,
+            S::Warning => 1,
+            S::Indeterminate => 0,
+        }
+    }
+    match (a, b) {
+        (Some(x), Some(y)) => Some(match rank(x.0).cmp(&rank(y.0)) {
+            std::cmp::Ordering::Greater => x,
+            std::cmp::Ordering::Less => y,
+            std::cmp::Ordering::Equal => {
+                if x.1 >= y.1 {
+                    x
+                } else {
+                    y
+                }
+            }
+        }),
+        (v, None) | (None, v) => v,
+    }
+}
+
 /// Segment count of the rainbow fill — enough for a smooth spectrum at tab
 /// width without meaningfully increasing quad count.
 const PROGRESS_RAINBOW_SEGMENTS: usize = 16;
@@ -1361,6 +1392,14 @@ impl Render for ShogunWindow {
                     }
                 }
             }
+        }
+
+        // Taskbar-button progress (OSC 9;4 Phase 2): surface the more urgent
+        // of the two agent sessions on the main window's taskbar button.
+        {
+            let a = self.shogun_session.as_ref().and_then(terminal_progress);
+            let b = self.multiagent_session.as_ref().and_then(terminal_progress);
+            crate::taskbar_progress::update("将軍デスクトップ", taskbar_aggregate(a, b));
         }
 
         // ── PTY resize on viewport change ─────────────────────────────────────

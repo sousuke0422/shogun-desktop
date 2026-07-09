@@ -144,8 +144,15 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       エラー=紅/警告=金箔/不定=全幅虹色。with_animation なので表示中のみフレーム駆動）。
       **2026-07-08 実機確認済み（殿確認）**。tmux 内で OSC 9;4 を出さず title spinner
       を出す agent 向けに、title-spinner→不定バー fallback も追加
-  - [ ] Phase 2: Windows タスクバー進捗 (ITaskbarList3::SetProgressValue)。
-        HWND は vendored gpui に accessor を足すか EnumWindows+PID で取得
+  - [x] **Phase 2: Windows タスクバー進捗 — 2026-07-09 実装＋自律 e2e 検証済**
+        （`src/taskbar_progress.rs`）。ITaskbarList3::SetProgressState/Value、
+        HWND は EnumWindows＋PID＋タイトル完全一致（gpui 無改変）・title 毎
+        キャッシュ＋dedup。本窓＝両セッションの aggregate（Error>Normal(max%)>
+        Warning>Indeterminate）・シェル窓＝自セッション。
+        `e2e/taskbar-progress-test.ps1`: 50%＝ボタン半分緑・不定＝marquee・
+        clear 復帰をスクショ確認。**エージェント稼働中（title spinner）に本窓
+        ボタンが常時 marquee になるのも実機で確認**＝本旨成立。
+        既知: Win10 のボタン結合で 2 窓が 1 ボタンに畳まれると表示は混合される
 - [x] **OSC 8 ハイパーリンク（2026-07-06 実装・実機確認済み）**: 明示 OSC 8 ＋
       ベア http(s):// 自動検出（WRAPLINE で soft-wrap 跨ぎ結合・句読点trim・括弧
       バランス）。リンクセルは点線下線(SGR Dotted+58 注入で run 機構に相乗り)常時表示、

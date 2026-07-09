@@ -63,6 +63,17 @@ rikka-terminal-gpui-ime = { path = "crates/rikka-terminal-gpui-ime" }
 # OSC 9 / 777 desktop notifications → WinRT toast (MIT OR Apache-2.0).
 tauri-winrt-notification = "0.7.3"
 
+# Taskbar-button progress (ITaskbarList3) — see src/taskbar_progress.rs.
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # OSC 9 / 777 desktop notifications → NSUserNotificationCenter (MIT/Apache-2.0).
 # objc2-based thin wrapper; same family gpui's mac backend already links.

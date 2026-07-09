@@ -340,6 +340,13 @@ impl Render for ShellWindow {
             }
         }
 
+        // Taskbar-button progress (OSC 9;4 Phase 2) on this window's button.
+        {
+            let effective = self.applied_title.as_deref().unwrap_or("シェル");
+            let p = self.session.as_ref().and_then(crate::window::terminal_progress);
+            crate::taskbar_progress::update(effective, p);
+        }
+
         // Resize: full viewport (no chrome except tiny status bar of 24px)
         let (cw, ch) = measure_cell_metrics(&cx.text_system(), MONO_FONT, window.scale_factor());
         {
