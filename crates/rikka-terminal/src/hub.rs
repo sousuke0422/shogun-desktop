@@ -1,0 +1,140 @@
+//! Window-independent session bookkeeping — the anti-tear-out-crash design.
+//!
+//! Windows Terminal detaches tabs by migrating live UI controls across
+//! window threads (XAML islands + COM marshalling), and racing output or
+//! resizes against that handoff is exactly where it crashes. Here a session
+//! is UI-free by construction (`TerminalSession` is a bundle of Arcs; the
+//! renderer is stateless per frame), so a "tab" is nothing but an
+//! `Arc<TabSession>` sitting in some window's Vec:
+//!
+//! - Detach/merge = moving that Arc between Vecs, synchronously, on the UI
+//!   thread. The PTY/parse threads never learn a move happened.
+//! - Each session has one driver task (spawned once, app-scoped, never
+//!   re-homed) that parks on the session's notify and calls a swappable
+//!   `waker`. Adopting a tab just swaps the waker; a beat missed during the
+//!   swap self-heals on the next PTY output.
+//! - Shutdown is a flag + notify: the driver exits, the Arcs drop with the
+//!   last window that held them, and dropping the session closes the PTY.
+
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
+use std::time::Duration;
+
+use gpui::{AnyWindowHandle, App, AsyncApp, Global, WeakEntity};
+use parking_lot::Mutex;
+use rikka_terminal_core::TerminalSession;
+
+use crate::{FRAME_COALESCE, TabsWindow};
+
+pub type SessionId = u64;
+
+/// Redraw hook: scheduled by the driver task (on the foreground executor,
+/// which hands it an `AsyncApp`), installed by whichever window hosts the
+/// tab right now.
+pub type Waker = Box<dyn Fn(&mut AsyncApp)>;
+
+pub struct TabSession {
+    pub id: SessionId,
+    pub session: TerminalSession,
+    pub waker: Mutex<Option<Waker>>,
+    closed: Arc<AtomicBool>,
+}
+
+impl TabSession {
+    /// Stop the driver task and let the PTY close when the last Arc drops.
+    pub fn shutdown(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+        self.session.notify.notify_waiters();
+    }
+}
+
+/// One entry of a window's tab strip.
+#[derive(Clone)]
+pub struct TabEntry(pub Arc<TabSession>);
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Wrap a fresh session into a tab and spawn its (sole,永住) driver task.
+pub fn new_tab(cx: &mut App, session: TerminalSession) -> TabEntry {
+    let closed = Arc::new(AtomicBool::new(false));
+    let generation = Arc::clone(&session.generation);
+    let notify = Arc::clone(&session.notify);
+    let snapshot = Arc::clone(&session.snapshot);
+    let tab = Arc::new(TabSession {
+        id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+        session,
+        waker: Mutex::new(None),
+        closed: Arc::clone(&closed),
+    });
+    let waker_slot = Arc::clone(&tab);
+    cx.spawn(async move |cx| {
+        let mut last = generation.load(Ordering::Relaxed);
+        loop {
+            if closed.load(Ordering::Relaxed) {
+                break;
+            }
+            let blink = {
+                let s = snapshot.lock();
+                s.has_blink || s.cursor_blink
+            };
+            if blink {
+                let timer = cx.background_executor().timer(Duration::from_millis(300));
+                futures::future::select(Box::pin(notify.notified()), Box::pin(timer)).await;
+            } else {
+                notify.notified().await;
+            }
+            if closed.load(Ordering::Relaxed) {
+                break;
+            }
+            cx.background_executor().timer(FRAME_COALESCE).await;
+            let cur = generation.load(Ordering::Relaxed);
+            if cur == last && !blink {
+                continue;
+            }
+            last = cur;
+            // Redraw whichever window hosts this tab right now. Holding the
+            // lock across the call is fine: installs happen on this same
+            // thread between polls.
+            if let Some(waker) = waker_slot.waker.lock().as_ref() {
+                waker(cx);
+            }
+        }
+    })
+    .detach();
+    TabEntry(tab)
+}
+
+/// Registry of live tab windows, for merge-all and cleanup. Windows register
+/// at creation; dead weak handles are pruned on access.
+#[derive(Default)]
+pub struct WindowRegistry {
+    pub windows: Vec<(AnyWindowHandle, WeakEntity<TabsWindow>)>,
+}
+
+impl Global for WindowRegistry {}
+
+pub fn init(cx: &mut App) {
+    cx.set_global(WindowRegistry::default());
+}
+
+pub fn register_window(cx: &mut App, handle: AnyWindowHandle, entity: WeakEntity<TabsWindow>) {
+    let reg = cx.global_mut::<WindowRegistry>();
+    reg.windows.retain(|(_, w)| w.upgrade().is_some());
+    reg.windows.push((handle, entity));
+}
+
+/// Every live window except `except`, pruning the dead.
+pub fn other_windows(
+    cx: &mut App,
+    except: gpui::EntityId,
+) -> Vec<(AnyWindowHandle, WeakEntity<TabsWindow>)> {
+    let reg = cx.global_mut::<WindowRegistry>();
+    reg.windows.retain(|(_, w)| w.upgrade().is_some());
+    reg.windows
+        .iter()
+        .filter(|(_, w)| w.entity_id() != except)
+        .cloned()
+        .collect()
+}

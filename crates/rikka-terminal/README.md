@@ -30,7 +30,14 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
 
 ## プロトタイプ範囲（現状）
 
-- 1 窓 1 ペイン。pwsh.exe（無ければ cmd.exe）を ConPTY で起動
+- **タブ**: Ctrl+Shift+T 新規 / W 閉じる / D 新窓へ分離 / A 全窓統合、
+  Ctrl+PageUp/PageDown（届く環境では Ctrl+Tab も）で循環、クリックで切替。
+  タブ=窓非依存セッション（hub.rs）: 分離結合は UI スレッド上の同期 Vec 移動で、
+  PTY/parse スレッドは移送を知らない — wt がクラッシュする「ライブコントロールの
+  窓間移送」という失敗クラスが構造的に存在しない。ガチャ耐性は
+  `e2e/rikka-tabs-stress.ps1`（分離結合5連打+生存タイプ）で回帰固定。
+  既知: gpui-Windows は Ctrl+M を配達しない（^M=CR 遺産）ため merge は A
+- 1 窓 1 ペイン×タブ。pwsh.exe（無ければ powershell/cmd）を ConPTY で起動
 - エンジン直結: 描画・スクロールバック・選択+コピー・IME・
   キー（kitty keyboard 含む）・ホイール（レポーティング/alt-scroll/履歴）・
   OSC タイトル → 窓タイトル
@@ -47,6 +54,6 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
 ## ロードマップ
 
 - P0: 本プロトタイプ（起動して普段使いの smoke が通る）✔
-- P1: タブ（旧 aki-term 構想の吸収）・設定・フォント同梱・シェル選択
+- P1: タブ ✔（分離結合込み）・残り=設定・フォント同梱・シェル選択・タブDnD
 - P2: リポ切り出し（vendored gpui / alacritty_terminal パッチの扱いと同時に）
 - P3: Linux (forkpty) / macOS
