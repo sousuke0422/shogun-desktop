@@ -17,6 +17,7 @@ features = [
     "Win32_System_Ole",
     "Win32_System_Variant",
     "Win32_UI_TextServices",
+    "Win32_UI_WindowsAndMessaging",
 ]
 
 # The #[implement] macro expands to `windows_core::…` paths and the

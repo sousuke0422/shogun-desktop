@@ -90,6 +90,16 @@ impl ShellWindow {
             }
         })
         .detach();
+        let terminal_focus = cx.focus_handle();
+        // TSF (Windows): make the taskbar IME indicator track this window while
+        // the shell input is focused — app-driven so gpui stays untouched
+        // (see `crate::tsf`; gated by SHOGUN_TSF).
+        window
+            .on_focus_in(&terminal_focus, cx, |_, _| crate::tsf::on_input_focus())
+            .detach();
+        window
+            .on_focus_out(&terminal_focus, cx, |_, _, _| crate::tsf::on_input_blur())
+            .detach();
         let mut win = Self {
             session: None,
             error: None,
@@ -99,7 +109,7 @@ impl ShellWindow {
             last_gen: 0,
             terminal_cols: 0,
             terminal_rows: 0,
-            terminal_focus: cx.focus_handle(),
+            terminal_focus,
             ime,
             selection: SelectionState::default(),
             scroll_accum: 0.0,

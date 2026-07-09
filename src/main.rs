@@ -9,6 +9,7 @@ mod shell_integration;
 mod shell_window;
 mod ssh;
 mod tabs;
+mod tsf;
 // Terminal engine extracted to the rikka-terminal workspace crate; keep the
 // old `crate::terminal::` paths alive via a root re-export.
 pub use rikka_terminal as terminal;

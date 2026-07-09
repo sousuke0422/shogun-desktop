@@ -27,6 +27,7 @@ use windows::Win32::UI::TextServices::{
     ITfDocumentMgr, ITfThreadMgr, TEXT_STORE_LOCK_FLAGS, TF_E_DISCONNECTED, TS_AE_NONE, TS_ATTRVAL,
     TS_E_NOLAYOUT, TS_E_NOLOCK, TS_RT_PLAIN, TS_RUNINFO, TS_SELECTION_ACP, TS_STATUS, TS_TEXTCHANGE,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use windows::core::{
     BOOL, Error as WindowsError, GUID, HRESULT, IUnknown, Interface, PCWSTR, PWSTR, Ref,
     Result as WindowsResult, implement,
@@ -505,7 +506,14 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     }
 
     fn GetWnd(&self, _vcView: u32) -> WindowsResult<HWND> {
-        Ok(HWND(self.state_ref()?.hwnd as *mut core::ffi::c_void))
+        let hwnd = self.state_ref()?.hwnd;
+        // 0 = "use the foreground window" — lets the app drive focus without
+        // plumbing a raw HWND out of gpui (the focused window is foreground).
+        Ok(if hwnd != 0 {
+            HWND(hwnd as *mut core::ffi::c_void)
+        } else {
+            unsafe { GetForegroundWindow() }
+        })
     }
 
     fn GetFormattedText(&self, _acpStart: i32, _acpEnd: i32) -> WindowsResult<IDataObject> {

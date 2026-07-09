@@ -6378,6 +6378,7 @@ dependencies = [
  "rfd",
  "rikka-terminal",
  "rikka-terminal-agent-integration",
+ "rikka-terminal-gpui-ime",
  "rikka-terminal-ssh-integration",
  "russh",
  "serde",
