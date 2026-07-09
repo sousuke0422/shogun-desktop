@@ -45,7 +45,10 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
 - エンジン直結: 描画・スクロールバック・選択+コピー（e2e=`rikka-select-copy.ps1`）・IME・
   キー（kitty keyboard 含む）・ホイール（レポーティング/alt-scroll/履歴）・
   OSC タイトル → 窓タイトル
-- コピー: Ctrl+Shift+C / Ctrl+Insert、ペースト: Ctrl+Shift+V / Shift+Insert
+- コピー: Ctrl+Shift+C / Ctrl+Insert、ペースト: Ctrl+Shift+V / Shift+Insert、
+  右クリックメニュー（コピー/ペースト）— **非スクロールの pane に取り付け**
+  （ContextMenu は開くと窓サイズ absolute 子を注入するため、スクロール
+  コンテナに付けると grid が画面外へ吹き飛ぶ: shogun-desktop で実証済みの罠）
 - Shift+PageUp/PageDown で履歴ページング
 - フォントは Consolas（システム解決・CJK は DirectWrite fallback 任せ）
 - **UI の方向性 = Files (files.community) 系のソフト Fluent**: 低コントラストの

@@ -28,6 +28,7 @@ use gpui::{
 use parking_lot::FairMutex;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
+use gpui_component::menu::ContextMenuExt as _;
 use hub::TabEntry;
 use rikka_terminal_core::ime::{ImeHost, TerminalIme};
 use rikka_terminal_core::keys::key_to_pty_bytes;
@@ -66,6 +67,8 @@ const TEXT_SECONDARY: u32 = 0xFFFFFFC5;
 const DIVIDER: u32 = 0xFFFFFF15;
 /// PTY-burst coalescing window (same rationale/value as shogun-desktop).
 pub(crate) const FRAME_COALESCE: Duration = Duration::from_millis(8);
+
+gpui::actions!(rikka_terminal, [TerminalCopy, TerminalPaste]);
 
 /// RIKKA_ACRYLIC=1 → system acrylic blur behind the window, with the chrome
 /// and pane surround going translucent. The grid itself stays opaque (the
@@ -596,6 +599,17 @@ impl Render for TabsWindow {
                 // consumed this click" — which would swallow the caption
                 // buttons' and drag area's non-client handling up in the strip.
                 .track_focus(&self.terminal_focus.clone())
+                .on_action(cx.listener(|this, _: &TerminalCopy, _window, cx| {
+                    selection::copy_to_clipboard(&this.selection, this.active_session(), cx);
+                }))
+                .on_action(cx.listener(|this, _: &TerminalPaste, _window, cx| {
+                    if let Some(item) = cx.read_from_clipboard()
+                        && let Some(text) = item.text()
+                        && let Some(s) = this.active_session()
+                    {
+                        s.paste(&text);
+                    }
+                }))
                 .child(
                     div()
                         .relative()
@@ -667,6 +681,21 @@ impl Render for TabsWindow {
                             .size_full(),
                         ),
                 )
+                // Right-click menu, same actions as the Ctrl+Shift chords.
+                // Attached to the pane — a plain flex div, NEVER a scroll
+                // container: the open menu injects a window-sized absolute
+                // subtree as a child, and taffy counts absolute children
+                // toward a scroll container's content size, which scrolled
+                // the grid clean out of view in shogun-desktop (the
+                // "right-click blanks the alt screen" bug, fixed 2026-07-10).
+                .context_menu({
+                    let menu_focus = self.terminal_focus.clone();
+                    move |menu, _window, _cx| {
+                        menu.action_context(menu_focus.clone())
+                            .menu("コピー", Box::new(TerminalCopy))
+                            .menu("ペースト", Box::new(TerminalPaste))
+                    }
+                })
                 .into_any_element()
         } else {
             div()
