@@ -614,6 +614,60 @@ fn side_of(right: bool) -> alacritty_terminal::index::Side {
     }
 }
 
+/// Minimal warn+ file logger: `%TEMP%/shogun-tsf/{app}.log`. The GUI shells
+/// never initialize a `log` logger, so everything gpui reports through
+/// `log_err()` / `log::error!` has been silently discarded since day one —
+/// the stowaway console (now gone) was empty for the same reason. Truncates
+/// past 5 MB at startup; no-op if a logger is already set.
+pub fn install_file_logger(app: &str) {
+    use std::io::Write as _;
+
+    struct FileLogger {
+        path: std::path::PathBuf,
+        lock: std::sync::Mutex<()>,
+    }
+    impl log::Log for FileLogger {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+        fn log(&self, record: &log::Record) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            let _guard = self.lock.lock();
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+            {
+                let _ = writeln!(
+                    f,
+                    "[{:?} {} {}] {}",
+                    std::time::SystemTime::now(),
+                    record.level(),
+                    record.target(),
+                    record.args()
+                );
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    let dir = std::env::temp_dir().join("shogun-tsf");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("{app}.log"));
+    if let Ok(meta) = std::fs::metadata(&path)
+        && meta.len() > 5 * 1024 * 1024
+    {
+        let _ = std::fs::File::create(&path);
+    }
+    let _ = log::set_boxed_logger(Box::new(FileLogger {
+        path,
+        lock: std::sync::Mutex::new(()),
+    }))
+    .map(|()| log::set_max_level(log::LevelFilter::Warn));
+}
+
 /// Append every panic (any thread) to `%TEMP%/shogun-tsf/panic.log` — the
 /// GUI shells have no visible stderr, and a dead parse thread otherwise
 /// reports itself only as a frozen grid (or, when it dies right after a

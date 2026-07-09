@@ -73,6 +73,9 @@ fn main() {
     // "grid goes permanently black" class (a dead parse thread is invisible
     // from a GUI shell).
     rikka_terminal_core::install_panic_log();
+    // gpui reports recoverable errors via log::error (log_err) — without a
+    // logger they vanish. warn+ goes to %TEMP%/shogun-tsf/shogun-desktop.log.
+    rikka_terminal_core::install_file_logger("shogun-desktop");
     // OpenType features apply engine-globally; set them before the first
     // frame (saving settings re-applies at runtime).
     rikka_terminal_core::renderer::set_font_features(settings::parse_font_features(

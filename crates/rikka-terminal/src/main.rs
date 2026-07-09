@@ -952,6 +952,7 @@ fn main() {
     // Same field diagnosis as shogun-desktop: panics (any thread) append to
     // %TEMP%/shogun-tsf/panic.log.
     rikka_terminal_core::install_panic_log();
+    rikka_terminal_core::install_file_logger("rikka-terminal");
     Application::new().run(|cx| {
         // The engine's renderer rides gpui-component primitives; initialise
         // its statics and pin the dark theme (the grid brings its own colors).
