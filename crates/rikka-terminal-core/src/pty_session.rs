@@ -284,8 +284,13 @@ pub fn build_terminal_session(
                                 let (cw, chp) = if cw <= 1 { (10, 20) } else { (cw, chp) };
                                 use alacritty_terminal::grid::Dimensions as _;
                                 let grid_cols = t.columns().max(1);
+                                // Fit the placement to the space right of the
+                                // cursor (yazi draws previews mid-screen via
+                                // CUP; wrapping would shred the layout).
+                                let start_col = t.grid().cursor.point.column.0.min(grid_cols - 1);
+                                let fit_cols = grid_cols - start_col;
                                 let cols =
-                                    img.width.div_ceil(cw).clamp(1, grid_cols).min(296) as u16;
+                                    img.width.div_ceil(cw).clamp(1, fit_cols).min(296) as u16;
                                 let rows = img.height.div_ceil(chp).clamp(1, 296) as u16;
                                 let id = sixel_ids.next_id();
                                 if images2.insert_rgba(
@@ -301,7 +306,12 @@ pub fn build_terminal_session(
                                     // the application's SGR foreground.
                                     let restore =
                                         crate::sixel::sgr_fg_bytes(t.grid().cursor.template.fg);
-                                    for &b in &crate::sixel::placeholder_bytes(id, cols, rows) {
+                                    for &b in &crate::sixel::placeholder_bytes(
+                                        id,
+                                        cols,
+                                        rows,
+                                        start_col as u16,
+                                    ) {
                                         parser.advance(&mut *t, b);
                                     }
                                     for &b in &restore {

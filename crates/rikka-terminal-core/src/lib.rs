@@ -2195,6 +2195,48 @@ mod tests {
     }
 
     #[test]
+    fn sixel_placeholder_injection_respects_start_column() {
+        // The yazi scenario: a preview drawn mid-screen via CUP. Every
+        // placeholder row must stay at the image's start column — the old
+        // CR/LF row movement dropped rows 2+ to column 0, shredding the
+        // file list into a staircase (field report 2026-07-10).
+        let mut term = make_term(20, 8);
+        for i in 0..8 {
+            advance_bytes(&mut term, format!("\x1b[{};1HF{i}", i + 1).as_bytes());
+        }
+        advance_bytes(&mut term, b"\x1b[2;11H");
+        let bytes = crate::sixel::placeholder_bytes(crate::sixel::SIXEL_ID_BASE + 1, 6, 3, 10);
+        advance_bytes(&mut term, &bytes);
+        let snap = take_snapshot(&term);
+        for r in 1..4 {
+            assert!(
+                snap.cells[r][10].image.is_some(),
+                "row {r} col 10 should be an image cell"
+            );
+            assert!(snap.cells[r][15].image.is_some());
+            assert!(
+                snap.cells[r][9].image.is_none(),
+                "row {r} bled left of the start column"
+            );
+            assert_eq!(snap.cells[r][0].c, 'F', "file list shredded at row {r}");
+        }
+    }
+
+    #[test]
+    fn sixel_placeholder_at_bottom_scrolls_like_text() {
+        // IND at the bottom margin scrolls (sixel scrolling-mode semantics);
+        // rows keep their column instead of wrapping to 0.
+        let mut term = make_term(20, 4);
+        advance_bytes(&mut term, b"\x1b[4;5H");
+        let bytes = crate::sixel::placeholder_bytes(crate::sixel::SIXEL_ID_BASE + 2, 4, 2, 4);
+        advance_bytes(&mut term, &bytes);
+        let snap = take_snapshot(&term);
+        assert!(snap.cells[1][4].image.is_some());
+        assert!(snap.cells[2][4].image.is_some());
+        assert!(snap.cells[1][3].image.is_none());
+    }
+
+    #[test]
     fn selection_left_in_scrollback_never_highlights_whole_screen() {
         use alacritty_terminal::grid::Scroll;
         let mut term = make_term(20, 4);

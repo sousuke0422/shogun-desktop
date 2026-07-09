@@ -498,15 +498,21 @@ pub fn decode(data: &[u8]) -> Option<SixelImage> {
 
 /// Build the byte sequence that, fed through the ANSI parser, lays down the
 /// Unicode-placeholder cells for a sixel image at the current cursor position
-/// — exactly what a kitty client would print for a virtual placement. Ends
-/// with a newline per image row, so the cursor lands on the line below the
-/// image and the whole thing scrolls like text (sixel scrolling mode).
-pub fn placeholder_bytes(id: u32, cols: u16, rows: u16) -> Vec<u8> {
+/// — exactly what a kitty client would print for a virtual placement.
+///
+/// Row movement is IND (ESC D: down, keeps scrolling like text at the bottom
+/// margin) + CHA back to `start_col`, NEVER CR/LF: a CR would drop every row
+/// after the first to column 0, which is exactly how yazi's right-hand
+/// preview pane (images placed at a non-zero column via CUP) got shredded
+/// into a staircase over the file list. The cursor ends on the line below
+/// the image at its starting column (sixel scrolling-mode semantics).
+pub fn placeholder_bytes(id: u32, cols: u16, rows: u16, start_col: u16) -> Vec<u8> {
     let mut out = Vec::new();
     let (r, g, b) = ((id >> 16) & 0xff, (id >> 8) & 0xff, id & 0xff);
     // 24-bit fg carries the image id (kitty placeholder encoding).
     out.extend_from_slice(format!("\x1b[38;2;{r};{g};{b}m").as_bytes());
     let mut buf = [0u8; 4];
+    let cha = format!("\x1b[{}G", start_col as usize + 1);
     for row in 0..rows {
         // First cell of the row: explicit row+col diacritics; the rest
         // continue from their left neighbour (run-length form).
@@ -520,7 +526,8 @@ pub fn placeholder_bytes(id: u32, cols: u16, rows: u16) -> Vec<u8> {
         for _ in 1..cols {
             out.extend_from_slice(PLACEHOLDER.encode_utf8(&mut buf).as_bytes());
         }
-        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(b"\x1bD");
+        out.extend_from_slice(cha.as_bytes());
     }
     out.extend_from_slice(b"\x1b[39m");
     out
@@ -660,11 +667,17 @@ mod tests {
 
     #[test]
     fn placeholder_bytes_round_trip_shape() {
-        let bytes = placeholder_bytes(SIXEL_ID_BASE + 5, 3, 2);
+        let bytes = placeholder_bytes(SIXEL_ID_BASE + 5, 3, 2, 10);
         let s = String::from_utf8(bytes).unwrap();
         // 2 rows × (1 placeholder+2 diacritics + 2 bare placeholders)
         assert_eq!(s.matches(PLACEHOLDER).count(), 6);
-        assert_eq!(s.matches("\r\n").count(), 2);
+        // Row movement is IND + CHA back to the start column — never CR/LF,
+        // which would drop rows 2+ of a mid-screen placement to column 0
+        // (the yazi preview staircase).
+        assert!(!s.contains('\r'));
+        assert!(!s.contains('\n'));
+        assert_eq!(s.matches("\x1bD").count(), 2);
+        assert_eq!(s.matches("\x1b[11G").count(), 2);
         assert!(s.starts_with("\x1b[38;2;"));
         assert!(s.ends_with("\x1b[39m"));
     }
