@@ -47,6 +47,14 @@ pub const TERMINAL_KEY_CONTEXT: &str = "ShogunTerminal";
 /// remainder into a spurious few-pixel scroll range.
 pub const TERMINAL_PANE_PADDING_PX: f32 = 8.0;
 
+/// PTY-burst coalescing window for the terminal refresh loops (ここを縮める
+/// のがヌルヌル第1段). After the first chunk of a burst wakes the loop, wait
+/// this long so the burst lands as one frame. 8 ms ≈ a 120 fps ceiling under
+/// sustained output — measured: render cost (build+paint < 1 ms) leaves huge
+/// headroom, the old 16 ms timer was the cadence limiter. Idle behaviour is
+/// unchanged (the loops park on notify; zero wakeups without output).
+pub(crate) const FRAME_COALESCE: std::time::Duration = std::time::Duration::from_millis(8);
+
 /// Height of the green/red connection status bar shown at the top of every
 /// tab except 設定 (the terminal 陣幕, the 戦況 dashboard header, the
 /// エージェント header). Shared so the bar is the same size everywhere —
@@ -660,9 +668,7 @@ impl ShogunWindow {
                     notify.notified().await;
                 }
                 // Coalesce a burst of PTY chunks into a single frame.
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
+                cx.background_executor().timer(FRAME_COALESCE).await;
 
                 let cur = generation.load(Ordering::Relaxed);
                 let data_changed = cur != last;

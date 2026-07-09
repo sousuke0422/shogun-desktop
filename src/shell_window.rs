@@ -229,7 +229,7 @@ impl ShellWindow {
                 }
                 // Coalesce a burst of PTY chunks into a single frame.
                 cx.background_executor()
-                    .timer(Duration::from_millis(16))
+                    .timer(crate::window::FRAME_COALESCE)
                     .await;
 
                 let cur = generation.load(Ordering::Relaxed);

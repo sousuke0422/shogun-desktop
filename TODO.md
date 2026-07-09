@@ -350,7 +350,13 @@ Air は 60Hz（ProMotion なし）→ 省電力側の検証機。
       背景 quad コアレスと空白 run スキップは実装済み・カーソル/blink の
       overlay 化は不可（絶対配置 overlay canvas の paint は画面に届かない
       実測 2026-07-03）。着手前にフレーム時間の実測必須（btop 全画面等）。
-4. [ ] コアレス 16ms→8ms（第1段・最小変更）→ 余裕が出たら vsync 駆動（第2段）
+4. [x] **コアレス 16ms→8ms — 2026-07-09 実施**（`FRAME_COALESCE`、両窓共通定数）。
+      60Hz 環境での after 計測: gap p50=16.7ms（**アクティブディスプレイの vsync 壁**
+      — gpui VSyncProvider は DwmFlush 追従で 60fps 固定ではない）、**p95 は 30〜33
+      → 18〜20ms に改善**（vsync 2 枚落ちがほぼ消滅）。計測時は 200Hz DP モニタが
+      落ちており 60Hz 側で測定 — **120fps 成立の最終確認は 200Hz モニタ復帰時に
+      `e2e/frametime-run.ps1` 再実行**（期待: gap p50≈8.3ms）。アイドル挙動不変
+      （notify 待機のまま）。第2段 = タイマ撤去・vsync 直駆動は据え置き
 
 ## 4. リリース / インフラ（殿の作業を含む）
 
