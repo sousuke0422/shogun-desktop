@@ -292,7 +292,17 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       cursor_style.blinking 単一ソース）。SGR blink と同じ 600ms 位相・300ms
       refresh timer に相乗り。?25l 中は flag を落として timer 空回りを防止。
       既定（DECSCUSR 0/2）は従来どおり steady。回帰テスト 1 本
-- [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
+- [x] **選択のグリッド追従 — 2026-07-09 根治＋e2e 実証**（旧題「選択中の自動
+      スクロール抑止」）。真因は選択が app 側の画面行座標で、スクロール／出力で
+      内容から滑っていた。**alacritty `Selection` へ全面委譲**: グリッド座標で
+      保持され scroll・出力回転に自動追従、snapshot が可視範囲を毎回算出
+      （選択変更時は session 側で snapshot を即時再構築 — parse スレッドは
+      PTY 出力時しか更新しないため）。コピーも `selection_to_string` へ移行=
+      **scrollback 跨ぎ・wide/wrap が正確に**。副次挙動: クリック単発は
+      ハイライトなし（empty until drag、標準挙動）／TUI が選択下の文字を
+      書き換えたら選択はクリア（旧実装は誤テキストを黙ってコピーしていた）。
+      `e2e/shell-drag-copy.ps1`: drag→highlight→9行スクロールで**同じ数字に
+      張り付く**before/after スクショ＋コピー内容一致で実証
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）
 - [ ] **RikkaTerminal 構想**（2026-07-06 殿表明）— 本格ターミナルとして独立プロダクト化。

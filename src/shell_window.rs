@@ -549,7 +549,9 @@ impl Render for ShellWindow {
                     MONO_FONT,
                     cw,
                     ch,
-                    self.selection.range_for(0),
+                    // The grid itself carries the selection (it scrolls with
+                    // the content); the snapshot hands out the visible range.
+                    snap.selection,
                     self.selection.hover_link_for(0),
                     images.as_deref(),
                     ime_preedit,

@@ -12,7 +12,7 @@
 //! The highlight itself is painted by `render_grid` (paint calls from the
 //! overlay canvas never reach the screen — see `render_terminal_tab`).
 
-use crate::{GridSnapshot, MouseReport, ReportButton, ReportMods, TerminalSession};
+use crate::{MouseReport, ReportButton, ReportMods, TerminalSession};
 use gpui::{
     App, Bounds, ClipboardItem, DispatchPhase, Entity, Modifiers, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, Window,
@@ -26,6 +26,11 @@ pub trait SelectionHost: 'static {
     /// (clicks/drags forwarded to apps that asked for them — btop, claude
     /// code's clickable menus, tmux `mouse on`). `None` = plain selection.
     fn pane_session(&self, pane: usize) -> Option<&TerminalSession>;
+
+    /// Multi-pane hosts clear the *other* panes' grid selections when a new
+    /// drag starts in `keep` — the selection data lives in each pane's Term,
+    /// and only one selection per window may stay visible.
+    fn clear_selections_except(&self, _keep: usize) {}
 }
 
 /// Buttons that participate in reporting. Right is deliberately absent: it
@@ -56,36 +61,23 @@ struct ReportDrag {
     last_cell: (usize, usize),
 }
 
-/// A mouse-driven cell selection over one terminal pane's grid.
-///
-/// `anchor` is the cell where the drag started; `head` follows the pointer.
-/// Both are `(row, col)` grid coordinates. The selection is linear (reading
-/// order): rows strictly between anchor and head are selected full-width.
-struct TerminalSelection {
-    /// Which pane of the host window owns the selection (windows with a
-    /// single pane always use 0).
-    pane: usize,
-    anchor: (usize, usize),
-    head: (usize, usize),
-    dragging: bool,
-}
-
-impl TerminalSelection {
-    /// Inclusive `(start, end)` cell range in reading order.
-    fn normalized(&self) -> ((usize, usize), (usize, usize)) {
-        if self.head < self.anchor {
-            (self.head, self.anchor)
-        } else {
-            (self.anchor, self.head)
-        }
-    }
-}
-
-/// Drag state owned by a host window. All mutation goes through
-/// [`register_mouse_selection`]'s listeners.
+/// Drag bookkeeping owned by a host window. The selection *data* lives in the
+/// pane's `Term` (alacritty `Selection`, written through the session's
+/// `selection_*` helpers), which keeps the highlight glued to the text
+/// through scrollback scrolling and output rotation — this only tracks the
+/// in-flight drag and which pane owns the visible selection. All mutation
+/// goes through [`register_mouse_selection`]'s listeners.
 #[derive(Default)]
 pub struct SelectionState {
-    sel: Option<TerminalSelection>,
+    /// In-flight local drag: `(pane, pointer ever moved)`. A click that never
+    /// moves clears the selection on release instead of leaving a one-cell
+    /// highlight behind.
+    drag: Option<(usize, bool)>,
+    /// Last cell+side the drag head was set to, for per-cell dedup.
+    last_drag_cell: Option<(usize, usize, bool)>,
+    /// Pane whose Term holds the current selection (drag or completed) — the
+    /// copy path routes through it.
+    owner: Option<usize>,
     /// In-flight reported (forwarded-to-PTY) drag, if any.
     report: Option<ReportDrag>,
     /// Last hover cell reported under `?1003` (all-motion), for dedup.
@@ -96,53 +88,9 @@ pub struct SelectionState {
 }
 
 impl SelectionState {
-    fn begin(&mut self, pane: usize, row: usize, col: usize) {
-        self.sel = Some(TerminalSelection {
-            pane,
-            anchor: (row, col),
-            head: (row, col),
-            dragging: true,
-        });
-    }
-
-    /// Move the selection head while dragging. Returns `true` when it moved.
-    fn update_head(&mut self, row: usize, col: usize) -> bool {
-        match self.sel.as_mut() {
-            Some(sel) if sel.dragging && sel.head != (row, col) => {
-                sel.head = (row, col);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Finish a drag. A click without movement clears the selection.
-    /// Returns `true` when the visual state changed.
-    fn end_drag(&mut self) -> bool {
-        match self.sel.as_mut() {
-            Some(sel) if sel.dragging => {
-                sel.dragging = false;
-                if sel.anchor == sel.head {
-                    self.sel = None;
-                }
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// The owning pane and normalized range of the current selection.
-    pub fn selected(&self) -> Option<(usize, (usize, usize), (usize, usize))> {
-        let sel = self.sel.as_ref()?;
-        let (start, end) = sel.normalized();
-        Some((sel.pane, start, end))
-    }
-
-    /// The normalized range when the selection belongs to `pane` — the shape
-    /// `render_grid` takes for the highlight.
-    pub fn range_for(&self, pane: usize) -> Option<((usize, usize), (usize, usize))> {
-        let (sel_pane, start, end) = self.selected()?;
-        (sel_pane == pane).then_some((start, end))
+    /// Pane owning the current selection, if any (for copy routing).
+    pub fn selected_pane(&self) -> Option<usize> {
+        self.owner
     }
 
     /// The ctrl-hovered hyperlink index when it belongs to `pane` — the shape
@@ -216,6 +164,13 @@ pub fn register_mouse_selection<V: SelectionHost>(
         let row = ((gy / ch).floor().max(0.0) as usize).min(grid_rows.saturating_sub(1));
         (row, col)
     };
+    // Which half of the cell the pointer sits in — alacritty's selection
+    // anchors to a cell side, so a drag that starts in the right half doesn't
+    // swallow the whole start cell.
+    let side_at = move |pos: Point<Pixels>| {
+        let gx = f32::from(pos.x - bounds.origin.x);
+        (gx / cw).fract() > 0.5
+    };
     window.on_mouse_event({
         let view = view.clone();
         move |ev: &MouseDownEvent, phase, _window, cx| {
@@ -259,7 +214,17 @@ pub fn register_mouse_selection<V: SelectionHost>(
                     }
                 }
                 if ev.button == MouseButton::Left {
-                    this.selection_state().begin(pane, row, col);
+                    // One visible selection per window: evict the other
+                    // panes', then anchor a fresh one in the grid itself.
+                    this.clear_selections_except(pane);
+                    let right = side_at(ev.position);
+                    if let Some(s) = this.pane_session(pane) {
+                        s.selection_begin(row, col, right);
+                    }
+                    let state = this.selection_state();
+                    state.drag = Some((pane, false));
+                    state.last_drag_cell = Some((row, col, right));
+                    state.owner = Some(pane);
                     cx.notify();
                 }
             });
@@ -325,9 +290,19 @@ pub fn register_mouse_selection<V: SelectionHost>(
                     return;
                 }
                 if ev.pressed_button == Some(MouseButton::Left)
-                    && this.selection_state().update_head(row, col)
+                    && let Some((drag_pane, _)) = this.selection_state().drag
+                    && drag_pane == pane
                 {
-                    cx.notify();
+                    let right = side_at(ev.position);
+                    if this.selection_state().last_drag_cell != Some((row, col, right)) {
+                        if let Some(s) = this.pane_session(pane) {
+                            s.selection_update(row, col, right);
+                        }
+                        let state = this.selection_state();
+                        state.last_drag_cell = Some((row, col, right));
+                        state.drag = Some((pane, true));
+                        cx.notify();
+                    }
                 }
             });
         }
@@ -352,7 +327,18 @@ pub fn register_mouse_selection<V: SelectionHost>(
                     }
                     return;
                 }
-                if ev.button == MouseButton::Left && this.selection_state().end_drag() {
+                if ev.button == MouseButton::Left
+                    && let Some((drag_pane, moved)) = this.selection_state().drag
+                {
+                    this.selection_state().drag = None;
+                    if !moved {
+                        // A motionless click clears rather than leaving a
+                        // one-cell highlight behind.
+                        if let Some(s) = this.pane_session(drag_pane) {
+                            s.selection_clear();
+                        }
+                        this.selection_state().owner = None;
+                    }
                     cx.notify();
                 }
             });
@@ -361,148 +347,29 @@ pub fn register_mouse_selection<V: SelectionHost>(
 }
 
 /// Copy the current selection to the OS clipboard. The host resolves which
-/// session the selection's pane maps to.
+/// session the selection's pane maps to (see [`SelectionState::selected_pane`]).
+/// Extraction is done by the grid itself, so it spans scrollback and handles
+/// wide/wrapped lines correctly.
 pub fn copy_to_clipboard(state: &SelectionState, session: Option<&TerminalSession>, cx: &mut App) {
-    let Some((_pane, start, end)) = state.selected() else {
+    if state.selected_pane().is_none() {
         return;
-    };
+    }
     let Some(session) = session else { return };
-    let text = selection_text(&session.snapshot.lock(), start, end);
-    if !text.is_empty() {
+    if let Some(text) = session.selection_text()
+        && !text.is_empty()
+    {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
-}
-
-/// Extract the text covered by an inclusive `(start, end)` cell range.
-///
-/// Rows strictly between start and end are taken full-width. Trailing spaces
-/// are trimmed per line. Wide-char spacer cells (`display_width == 0`) are
-/// skipped so double-width characters appear exactly once.
-fn selection_text(snap: &GridSnapshot, start: (usize, usize), end: (usize, usize)) -> String {
-    let mut lines = Vec::new();
-    for (row, cells) in snap.cells.iter().enumerate() {
-        if row < start.0 || row > end.0 {
-            continue;
-        }
-        let mut c0 = if row == start.0 { start.1 } else { 0 };
-        // Selection anchored on the spacer half of a wide glyph (CJK/emoji)
-        // must still copy the glyph — pull back to its base cell, matching
-        // the highlight snap in renderer::selection_cols_for_row.
-        while c0 > 0 && cells.get(c0).is_some_and(|c| c.display_width == 0) {
-            c0 -= 1;
-        }
-        let c1 = if row == end.0 { end.1 + 1 } else { cells.len() };
-        let mut line = String::new();
-        for (col, cell) in cells.iter().enumerate() {
-            if col < c0 || col >= c1 || cell.display_width == 0 {
-                continue;
-            }
-            line.push(cell.c);
-        }
-        lines.push(line.trim_end().to_string());
-    }
-    lines.join("\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SnapshotCell;
 
-    fn snap_from_lines(lines: &[&str]) -> GridSnapshot {
-        let cols = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-        let mut snap = GridSnapshot::blank(cols, lines.len());
-        for (row, line) in lines.iter().enumerate() {
-            for (col, c) in line.chars().enumerate() {
-                snap.cells[row][col].c = c;
-            }
-        }
-        snap
-    }
-
-    #[test]
-    fn selection_text_single_row_range() {
-        let snap = snap_from_lines(&["hello world"]);
-        assert_eq!(selection_text(&snap, (0, 6), (0, 10)), "world");
-    }
-
-    #[test]
-    fn selection_text_multi_row_takes_middle_rows_full_width() {
-        let snap = snap_from_lines(&["abcde", "fghij", "klmno"]);
-        assert_eq!(selection_text(&snap, (0, 3), (2, 1)), "de\nfghij\nkl");
-    }
-
-    #[test]
-    fn selection_text_trims_trailing_spaces_per_line() {
-        let snap = snap_from_lines(&["ab   ", "cd   "]);
-        assert_eq!(selection_text(&snap, (0, 0), (1, 4)), "ab\ncd");
-    }
-
-    #[test]
-    fn selection_text_skips_wide_char_spacers() {
-        let mut snap = GridSnapshot::blank(4, 1);
-        snap.cells[0][0] = SnapshotCell {
-            c: 'あ',
-            display_width: 2,
-            ..SnapshotCell::blank()
-        };
-        snap.cells[0][1] = SnapshotCell {
-            c: ' ',
-            display_width: 0,
-            ..SnapshotCell::blank()
-        };
-        snap.cells[0][2].c = 'x';
-        assert_eq!(selection_text(&snap, (0, 0), (0, 2)), "あx");
-    }
-
-    #[test]
-    fn selection_text_start_on_wide_spacer_includes_the_glyph() {
-        let mut snap = GridSnapshot::blank(4, 1);
-        snap.cells[0][0] = SnapshotCell {
-            c: 'あ',
-            display_width: 2,
-            ..SnapshotCell::blank()
-        };
-        snap.cells[0][1] = SnapshotCell {
-            c: ' ',
-            display_width: 0,
-            ..SnapshotCell::blank()
-        };
-        snap.cells[0][2].c = 'x';
-        // Anchor on the spacer half (col 1): the wide glyph is still copied.
-        assert_eq!(selection_text(&snap, (0, 1), (0, 2)), "あx");
-    }
-
-    #[test]
-    fn selection_normalized_orders_reading_direction() {
-        let sel = TerminalSelection {
-            pane: 0,
-            anchor: (5, 2),
-            head: (3, 7),
-            dragging: true,
-        };
-        assert_eq!(sel.normalized(), ((3, 7), (5, 2)));
-    }
-
-    #[test]
-    fn selection_state_drag_lifecycle() {
-        let mut state = SelectionState::default();
-        state.begin(1, 2, 3);
-        assert!(state.update_head(4, 5));
-        assert!(!state.update_head(4, 5)); // unchanged head → no repaint
-        assert!(state.end_drag());
-        assert_eq!(state.selected(), Some((1, (2, 3), (4, 5))));
-        assert_eq!(state.range_for(1), Some(((2, 3), (4, 5))));
-        assert_eq!(state.range_for(0), None);
-    }
-
-    #[test]
-    fn selection_state_click_without_drag_clears() {
-        let mut state = SelectionState::default();
-        state.begin(0, 2, 3);
-        assert!(state.end_drag());
-        assert_eq!(state.selected(), None);
-    }
+    // Range math, drag rotation and text extraction moved into alacritty's
+    // `Selection` (see `TerminalSession::selection_*` and the
+    // `selection_tracks_scrollback_and_output` test in lib.rs); only the
+    // pane-scoped bookkeeping is left to test here.
 
     #[test]
     fn hover_link_is_pane_scoped() {

@@ -197,6 +197,53 @@ impl TerminalSession {
         }
     }
 
+    /// Begin a mouse selection at viewport cell `(row, col)`; `right_side` =
+    /// the pointer sat in the right half of the cell. The selection lives in
+    /// alacritty's `Selection` (grid coordinates), so it stays glued to the
+    /// text through scrollback scrolling and output-driven rotation — the old
+    /// app-side screen-row state slid off the content on any scroll.
+    pub fn selection_begin(&self, row: usize, col: usize, right_side: bool) {
+        let mut term = self.term.lock();
+        let point = viewport_point(&term, row, col);
+        term.selection = Some(alacritty_terminal::selection::Selection::new(
+            alacritty_terminal::selection::SelectionType::Simple,
+            point,
+            side_of(right_side),
+        ));
+        self.refresh_snapshot(&term);
+    }
+
+    /// Move the selection head to viewport cell `(row, col)` while dragging.
+    pub fn selection_update(&self, row: usize, col: usize, right_side: bool) {
+        let mut term = self.term.lock();
+        let point = viewport_point(&term, row, col);
+        let side = side_of(right_side);
+        if let Some(sel) = term.selection.as_mut() {
+            sel.update(point, side);
+        }
+        self.refresh_snapshot(&term);
+    }
+
+    /// Drop any selection in this pane.
+    pub fn selection_clear(&self) {
+        let mut term = self.term.lock();
+        term.selection = None;
+        self.refresh_snapshot(&term);
+    }
+
+    /// Rebuild the shared snapshot after a selection change — the parse
+    /// thread only refreshes it on PTY output, and the highlight lives in the
+    /// snapshot. Same term→snapshot lock order as the parse thread.
+    fn refresh_snapshot(&self, term: &Term<ClipboardListener>) {
+        *self.snapshot.lock() = take_snapshot(term);
+    }
+
+    /// The selected text — extracted by the grid itself, so it spans
+    /// scrollback and handles wide/wrapped lines correctly.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.lock().selection_to_string()
+    }
+
     /// Route horizontal wheel ticks to the PTY when the running application
     /// asked for mouse reporting. Returns whether the PTY owns the horizontal
     /// wheel; there is no local horizontal scroll to fall back to. See
@@ -339,6 +386,10 @@ pub struct GridSnapshot {
     /// The cursor blinks (DECSCUSR 1/3/5 or DECSET ?12) — rides the same
     /// 600 ms phase and 300 ms refresh timer as SGR blink.
     pub cursor_blink: bool,
+    /// Mouse selection mapped into viewport rows (inclusive reading-order
+    /// range), when any part is visible. The selection itself lives in the
+    /// grid (alacritty `Selection`), so it tracks scroll and output.
+    pub selection: Option<((usize, usize), (usize, usize))>,
     /// Lines scrolled back into history (0 = live view at the bottom).
     pub display_offset: usize,
     /// Any visible cell carries SGR blink — the refresh task adds a phase
@@ -363,6 +414,7 @@ impl GridSnapshot {
             cursor: (0, 0),
             cursor_shape: CursorShapeKind::default(),
             cursor_blink: false,
+            selection: None,
             display_offset: 0,
             has_blink: false,
             links: Vec::new(),
@@ -544,6 +596,24 @@ pub fn hwheel_pty_bytes(
 /// X10 mouse encoding: `ESC [ M cb+32 x+32 y+32` with 1-based coordinates.
 /// Coordinates past 223 (255 − 32) cannot be represented; like Ghostty and
 /// xterm the event is dropped rather than clamped to a fabricated cell.
+/// Viewport cell → grid coordinates at the current scroll position (screen
+/// row r maps to grid `Line(r - display_offset)`).
+fn viewport_point<L>(term: &Term<L>, row: usize, col: usize) -> alacritty_terminal::index::Point {
+    use alacritty_terminal::grid::Dimensions as _;
+    use alacritty_terminal::index::{Column, Line, Point};
+    let offset = term.grid().display_offset() as i32;
+    let col = col.min(term.columns().saturating_sub(1));
+    Point::new(Line(row as i32 - offset), Column(col))
+}
+
+fn side_of(right: bool) -> alacritty_terminal::index::Side {
+    if right {
+        alacritty_terminal::index::Side::Right
+    } else {
+        alacritty_terminal::index::Side::Left
+    }
+}
+
 /// Encode a press-type report (wheel tick, button press) in the negotiated
 /// coordinate encoding, by precedence: SGR (`?1006`) > UTF-8 (`?1005`) > X10.
 /// `None` when the coordinates do not fit the encoding's range.
@@ -804,6 +874,32 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         }
     }
 
+    // Selection mapped into viewport rows. alacritty keeps it in grid
+    // coordinates (rotating with scroll and output); only the visible part is
+    // clamped here — `None` when it is entirely off-screen.
+    let selection = term
+        .selection
+        .as_ref()
+        .and_then(|s| s.to_range(term))
+        .and_then(|r| {
+            let to_view = |l: alacritty_terminal::index::Line| l.0 + display_offset;
+            let (sr, er) = (to_view(r.start.line), to_view(r.end.line));
+            if er < 0 || sr >= rows as i32 {
+                return None;
+            }
+            let start = if sr < 0 {
+                (0, 0)
+            } else {
+                (sr as usize, r.start.column.0)
+            };
+            let end = if er >= rows as i32 {
+                (rows - 1, cols.saturating_sub(1))
+            } else {
+                (er as usize, r.end.column.0.min(cols.saturating_sub(1)))
+            };
+            Some((start, end))
+        });
+
     let cur = content.cursor.point;
     // RenderableCursor folds DECTCEM in for us: `?25l` arrives as Hidden.
     let cursor_shape = {
@@ -828,6 +924,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         // Hidden gates the blink flag so `?25l` apps don't arm the refresh
         // timer for a cursor that never draws.
         cursor_blink: term.cursor_style().blinking && cursor_shape != CursorShapeKind::Hidden,
+        selection,
         display_offset: term.grid().display_offset(),
         has_blink,
         links,
@@ -1685,6 +1782,42 @@ mod tests {
         // Hidden gates the flag: no refresh-timer churn for `?25l` apps.
         advance_bytes(&mut term, b"\x1b[?25l");
         assert!(!take_snapshot(&term).cursor_blink);
+    }
+
+    #[test]
+    fn selection_tracks_scrollback_and_output() {
+        use alacritty_terminal::grid::Scroll;
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut term = make_term(10, 4);
+        // 8 numbered lines through a 4-row screen: history 1-4, screen 5-8.
+        advance_bytes(&mut term, b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8");
+        // Anchor on the '5' cell (viewport row 0): a fresh anchor is empty
+        // until the head moves (so a plain click never flashes a highlight)…
+        term.selection = Some(Selection::new(
+            SelectionType::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        ));
+        assert_eq!(take_snapshot(&term).selection, None);
+        // …dragging to the cell's right side selects it.
+        term.selection
+            .as_mut()
+            .unwrap()
+            .update(Point::new(Line(0), Column(0)), Side::Right);
+        assert_eq!(take_snapshot(&term).selection, Some(((0, 0), (0, 0))));
+        assert_eq!(term.selection_to_string().as_deref(), Some("5"));
+        // Scroll one line into history: the highlight must follow the '5'
+        // line down to viewport row 1 — this was the visible bug (the old
+        // screen-row state stayed at row 0, off the text).
+        term.scroll_display(Scroll::Delta(1));
+        assert_eq!(take_snapshot(&term).selection, Some(((1, 0), (1, 0))));
+        // Back to the bottom, then new output rotates the grid: the selection
+        // rides the content out of the viewport but still copies correctly.
+        term.scroll_display(Scroll::Bottom);
+        advance_bytes(&mut term, b"\r\n9");
+        assert_eq!(take_snapshot(&term).selection, None);
+        assert_eq!(term.selection_to_string().as_deref(), Some("5"));
     }
 
     #[test]

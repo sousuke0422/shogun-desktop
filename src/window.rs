@@ -204,6 +204,16 @@ impl SelectionHost for ShogunWindow {
             _ => None,
         }
     }
+
+    fn clear_selections_except(&self, keep: usize) {
+        for pane in [0usize, 1] {
+            if pane != keep
+                && let Some(s) = self.pane_session(pane)
+            {
+                s.selection_clear();
+            }
+        }
+    }
 }
 
 impl ImeHost for ShogunWindow {
@@ -394,8 +404,8 @@ impl ShogunWindow {
     /// Copy the selected cells of the owning pane to the OS clipboard
     /// (ctrl-shift-c / cmd-c via the `TerminalCopy` action).
     pub(crate) fn copy_selection(&self, cx: &mut Context<Self>) {
-        let session = match self.selection.selected() {
-            Some((pane, ..)) if pane == selection_pane(true) => self.shogun_session.as_ref(),
+        let session = match self.selection.selected_pane() {
+            Some(pane) if pane == selection_pane(true) => self.shogun_session.as_ref(),
             Some(_) => self.multiagent_session.as_ref(),
             None => return,
         };
@@ -799,7 +809,9 @@ impl ShogunWindow {
                     &self.terminal_focus,
                     self.ime.clone(),
                     self.ime.read(cx).marked.clone(),
-                    self.selection.range_for(selection_pane(is_shogun)),
+                    // The grid itself carries the selection (it scrolls with
+                    // the content); the snapshot hands out the visible range.
+                    snap.selection,
                     self.selection.hover_link_for(selection_pane(is_shogun)),
                     Some(&session.images),
                     is_shogun,
