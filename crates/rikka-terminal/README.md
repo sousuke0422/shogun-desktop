@@ -73,6 +73,17 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
   chrome 書体の Segoe UI Variable 化・システムアクセント色追従・
   タブ close の hover-reveal（WinUI CloseButtonOverlayMode=Auto 相当）
 
+## ローカル sixel（ConPTY サイドロード）
+
+Windows 同梱の古い conhost は DCS を剥がすため、ローカルアプリの sixel は
+素の ConPTY では届かない。`assets/conpty/` に **公式 NuGet
+`Microsoft.Windows.Console.ConPTY` 1.24 のマッチドペア**（conpty.dll +
+OpenConsole.exe・MIT）を vendor し、build.rs がバイナリの隣へ配置、
+portable-pty が自動サイドロードする（wezterm と同じ機構）。実機で
+「pwsh から生 DCS → 赤ブロック描画」を確認済み。**ペア世代の混在は禁物**
+（無出力 PTY になる — assets/conpty/README.md 参照）。
+既知の確認待ち: 新 ConPTY 経由で OSC 0 タブタイトルが届いていない疑い。
+
 ## wt 互換 CLI（`rt`）
 
 `rt.exe` は**薄いランチャー**（隣の `rikka-terminal.exe` へ argv を横流しして
