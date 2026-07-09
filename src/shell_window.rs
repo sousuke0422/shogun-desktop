@@ -43,6 +43,8 @@ pub struct ShellWindow {
     /// Fractional wheel-scroll remainder so slow touchpad deltas (< 1 line
     /// per event) still accumulate into scrollback lines.
     scroll_accum: f32,
+    /// Same, for the horizontal wheel (mouse-reporting buttons 66/67).
+    hwheel_accum: f32,
     /// Pane size actually painted (logical px, padding box), reported by the
     /// overlay canvas. `(0, 0)` until the first paint; `render` derives
     /// rows from this instead of estimating the status-bar height.
@@ -128,6 +130,7 @@ impl ShellWindow {
             ime,
             selection: SelectionState::default(),
             scroll_accum: 0.0,
+            hwheel_accum: 0.0,
             pane_measured: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
             window_active: window.is_window_active(),
             desktop_notifications: load_settings()
@@ -506,6 +509,33 @@ impl Render for ShellWindow {
                                 if !s.wheel_to_pty(whole, col, row, mods) {
                                     s.scroll_display(whole);
                                 }
+                            }
+                        }
+                        // Horizontal wheel → mouse-reporting buttons 66/67.
+                        // No local horizontal scroll exists to fall back to,
+                        // so unowned ticks simply drop.
+                        this.hwheel_accum += match &event.delta {
+                            ScrollDelta::Pixels(p) => (p.x / px(1.)) / cw,
+                            ScrollDelta::Lines(l) => l.x,
+                        };
+                        let whole_x = this.hwheel_accum.trunc() as i32;
+                        if whole_x != 0 {
+                            this.hwheel_accum -= whole_x as f32;
+                            if let Some(s) = &this.session {
+                                let pad = TERMINAL_PANE_PADDING_PX / 2.0;
+                                let cols = s.cols.load(Ordering::Relaxed).max(1) as usize;
+                                let rows = s.rows.load(Ordering::Relaxed).max(1) as usize;
+                                let col = ((((event.position.x / px(1.)) - pad) / cw).max(0.0)
+                                    as usize)
+                                    .min(cols - 1);
+                                let row = ((((event.position.y / px(1.)) - pad) / ch).max(0.0)
+                                    as usize)
+                                    .min(rows - 1);
+                                let mods = crate::terminal::ReportMods {
+                                    alt: event.modifiers.alt,
+                                    ctrl: event.modifiers.control,
+                                };
+                                s.hwheel_to_pty(whole_x, col, row, mods);
                             }
                         }
                     }),

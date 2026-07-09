@@ -115,10 +115,15 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       ついでにレガシー側も拡充: F1-F12・Insert・修飾付き矢印/Home/End/PgUp/PgDn
       (CSI 1;m X / n;m ~)・Alt=ESC prefix。実機確認: `kitten show-key -m kitty` 相当か
       claude code / opencode で矢印・Esc・ctrl+英字の挙動
-- [ ] マウスレポーティングの残ギャップ（2026-07-05 opus 監査で列挙。Ghostty 比で
-      核心経路=SGR click/drag/hover は**バイト単位一致**と判定済み。ホイール修飾ビットと
-      X10>223 drop は同日適用済み）: 水平ホイール (btn 66/67)・?1005 UTF-8・
-      ?1015 urxvt・?1016 SGR-pixels・shift-capture (kitty 系)。いずれも低優先
+- [x] マウスレポーティングの残ギャップ — **2026-07-09 実装分**: 水平ホイール
+      (btn 66/67、正=左=gpui 符号準拠、両窓に hwheel_accum 配線・alt-scroll
+      相当なし=仕様) と **?1005 UTF-8**（座標上限 223→2015、SGR>UTF-8>X10 の
+      優先順、release は非 SGR で btn3 のまま）。回帰テスト 3 本（DECSET を実
+      parser 経由で立てて検証）。**意図的スキップ**: ?1015 urxvt・?1016
+      SGR-pixels は vte 0.13.1 が NamedPrivateMode を持たず DECSET が TermMode
+      に届かない（対応には vte の vendoring/バンプが必要 — レガシー/ニッチ
+      encoding に見合わず棚上げ）。shift-capture (kitty 系) は shift=ローカル
+      選択バイパスの UX・e2e 規約と衝突するため不採用
 - [x] **ssh/tmux ペインの履歴スクロール** — **2026-07-06 実装（実機確認待ち）**。
       `ShogunWindow::wheel_to_pty_for_pane` が本窓ペインの wheel を shell window と
       同じ規則で PTY へ転送（tmux `mouse on`=mouse reporting / alternate scroll。

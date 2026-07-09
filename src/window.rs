@@ -187,6 +187,8 @@ pub struct ShogunWindow {
     /// Fractional wheel-line accumulator for PTY wheel forwarding (trackpads
     /// deliver sub-line pixel deltas).
     wheel_accum: f32,
+    /// Same, for the horizontal wheel (buttons 66/67).
+    hwheel_accum: f32,
 }
 
 impl SelectionHost for ShogunWindow {
@@ -282,6 +284,7 @@ impl ShogunWindow {
             pane_measured: Rc::new(Cell::new((0.0, 0.0))),
             pane_origin: Rc::new(Cell::new((0.0, 0.0))),
             wheel_accum: 0.0,
+            hwheel_accum: 0.0,
         }
     }
 
@@ -323,6 +326,18 @@ impl ShogunWindow {
             alt: event.modifiers.alt,
             ctrl: event.modifiers.control,
         };
+        // Horizontal wheel (buttons 66/67): forwarded when the app reports
+        // mice; there is no local horizontal scroll to fall back to, so this
+        // never affects the ownership decision below.
+        self.hwheel_accum += match &event.delta {
+            ScrollDelta::Pixels(p) => (p.x / px(1.)) / cw,
+            ScrollDelta::Lines(l) => l.x,
+        };
+        let whole_x = self.hwheel_accum.trunc() as i32;
+        self.hwheel_accum -= whole_x as f32;
+        if whole_x != 0 {
+            s.hwheel_to_pty(whole_x, col, row, mods);
+        }
         s.wheel_to_pty(whole, col, row, mods)
     }
 

@@ -177,6 +177,23 @@ impl TerminalSession {
         }
     }
 
+    /// Route horizontal wheel ticks to the PTY when the running application
+    /// asked for mouse reporting. Returns whether the PTY owns the horizontal
+    /// wheel; there is no local horizontal scroll to fall back to. See
+    /// [`hwheel_pty_bytes`].
+    pub fn hwheel_to_pty(&self, cols: i32, col: usize, row: usize, mods: ReportMods) -> bool {
+        let mode = *self.term.lock().mode();
+        match hwheel_pty_bytes(mode, cols, col, row, mods) {
+            Some(buf) => {
+                if !buf.is_empty() {
+                    self.send_bytes(&buf);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Route a click/drag/motion event to the PTY when the running
     /// application asked for mouse reporting. Returns `false` when the event
     /// should be handled locally (selection) instead. See [`mouse_pty_bytes`].
@@ -432,9 +449,7 @@ pub fn wheel_pty_bytes(
         let btn: u32 = if lines > 0 { 64 } else { 65 } + mods.bits();
         let mut buf = Vec::new();
         for _ in 0..lines.unsigned_abs() {
-            if mode.contains(TermMode::SGR_MOUSE) {
-                buf.extend_from_slice(format!("\x1b[<{btn};{};{}M", col + 1, row + 1).as_bytes());
-            } else if let Some(seq) = x10_bytes(btn, col, row) {
+            if let Some(seq) = press_bytes(mode, btn, col, row) {
                 buf.extend_from_slice(&seq);
             }
         }
@@ -456,9 +471,70 @@ pub fn wheel_pty_bytes(
     }
 }
 
+/// Encode horizontal wheel ticks (xterm buttons 66 = left / 67 = right;
+/// positive `cols` = wheel left, matching gpui's sign convention) for the
+/// PTY, or `None` when the application did not ask for mouse reporting.
+/// Unlike the vertical wheel there is no alternate-scroll fallback — no
+/// arrow-key mapping is defined for horizontal scroll.
+pub fn hwheel_pty_bytes(
+    mode: alacritty_terminal::term::TermMode,
+    cols: i32,
+    col: usize,
+    row: usize,
+    mods: ReportMods,
+) -> Option<Vec<u8>> {
+    use alacritty_terminal::term::TermMode;
+    if !mode.intersects(TermMode::MOUSE_MODE) {
+        return None;
+    }
+    let btn: u32 = if cols > 0 { 66 } else { 67 } + mods.bits();
+    let mut buf = Vec::new();
+    for _ in 0..cols.unsigned_abs() {
+        if let Some(seq) = press_bytes(mode, btn, col, row) {
+            buf.extend_from_slice(&seq);
+        }
+    }
+    Some(buf)
+}
+
 /// X10 mouse encoding: `ESC [ M cb+32 x+32 y+32` with 1-based coordinates.
 /// Coordinates past 223 (255 − 32) cannot be represented; like Ghostty and
 /// xterm the event is dropped rather than clamped to a fabricated cell.
+/// Encode a press-type report (wheel tick, button press) in the negotiated
+/// coordinate encoding, by precedence: SGR (`?1006`) > UTF-8 (`?1005`) > X10.
+/// `None` when the coordinates do not fit the encoding's range.
+fn press_bytes(
+    mode: alacritty_terminal::term::TermMode,
+    cb: u32,
+    col: usize,
+    row: usize,
+) -> Option<Vec<u8>> {
+    use alacritty_terminal::term::TermMode;
+    if mode.contains(TermMode::SGR_MOUSE) {
+        Some(format!("\x1b[<{cb};{};{}M", col + 1, row + 1).into_bytes())
+    } else if mode.contains(TermMode::UTF8_MOUSE) {
+        utf8_bytes(cb, col, row)
+    } else {
+        x10_bytes(cb, col, row).map(|b| b.to_vec())
+    }
+}
+
+/// UTF-8 flavored X10 (`?1005`): `CSI M` with Cb/Cx/Cy each encoded as a
+/// UTF-8 character, which extends the coordinate range from X10's 223 to
+/// 2015 (the xterm-documented limit).
+fn utf8_bytes(cb: u32, col: usize, row: usize) -> Option<Vec<u8>> {
+    let (x, y) = (col + 1, row + 1);
+    if x > 2015 || y > 2015 {
+        return None;
+    }
+    let mut buf = b"\x1b[M".to_vec();
+    for v in [32 + cb, (32 + x) as u32, (32 + y) as u32] {
+        let mut tmp = [0u8; 4];
+        buf.extend_from_slice(char::from_u32(v)?.encode_utf8(&mut tmp).as_bytes());
+    }
+    Some(buf)
+}
+
 fn x10_bytes(cb: u32, col: usize, row: usize) -> Option<[u8; 6]> {
     let (x, y) = (col + 1, row + 1);
     if x > 223 || y > 223 {
@@ -551,9 +627,15 @@ pub fn mouse_pty_bytes(
         let m = if release { 'm' } else { 'M' };
         Some(format!("\x1b[<{cb};{};{}{m}", col + 1, row + 1).into_bytes())
     } else {
-        // X10: release is always button 3, coordinates cap at 223 (255 - 32).
+        // Outside SGR a release is always button 3 — that is the protocol,
+        // not a bug. ?1005 only widens the coordinate range.
         let cb = if release { 3 + mods.bits() } else { cb };
-        x10_bytes(cb, col, row).map(|b| b.to_vec())
+        if mode.contains(TermMode::UTF8_MOUSE) {
+            utf8_bytes(cb, col, row)
+        } else {
+            // X10: coordinates cap at 223 (255 - 32).
+            x10_bytes(cb, col, row).map(|b| b.to_vec())
+        }
     }
 }
 
@@ -1385,6 +1467,87 @@ mod tests {
             0,
         );
         assert_eq!(middle.unwrap(), b"\x1b[<1;1;1M");
+    }
+
+    #[test]
+    fn mouse_utf8_1005_widens_coordinates_past_x10() {
+        let mut term = make_term(80, 24);
+        advance_bytes(&mut term, b"\x1b[?1000h\x1b[?1005h");
+        let mods = ReportMods::default();
+        // col 300 exceeds the X10 cap (223): plain X10 would drop it, ?1005
+        // encodes 32+301 = 333 = U+014D as two UTF-8 bytes.
+        let press = mouse_pty_bytes(
+            *term.mode(),
+            MouseReport::Press(ReportButton::Left),
+            mods,
+            300,
+            0,
+        );
+        assert_eq!(press.unwrap(), b"\x1b[M\x20\xc5\x8d\x21");
+        // Release still collapses to button 3 outside SGR.
+        let release = mouse_pty_bytes(
+            *term.mode(),
+            MouseReport::Release(ReportButton::Left),
+            mods,
+            0,
+            0,
+        );
+        assert_eq!(release.unwrap(), b"\x1b[M\x23\x21\x21");
+        // Beyond the ?1005 limit (2015) the event is dropped, like X10's 223.
+        assert_eq!(
+            mouse_pty_bytes(
+                *term.mode(),
+                MouseReport::Press(ReportButton::Left),
+                mods,
+                2100,
+                0,
+            ),
+            None
+        );
+        // SGR still wins when both are negotiated.
+        advance_bytes(&mut term, b"\x1b[?1006h");
+        let sgr = mouse_pty_bytes(
+            *term.mode(),
+            MouseReport::Press(ReportButton::Left),
+            mods,
+            300,
+            0,
+        );
+        assert_eq!(sgr.unwrap(), b"\x1b[<0;301;1M");
+    }
+
+    #[test]
+    fn wheel_utf8_1005_encodes_ticks() {
+        let mut term = make_term(80, 24);
+        advance_bytes(&mut term, b"\x1b[?1000h\x1b[?1005h");
+        let bytes = wheel_pty_bytes(*term.mode(), 1, 300, 0, ReportMods::default());
+        // 32+64 = 96 = '`', col 333 → U+014D, row 33 = '!'.
+        assert_eq!(bytes.unwrap(), b"\x1b[M\x60\xc5\x8d\x21");
+    }
+
+    #[test]
+    fn hwheel_buttons_66_67_and_ownership() {
+        let mut term = make_term(80, 24);
+        // Plain shell: no mouse reporting → not owned (and nothing to do
+        // locally either; horizontal just dies).
+        assert_eq!(
+            hwheel_pty_bytes(*term.mode(), 1, 0, 0, ReportMods::default()),
+            None
+        );
+        // Alternate scroll alone still doesn't own horizontal (no arrow-key
+        // mapping is defined for it).
+        advance_bytes(&mut term, b"\x1b[?1049h");
+        assert_eq!(
+            hwheel_pty_bytes(*term.mode(), 1, 0, 0, ReportMods::default()),
+            None
+        );
+        // With mouse reporting: 66 = left (positive), 67 = right, one report
+        // per tick.
+        advance_bytes(&mut term, b"\x1b[?1000h\x1b[?1006h");
+        let left = hwheel_pty_bytes(*term.mode(), 1, 5, 3, ReportMods::default());
+        assert_eq!(left.unwrap(), b"\x1b[<66;6;4M");
+        let right = hwheel_pty_bytes(*term.mode(), -2, 0, 0, ReportMods::default());
+        assert_eq!(right.unwrap(), b"\x1b[<67;1;1M\x1b[<67;1;1M");
     }
 
     #[test]
