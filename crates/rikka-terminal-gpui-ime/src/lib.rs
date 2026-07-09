@@ -99,6 +99,47 @@ impl Backend for NoopBackend {
 #[cfg(windows)]
 mod windows;
 
+/// Field diagnostics: set `SHOGUN_TSF_LOG=<path>` before launch to append every
+/// integration event (backend init, focus/blur, and the TSF calls that reach
+/// the text store). Off — and cost-free past one env lookup — when unset.
+pub(crate) fn tsf_log_write(msg: std::fmt::Arguments<'_>) {
+    static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let Some(path) = PATH.get_or_init(|| std::env::var("SHOGUN_TSF_LOG").ok()) else {
+        return;
+    };
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
+macro_rules! tsf_log {
+    ($($arg:tt)*) => { $crate::tsf_log_write(format_args!($($arg)*)) };
+}
+// Path-addressable (`crate::tsf_log!`) for the windows module; on other
+// platforms nothing else needs the re-export.
+#[cfg_attr(not(windows), allow(unused_imports))]
+pub(crate) use tsf_log;
+
+/// Run the full COM plumbing end-to-end (thread-manager activation, document
+/// creation, context push, focus, blur, teardown) and report each step — a
+/// headless smoke test for field diagnosis. Does not touch this thread's
+/// backend. On non-Windows platforms it just says so.
+pub fn self_check() -> String {
+    #[cfg(windows)]
+    {
+        windows::self_check()
+    }
+    #[cfg(not(windows))]
+    {
+        "tsf self-check: unsupported platform (no backend)".to_string()
+    }
+}
+
 thread_local! {
     /// One backend per UI thread, built lazily on first focus. TSF objects are
     /// thread-affine and gpui's window procedure is single-threaded, so a
@@ -110,8 +151,14 @@ fn make_backend() -> Box<dyn Backend> {
     #[cfg(windows)]
     {
         match windows::WindowsTsf::new() {
-            Ok(backend) => Box::new(backend),
-            Err(_) => Box::new(NoopBackend),
+            Ok(backend) => {
+                tsf_log!("backend: WindowsTsf activated");
+                Box::new(backend)
+            }
+            Err(e) => {
+                tsf_log!("backend: WindowsTsf init FAILED ({e}); falling back to no-op");
+                Box::new(NoopBackend)
+            }
         }
     }
     #[cfg(not(windows))]
@@ -128,6 +175,7 @@ fn with_backend<R>(f: impl FnOnce(&mut dyn Backend) -> R) -> Option<R> {
 /// tracking so the OS indicator reflects its IME mode. Loads the initial text
 /// state from `client`. Builds this thread's backend on first use.
 pub fn focus(hwnd: isize, client: &mut dyn TsfTextClient) {
+    tsf_log!("facade: focus(hwnd={hwnd:#x})");
     let snapshot = client.snapshot();
     BACKEND.with(|b| {
         let mut slot = b.borrow_mut();
@@ -142,6 +190,7 @@ pub fn focus(hwnd: isize, client: &mut dyn TsfTextClient) {
 
 /// The focused input lost focus; end TSF tracking.
 pub fn blur() {
+    tsf_log!("facade: blur");
     with_backend(|backend| backend.blur());
 }
 

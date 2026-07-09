@@ -209,11 +209,15 @@ impl crate::Backend for WindowsTsf {
         }
         // A failed activation leaves us in the pre-focus (IMM32) state rather
         // than a half-focused one, so input keeps working.
-        let _ = self.begin_focus();
+        match self.begin_focus() {
+            Ok(()) => crate::tsf_log!("tsf: document focused (create/push/SetFocus ok)"),
+            Err(e) => crate::tsf_log!("tsf: begin_focus FAILED ({e})"),
+        }
     }
 
     fn blur(&mut self) {
         if self.document.take().is_some() {
+            crate::tsf_log!("tsf: blur (popping document)");
             unsafe {
                 // Idempotent: TSF errors if the stack is empty, which we ignore.
                 let _ = self.document_mgr.Pop(0);
@@ -225,7 +229,11 @@ impl crate::Backend for WindowsTsf {
     }
 
     fn take_pending(&mut self) -> Vec<TextEdit> {
-        self.state.borrow_mut().pending.drain(..).collect()
+        let edits: Vec<TextEdit> = self.state.borrow_mut().pending.drain(..).collect();
+        if !edits.is_empty() {
+            crate::tsf_log!("tsf: take_pending -> {} edit(s)", edits.len());
+        }
+        edits
     }
 
     fn set_snapshot(&mut self, snapshot: TextSnapshot) {
@@ -298,6 +306,7 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         };
         let sink: ITextStoreACPSink = punk.cast()?;
         self.state()?.sink = Some(sink);
+        crate::tsf_log!("store: AdviseSink");
         Ok(())
     }
 
@@ -310,6 +319,7 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     }
 
     fn RequestLock(&self, dwlockflags: u32) -> WindowsResult<HRESULT> {
+        crate::tsf_log!("store: RequestLock(flags={dwlockflags:#x})");
         let sink = {
             let mut state = self.state()?;
             // Bit 0x4 = TS_LF_WRITE (TS_LF_READWRITE = READ | WRITE).
@@ -453,6 +463,7 @@ impl ITextStoreACP_Impl for TextStore_Impl {
             unsafe { std::slice::from_raw_parts(pchText.0, cch as usize) }.to_vec()
         };
         let new_len = text.len();
+        crate::tsf_log!("store: SetText({start}..{end}, {new_len} u16)");
         state.pending.push(TextEdit::Replace {
             start,
             end,
@@ -493,7 +504,10 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         }
         let state = self.state_ref()?;
         state.require_read()?;
-        let caret = state.caret.ok_or_else(|| WindowsError::from(TS_E_NOLAYOUT))?;
+        let caret = state.caret.ok_or_else(|| {
+            crate::tsf_log!("store: GetTextExt -> TS_E_NOLAYOUT (no caret rect)");
+            WindowsError::from(TS_E_NOLAYOUT)
+        })?;
         unsafe {
             *prc = rect_of(caret);
             *pfClipped = BOOL(0);
@@ -511,11 +525,13 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         let hwnd = self.state_ref()?.hwnd;
         // 0 = "use the foreground window" — lets the app drive focus without
         // plumbing a raw HWND out of gpui (the focused window is foreground).
-        Ok(if hwnd != 0 {
+        let resolved = if hwnd != 0 {
             HWND(hwnd as *mut core::ffi::c_void)
         } else {
             unsafe { GetForegroundWindow() }
-        })
+        };
+        crate::tsf_log!("store: GetWnd -> {:#x}", resolved.0 as isize);
+        Ok(resolved)
     }
 
     fn GetFormattedText(&self, _acpStart: i32, _acpEnd: i32) -> WindowsResult<IDataObject> {
@@ -666,4 +682,43 @@ fn rect_of(c: CaretRect) -> RECT {
         right: c.right,
         bottom: c.bottom,
     }
+}
+
+/// End-to-end COM plumbing check (see [`crate::self_check`]): runs the whole
+/// activate → create/push/SetFocus → blur → teardown cycle on a throwaway
+/// instance and reports each step. Headless-safe — it only touches this
+/// process's thread-local TSF state.
+pub(crate) fn self_check() -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("tsf self-check (windows)\n");
+    let mut tsf = match WindowsTsf::new() {
+        Ok(t) => {
+            let _ = writeln!(out, "  activate thread mgr: ok (client_id={})", t.client_id);
+            t
+        }
+        Err(e) => {
+            let _ = writeln!(out, "  activate thread mgr: FAILED ({e})");
+            return out;
+        }
+    };
+    match tsf.begin_focus() {
+        Ok(()) => {
+            let _ = writeln!(out, "  create/push/SetFocus document: ok");
+        }
+        Err(e) => {
+            let _ = writeln!(out, "  create/push/SetFocus document: FAILED ({e})");
+            return out;
+        }
+    }
+    let sink_advised = tsf.state.borrow().sink.is_some();
+    let _ = writeln!(
+        out,
+        "  sink advised by TSF: {}",
+        if sink_advised { "yes" } else { "not yet (may be lazy)" }
+    );
+    <WindowsTsf as crate::Backend>::blur(&mut tsf);
+    let _ = writeln!(out, "  blur/pop: ok");
+    drop(tsf);
+    let _ = writeln!(out, "  deactivate/teardown: ok");
+    out
 }

@@ -228,6 +228,16 @@ impl ShogunWindow {
             view.sync_focus_reports();
         })
         .detach();
+        let terminal_focus = cx.focus_handle();
+        // TSF (Windows): make the taskbar IME indicator track this window while
+        // a terminal tab's input is focused — app-driven so gpui stays
+        // untouched (see `crate::tsf`; gated by SHOGUN_TSF).
+        window
+            .on_focus_in(&terminal_focus, cx, |_, _| crate::tsf::on_input_focus())
+            .detach();
+        window
+            .on_focus_out(&terminal_focus, cx, |_, _, _| crate::tsf::on_input_blur())
+            .detach();
         Self {
             selected_tab: 0,
             settings_tab: SettingsTab::new(window, cx, &settings),
@@ -253,7 +263,7 @@ impl ShogunWindow {
             multiagent_session_name,
             upload_state: UploadState::Idle,
             dragged_paths: None,
-            terminal_focus: cx.focus_handle(),
+            terminal_focus,
             ime,
             selection: SelectionState::default(),
             window_active: window.is_window_active(),
