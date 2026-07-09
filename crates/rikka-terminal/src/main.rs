@@ -39,7 +39,18 @@ const MONO_FONT: &str = "Consolas";
 /// Pane padding (logical px); half on each side via `.p_1()`.
 const PAD: f32 = 8.0;
 /// Tab strip height (logical px).
-const TAB_STRIP_H: f32 = 30.0;
+const TAB_STRIP_H: f32 = 38.0;
+// ── chrome palette: soft-fluent, Files-app direction ─────────────────────────
+// The chrome sits a hair darker/cooler than the terminal surface; state
+// changes are low-contrast white overlays; the accent appears only as the
+// active tab's underline.
+const CHROME_BG: u32 = 0x161618;
+const HAIRLINE: u32 = 0xFFFFFF0A;
+const TAB_HOVER: u32 = 0xFFFFFF0A;
+const TAB_ACTIVE: u32 = 0xFFFFFF14;
+const TEXT_ACTIVE: u32 = 0xE8DCC8;
+const TEXT_MUTED: u32 = 0x8F8B80;
+const ACCENT: u32 = 0x60CDFF;
 /// PTY-burst coalescing window (same rationale/value as shogun-desktop).
 pub(crate) const FRAME_COALESCE: Duration = Duration::from_millis(8);
 
@@ -222,15 +233,26 @@ impl TabsWindow {
 
     /// Close the active tab; closing the last one closes the window.
     fn close_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs.is_empty() {
-            window.remove_window();
+        self.close_at(self.active, window, cx);
+    }
+
+    /// Close the tab at `ix` (tab-strip ✕); closing the last one closes the
+    /// window.
+    fn close_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix >= self.tabs.len() {
+            if self.tabs.is_empty() {
+                window.remove_window();
+            }
             return;
         }
-        let entry = self.tabs.remove(self.active);
+        let entry = self.tabs.remove(ix);
         entry.0.shutdown();
         if self.tabs.is_empty() {
             window.remove_window();
             return;
+        }
+        if ix < self.active {
+            self.active -= 1;
         }
         self.active = self.active.min(self.tabs.len() - 1);
         self.after_tab_change(cx);
@@ -310,8 +332,10 @@ impl Render for TabsWindow {
             .flex_row()
             .items_center()
             .gap_1()
-            .px_1()
-            .bg(rgb(0x101010))
+            .px_2()
+            .bg(rgb(CHROME_BG))
+            .border_b_1()
+            .border_color(gpui::rgba(HAIRLINE))
             .children(self.tabs.iter().enumerate().map(|(ix, entry)| {
                 let title = entry
                     .0
@@ -320,17 +344,57 @@ impl Render for TabsWindow {
                     .lock()
                     .clone()
                     .unwrap_or_else(|| format!("シェル {}", ix + 1));
-                let title: String = title.chars().take(24).collect();
+                let title: String = title.chars().take(20).collect();
                 let active = ix == self.active;
                 div()
                     .id(("tab", ix))
-                    .px_2()
-                    .py_0p5()
+                    .relative()
+                    .h(px(28.))
+                    .px_3()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
                     .rounded_md()
-                    .bg(if active { rgb(0x333333) } else { rgb(0x1B1B1B) })
-                    .text_color(if active { rgb(0xE8DCC8) } else { rgb(0x8A8578) })
+                    .when(active, |t| t.bg(gpui::rgba(TAB_ACTIVE)))
+                    .hover(|t| t.bg(gpui::rgba(TAB_HOVER)))
+                    .text_color(if active {
+                        rgb(TEXT_ACTIVE)
+                    } else {
+                        rgb(TEXT_MUTED)
+                    })
                     .text_size(px(12.))
                     .child(title)
+                    .child(
+                        // ✕ — quiet until hovered, like Files' tab close.
+                        div()
+                            .id(("tab-close", ix))
+                            .size(px(16.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .text_size(px(11.))
+                            .text_color(rgb(TEXT_MUTED))
+                            .hover(|t| t.bg(gpui::rgba(0xFFFFFF14)).text_color(rgb(TEXT_ACTIVE)))
+                            .child("✕")
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.close_at(ix, window, cx);
+                            })),
+                    )
+                    .child(
+                        // The accent shows up exactly once: under the active
+                        // tab.
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left_2()
+                            .right_2()
+                            .h(px(2.))
+                            .rounded_full()
+                            .when(active, |b| b.bg(rgb(ACCENT))),
+                    )
                     .on_click(cx.listener(move |this, _: &ClickEvent, _win, cx| {
                         this.switch_to(ix, cx);
                     }))
@@ -338,12 +402,14 @@ impl Render for TabsWindow {
             .child(
                 div()
                     .id("tab-new")
-                    .px_2()
-                    .py_0p5()
+                    .size(px(26.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .rounded_md()
-                    .bg(rgb(0x1B1B1B))
-                    .text_color(rgb(0x8A8578))
-                    .text_size(px(12.))
+                    .text_color(rgb(TEXT_MUTED))
+                    .text_size(px(15.))
+                    .hover(|t| t.bg(gpui::rgba(TAB_HOVER)).text_color(rgb(TEXT_ACTIVE)))
                     .child("+")
                     .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
                         this.new_tab(cx);
@@ -566,6 +632,40 @@ impl Render for TabsWindow {
     }
 }
 
+/// Dark titlebars for every window of this process (Files direction: the
+/// native white bar clashes with the dark chrome). DWM attribute only —
+/// no gpui changes.
+#[cfg(windows)]
+fn apply_dark_titlebars() {
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId};
+    use windows::core::BOOL;
+    unsafe extern "system" fn apply(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        if pid == lparam.0 as u32 {
+            let dark: i32 = 1;
+            unsafe {
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    &raw const dark as *const _,
+                    std::mem::size_of::<i32>() as u32,
+                );
+            }
+        }
+        BOOL(1)
+    }
+    unsafe {
+        let _ = EnumWindows(Some(apply), LPARAM(GetCurrentProcessId() as isize));
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_dark_titlebars() {}
+
 /// Open a tab-group window hosting `initial` and register it for merge-all
 /// and release cleanup.
 fn open_tabs_window(cx: &mut App, initial: Vec<TabEntry>) {
@@ -596,6 +696,7 @@ fn open_tabs_window(cx: &mut App, initial: Vec<TabEntry>) {
         }
     })
     .detach();
+    apply_dark_titlebars();
 }
 
 fn main() {

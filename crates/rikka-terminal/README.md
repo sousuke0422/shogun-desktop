@@ -44,6 +44,11 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
 - コピー: Ctrl+Shift+C / Ctrl+Insert、ペースト: Ctrl+Shift+V / Shift+Insert
 - Shift+PageUp/PageDown で履歴ページング
 - フォントは Consolas（システム解決・CJK は DirectWrite fallback 任せ）
+- **UI の方向性 = Files (files.community) 系のソフト Fluent**: 低コントラストの
+  レイヤ面（白 8〜12% オーバーレイ）・角丸ピルタブ＋hover・アクセントは
+  アクティブタブ下の 2px バーのみ・ヘアライン境界・DWM 暗色タイトルバー。
+  次段候補: タブのタイトルバー統合（appears_transparent + ドラッグ領域）・
+  mica/acrylic・chrome 書体の Segoe UI Variable 化
 
 ## 非目標（プロトタイプでは持たない）
 
