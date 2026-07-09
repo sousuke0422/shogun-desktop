@@ -75,7 +75,8 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
 
 ## wt 互換 CLI（`rt`）
 
-`rt.exe`（`rikka-terminal.exe` の別名 bin・同一バイナリ）は Windows Terminal の
+`rt.exe` は**薄いランチャー**（隣の `rikka-terminal.exe` へ argv を横流しして
+即終了・パースは本体側 `src/cli.rs`）。Windows Terminal の
 `wt` コマンドライン文法のサブセットを実装する（parser: `src/cli.rs`・ユニット
 テスト付き。エラーと `--help` は GUI サブシステムのためメッセージボックス表示）。
 
