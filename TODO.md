@@ -245,13 +245,17 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       focus_in/out から focus/blur のみ配線（gpui 無改変・既定挙動不変）。
       **COM 配管は headless smoke で実証済**（`cargo run --example tsf_smoke`
       → 全段 OK・sink advised: yes = TSF が store に実際に食いつく）。
-      **検証法**: `$env:SHOGUN_TSF="1"`（＋`$env:SHOGUN_TSF_LOG="C:\...\tsf.log"`
-      推奨）で起動→shell 窓 or 本窓ターミナルタブ focus→半角/全角で
-      タスクバー表示が追従するか（ゲート下は入力が死ぬのが正常 = focus-only）。
-      追従すれば M1b: ITfContextOwnerCompositionSink で preedit/commit 判別
-      → preedit は ime.marked 相当へ・commit は PTY 送信・sync() drain 配線・
-      本窓タブへも展開・RequestLock 再入 upgrade (TS_E_SYNCHRONOUS/TS_S_ASYNC)
-      対応。Linux(IBus)/mac は同 trait の別 backend として後日ラウンド可能
+      **M1a 実機検証済（2026-07-09・自律 e2e）**: `e2e/tsf-indicator-test.ps1`
+      （合成クリック＋半角/全角＋トレイ物理座標スクショ。4K@200% は
+      SetProcessDPIAware 必須 — 非 DPI-aware pwsh の座標仮想化でクロップが
+      ズレる罠を踏んだ）→ **タスクバー表示が A→あ→A とトグルに完全追従**。
+      TSF ログも focus→AdviseSink→RequestLock(0x6)→blur の全経路を確認。
+      仮説確定: 実 text store 付き文書を SetFocus すればインジケータは追従する。
+      残 = M1b: ITfContextOwnerCompositionSink で preedit/commit 判別
+      → preedit は ime.marked 相当へ・commit は PTY 送信・drain/wake 配線・
+      RequestLock 再入 upgrade (TS_E_SYNCHRONOUS/TS_S_ASYNC) 対応・
+      GetTextExt へ実 caret 供給（候補窓位置）。ゲート既定 off は M1b 完了まで
+      維持。Linux(IBus)/mac は同 trait の別 backend として後日ラウンド可能
 - [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）
