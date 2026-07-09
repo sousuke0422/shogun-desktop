@@ -281,6 +281,17 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       Beam・Underline=既定 fg の細 quad（太さ cw/8）/ Hidden=無描画。
       HollowBlock は engine が focus を持たないため Block 扱い。blink 位相は
       未対応（形状のみ・steady 描画）。`e2e/cursor-shape-test.ps1`
+- [x] **OSC 10/11/4 色クエリ応答＋XTWINOPS CSI 14 t — 2026-07-09 実装**。
+      vim の背景自動判別（OSC 11 ?）と imgcat 系のピクセル寸法取得が成立。
+      解決順 = OSC-set された palette entry > 標準 256 palette > renderer 既定
+      （fg #E8DCC8 / bg #1A1A1A・cursor は fg）。CSI 14 t はセル数×renderer
+      セル寸（TIOCGWINSZ と同じ数字）。handler スレッドへ term を OnceLock/Weak
+      遅延バインド（thread が term より先に要るため）。CSI 18 t は既存 PtyWrite
+      経由で動作済みだった。回帰テスト 2 本
+- [x] **カーソル blink 位相 — 2026-07-09 実装**（DECSCUSR 1/3/5・DECSET ?12 →
+      cursor_style.blinking 単一ソース）。SGR blink と同じ 600ms 位相・300ms
+      refresh timer に相乗り。?25l 中は flag を落として timer 空回りを防止。
+      既定（DECSCUSR 0/2）は従来どおり steady。回帰テスト 1 本
 - [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）

@@ -949,7 +949,7 @@ pub fn render_grid(
     // SGR blink phase from the wall clock (600ms on / 600ms off), so the
     // renderer stays stateless. The refresh task repaints on a timer while
     // the snapshot carries blink cells (see GridSnapshot::has_blink).
-    let blink_off = snap.has_blink
+    let blink_off = (snap.has_blink || snap.cursor_blink)
         && std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| (d.as_millis() / 600) % 2 == 1)
@@ -960,16 +960,17 @@ pub fn render_grid(
         .children(snap.cells.iter().enumerate().map(move |(row_idx, row)| {
             // Reverse-video marking is the Block presentation only; Beam /
             // Underline draw a thin quad instead (below), and Hidden (?25l)
-            // draws nothing.
-            let cur_col = if row_idx == cursor_row && cursor_shape == crate::CursorShapeKind::Block
-            {
+            // draws nothing. A blinking cursor (DECSCUSR 1/3/5, DECSET 12)
+            // skips its off phase entirely — same clock as SGR blink.
+            let cursor_here = row_idx == cursor_row && !(snap.cursor_blink && blink_off);
+            let cur_col = if cursor_here && cursor_shape == crate::CursorShapeKind::Block {
                 Some(cursor_col)
             } else {
                 None
             };
             // Thin-cursor overlay for this row (beam = vertical bar at the
             // cell's left edge, underline = bar along its bottom).
-            let thin_cursor = if row_idx == cursor_row {
+            let thin_cursor = if cursor_here {
                 match cursor_shape {
                     crate::CursorShapeKind::Beam => Some((cursor_col, true)),
                     crate::CursorShapeKind::Underline => Some((cursor_col, false)),

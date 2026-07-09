@@ -223,7 +223,10 @@ impl ShellWindow {
             loop {
                 // Race the PTY wakeup against the SGR-blink phase timer while
                 // blink cells are on screen (see ShogunWindow's refresh task).
-                let blink = snapshot.lock().has_blink;
+                let blink = {
+                    let s = snapshot.lock();
+                    s.has_blink || s.cursor_blink
+                };
                 if blink {
                     let timer = cx.background_executor().timer(Duration::from_millis(300));
                     futures::future::select(Box::pin(notify.notified()), Box::pin(timer)).await;
