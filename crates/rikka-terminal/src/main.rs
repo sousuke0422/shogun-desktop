@@ -12,6 +12,7 @@
 //! Shift+PageUp/PageDown pages the scrollback.
 
 mod hub;
+mod tsf;
 
 use std::io::{Read, Write};
 use std::sync::{Arc, atomic::Ordering};
@@ -19,9 +20,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use gpui::{
-    App, Application, Bounds, ClickEvent, Context, ElementInputHandler, Entity, FocusHandle,
-    KeyDownEvent, ScrollDelta, ScrollWheelEvent, TitlebarOptions, Window, WindowBounds,
-    WindowControlArea, WindowOptions, canvas, div, prelude::*, px, rgb, size,
+    App, Application, Bounds, ClickEvent, Context, ElementInputHandler, Entity,
+    EntityInputHandler as _, FocusHandle, KeyDownEvent, ScrollDelta, ScrollWheelEvent,
+    TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions, canvas, div,
+    prelude::*, px, rgb, size,
 };
 use parking_lot::FairMutex;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -209,6 +211,28 @@ impl TabsWindow {
         cx.observe(&ime, |_, _, cx| cx.notify()).detach();
         let terminal_focus = cx.focus_handle();
         window.focus(&terminal_focus);
+        // TSF (always on — see `tsf`): bind the store while our terminal
+        // input owns focus. The waker only schedules a notify; render then
+        // drains the queued IME events.
+        let tsf_view = cx.weak_entity();
+        let tsf_async = cx.to_async();
+        window
+            .on_focus_in(&terminal_focus, cx, move |_, _| {
+                let view = tsf_view.clone();
+                let async_cx = tsf_async.clone();
+                tsf::on_input_focus(Box::new(move || {
+                    let view = view.clone();
+                    async_cx
+                        .spawn(async move |cx| {
+                            let _ = view.update(cx, |_, cx| cx.notify());
+                        })
+                        .detach();
+                }));
+            })
+            .detach();
+        window
+            .on_focus_out(&terminal_focus, cx, |_, _, _| tsf::on_input_blur())
+            .detach();
         let mut this = Self {
             tabs: Vec::new(),
             active: 0,
@@ -365,6 +389,32 @@ fn caption_button(glyph: &'static str, area: WindowControlArea) -> impl IntoElem
 
 impl Render for TabsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // TSF: apply queued IME events while our terminal input owns focus —
+        // preedit renders inline via ime.marked, commits go to the active
+        // tab's PTY.
+        if self.terminal_focus.is_focused(window) {
+            for ev in tsf::drain() {
+                match ev {
+                    rikka_terminal_gpui_ime::ImeEvent::Preedit(s) => {
+                        let marked = (!s.is_empty()).then_some(s);
+                        self.ime.update(cx, |ime, cx| {
+                            ime.marked = marked;
+                            cx.notify();
+                        });
+                    }
+                    rikka_terminal_gpui_ime::ImeEvent::Commit(s) => {
+                        if let Some(session) = self.active_session() {
+                            session.send_bytes(s.as_bytes());
+                        }
+                        self.ime.update(cx, |ime, cx| {
+                            ime.marked = None;
+                            cx.notify();
+                        });
+                    }
+                }
+            }
+        }
+
         // OSC 0/2 of the active tab → OS window title (deduped).
         if let Some(s) = self.active_session() {
             let title = s.title.lock().clone();
@@ -569,6 +619,29 @@ impl Render for TabsWindow {
                                         ElementInputHandler::new(bounds, ime.clone()),
                                         cx,
                                     );
+                                    // TSF: feed the caret rect (client
+                                    // physical px) so the IME candidate
+                                    // window opens at the terminal cursor.
+                                    if focus_handle.is_focused(window) {
+                                        let caret = ime.update(cx, |ime, cx| {
+                                            ime.bounds_for_range(0..0, bounds, window, cx)
+                                        });
+                                        let scale = window.scale_factor();
+                                        tsf::set_caret(caret.map(|b| {
+                                            rikka_terminal_gpui_ime::CaretRect {
+                                                left: (f32::from(b.origin.x) * scale) as i32,
+                                                top: (f32::from(b.origin.y) * scale) as i32,
+                                                right: ((f32::from(b.origin.x)
+                                                    + f32::from(b.size.width))
+                                                    * scale)
+                                                    as i32,
+                                                bottom: ((f32::from(b.origin.y)
+                                                    + f32::from(b.size.height))
+                                                    * scale)
+                                                    as i32,
+                                            }
+                                        }));
+                                    }
                                     selection::register_mouse_selection(
                                         window,
                                         view.clone(),
@@ -581,7 +654,14 @@ impl Render for TabsWindow {
                                     );
                                 },
                             )
+                            // Pin to the relative wrapper's origin: a bare
+                            // `absolute()` has auto insets and falls back to
+                            // the static position BELOW the grid sibling,
+                            // which breaks the bounds every listener checks
+                            // (selection dead, IME caret 400px off).
                             .absolute()
+                            .top_0()
+                            .left_0()
                             .size_full(),
                         ),
                 )

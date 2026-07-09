@@ -38,7 +38,11 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
   `e2e/rikka-tabs-stress.ps1`（分離結合5連打+生存タイプ）で回帰固定。
   既知: gpui-Windows は Ctrl+M を配達しない（^M=CR 遺産）ため merge は A
 - 1 窓 1 ペイン×タブ。pwsh.exe（無ければ powershell/cmd）を ConPTY で起動
-- エンジン直結: 描画・スクロールバック・選択+コピー・IME・
+- **TSF 常時 ON**: 本プロダクトが rikka-terminal-gpui-ime の soak 車両
+  （shogun-desktop は SHOGUN_TSF ゲート維持）。タスクバー あ/A 追従・
+  preedit インライン・候補ウィンドウはカーソル位置・確定→PTY。
+  e2e=`rikka-tsf-typing.ps1`（preedit/候補リスト/確定の3段スクショ）
+- エンジン直結: 描画・スクロールバック・選択+コピー（e2e=`rikka-select-copy.ps1`）・IME・
   キー（kitty keyboard 含む）・ホイール（レポーティング/alt-scroll/履歴）・
   OSC タイトル → 窓タイトル
 - コピー: Ctrl+Shift+C / Ctrl+Insert、ペースト: Ctrl+Shift+V / Shift+Insert

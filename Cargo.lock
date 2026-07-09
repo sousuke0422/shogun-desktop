@@ -5550,6 +5550,7 @@ dependencies = [
  "parking_lot",
  "portable-pty",
  "rikka-terminal-core",
+ "rikka-terminal-gpui-ime",
  "windows 0.61.3",
 ]
 

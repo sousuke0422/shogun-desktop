@@ -14,6 +14,7 @@ publish = false
 
 [dependencies]
 rikka-terminal-core = { path = "../rikka-terminal-core" }
+rikka-terminal-gpui-ime = { path = "../rikka-terminal-gpui-ime" }
 gpui = "0.2.2"
 gpui-component = "0.5.1"
 portable-pty = "0.9"
