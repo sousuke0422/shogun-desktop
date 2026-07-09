@@ -139,12 +139,14 @@ struct ActiveDocument {
 }
 
 pub struct WindowsTsf {
-    _apartment: CoApartment,
     thread_mgr: ITfThreadMgr,
     client_id: u32,
     document_mgr: ITfDocumentMgr,
     document: Option<ActiveDocument>,
     state: SharedHandle,
+    /// Declared last: struct fields drop in declaration order, and the COM
+    /// interface releases above must happen before CoUninitialize.
+    _apartment: CoApartment,
 }
 
 impl WindowsTsf {
