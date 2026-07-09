@@ -136,12 +136,6 @@ pub struct ShogunWindow {
     pub multiagent_error: Option<String>,
     pub shogun_scroll_handle: ScrollHandle,
     pub multiagent_scroll_handle: ScrollHandle,
-    pub(crate) shogun_scroll_locked: bool,
-    pub(crate) multiagent_scroll_locked: bool,
-    pub(crate) shogun_prev_offset_y: f32,
-    pub(crate) multiagent_prev_offset_y: f32,
-    shogun_last_gen: u64,
-    multiagent_last_gen: u64,
     status_message: SharedString,
     /// Last known terminal size, used to detect viewport changes and resize sessions.
     terminal_cols: u16,
@@ -249,12 +243,6 @@ impl ShogunWindow {
             multiagent_error: None,
             shogun_scroll_handle: ScrollHandle::default(),
             multiagent_scroll_handle: ScrollHandle::default(),
-            shogun_scroll_locked: false,
-            multiagent_scroll_locked: false,
-            shogun_prev_offset_y: 0.0,
-            multiagent_prev_offset_y: 0.0,
-            shogun_last_gen: 0,
-            multiagent_last_gen: 0,
             status_message: SharedString::default(),
             terminal_cols: 0,
             terminal_rows: 0,
@@ -706,21 +694,14 @@ impl ShogunWindow {
                         }
                     }
                     // Blink-only ticks repaint but must not touch the scroll
-                    // position — that would fight the user's scrollback.
+                    // position. On data changes keep the pane pinned to its
+                    // bottom — normally a no-op, since the grid is PTY-fit
+                    // sized and never overflows; it only matters transiently
+                    // (first paint before the fit lands). The old
+                    // autoscroll-lock bookkeeping here was inert for the same
+                    // reason (see terminal_tab's wheel handler).
                     if data_changed {
-                        if is_shogun {
-                            view.shogun_last_gen = cur;
-                            if !view.shogun_scroll_locked {
-                                scroll.scroll_to_bottom();
-                            }
-                            view.shogun_prev_offset_y = scroll.offset().y / px(1.);
-                        } else {
-                            view.multiagent_last_gen = cur;
-                            if !view.multiagent_scroll_locked {
-                                scroll.scroll_to_bottom();
-                            }
-                            view.multiagent_prev_offset_y = scroll.offset().y / px(1.);
-                        }
+                        scroll.scroll_to_bottom();
                     }
                     cx.notify();
                     true
@@ -740,24 +721,8 @@ impl ShogunWindow {
     pub(crate) fn handle_terminal_key(
         &mut self,
         event: &KeyDownEvent,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> bool {
-        if event.keystroke.key.as_str() == "end" {
-            match self.selected_tab {
-                0 => {
-                    self.shogun_scroll_locked = false;
-                    self.shogun_scroll_handle.scroll_to_bottom();
-                }
-                5 => {
-                    self.multiagent_scroll_locked = false;
-                    self.multiagent_scroll_handle.scroll_to_bottom();
-                }
-                _ => {}
-            }
-            cx.notify();
-            return true;
-        }
-
         // key_to_pty_bytes returns None for keys that must be left to the
         // platform text-input path (WM_CHAR / IME → TerminalIme handler).
         // The term mode selects the encoding (legacy vs kitty protocol).
@@ -1347,8 +1312,6 @@ pub fn render_progress_bar(
 
 impl Render for ShogunWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _ = (self.shogun_last_gen, self.multiagent_last_gen);
-
         // ── PTY resize on viewport change ─────────────────────────────────────
         // Calculate the terminal dimensions from the current viewport.
         // Chrome heights: jinmaku status bar (32) + key buttons (32) + tab bar (48) = 112 px.

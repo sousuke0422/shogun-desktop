@@ -9,20 +9,11 @@ use crate::window::{
 };
 use gpui::{
     App, Context, ElementInputHandler, Entity, FocusHandle, IntoElement, KeyDownEvent,
-    ParentElement, ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled,
-    canvas, div, prelude::*, px,
+    ParentElement, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, canvas, div,
+    prelude::*, px,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::v_flex;
-
-const SCROLL_OFFSET_EPSILON: f32 = 0.01;
-
-fn scroll_delta_y(event: &ScrollWheelEvent) -> f32 {
-    match &event.delta {
-        ScrollDelta::Pixels(p) => p.y / px(1.),
-        ScrollDelta::Lines(l) => l.y,
-    }
-}
 
 pub fn render_terminal_tab(
     snap: &GridSnapshot,
@@ -117,36 +108,16 @@ pub fn render_terminal_tab(
                     // (tmux `mouse on` → mouse reporting, or alternate
                     // scroll), forward it to the PTY — tmux then scrolls its
                     // *server-side* history (copy-mode), which is where the
-                    // scrollback actually lives for these panes. Only a
-                    // local wheel falls through to the autoscroll-lock
-                    // bookkeeping below.
+                    // scrollback actually lives for these panes. A wheel the
+                    // PTY doesn't take has nothing local to move: the pane
+                    // renders only the visible grid (display_iter) and the
+                    // PTY is resized to fit, so the container never
+                    // overflows. (The autoscroll-lock bookkeeping that used
+                    // to live here predated PTY-fit sizing and was inert —
+                    // and its wheel-direction test was inverted to boot.)
                     if this.wheel_to_pty_for_pane(is_shogun, event, cw, ch) {
                         cx.stop_propagation();
-                        return;
                     }
-                    let delta_y = scroll_delta_y(event);
-                    if delta_y < 0.0 {
-                        if is_shogun {
-                            this.shogun_scroll_locked = true;
-                        } else {
-                            this.multiagent_scroll_locked = true;
-                        }
-                    } else if delta_y > 0.0 {
-                        let cur_y = scroll_handle.offset().y / px(1.);
-                        let prev_y = if is_shogun {
-                            this.shogun_prev_offset_y
-                        } else {
-                            this.multiagent_prev_offset_y
-                        };
-                        if (cur_y - prev_y).abs() < SCROLL_OFFSET_EPSILON {
-                            if is_shogun {
-                                this.shogun_scroll_locked = false;
-                            } else {
-                                this.multiagent_scroll_locked = false;
-                            }
-                        }
-                    }
-                    cx.notify();
                 }),
             )
             .p_1()
