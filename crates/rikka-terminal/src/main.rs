@@ -63,6 +63,34 @@ const DIVIDER: u32 = 0xFFFFFF15;
 /// PTY-burst coalescing window (same rationale/value as shogun-desktop).
 pub(crate) const FRAME_COALESCE: Duration = Duration::from_millis(8);
 
+/// RIKKA_ACRYLIC=1 → system acrylic blur behind the window, with the chrome
+/// and pane surround going translucent. The grid itself stays opaque (the
+/// engine paints cell backgrounds) — blur belongs to the chrome, not under
+/// the text.
+fn acrylic() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("RIKKA_ACRYLIC").is_ok_and(|v| v != "0"))
+}
+
+/// Strip fill: solid chrome, or a 72% tint over acrylic.
+fn chrome_fill() -> gpui::Rgba {
+    if acrylic() {
+        gpui::rgba(0x161618B8)
+    } else {
+        rgb(CHROME_BG)
+    }
+}
+
+/// Pane surround fill (also the selected tab, which merges with it): solid,
+/// or a 78% tint over acrylic.
+fn pane_fill() -> gpui::Rgba {
+    if acrylic() {
+        gpui::rgba(0x1A1A1AC8)
+    } else {
+        rgb(PANE_BG)
+    }
+}
+
 // ── local PTY plumbing ───────────────────────────────────────────────────────
 
 /// Newtype asserting `Box<dyn MasterPty>` is `Send + Sync` — same reasoning as
@@ -379,7 +407,7 @@ impl Render for TabsWindow {
             .flex_row()
             .items_end()
             .pl_2()
-            .bg(rgb(CHROME_BG))
+            .bg(chrome_fill())
             .children(self.tabs.iter().enumerate().flat_map(|(ix, entry)| {
                 let title = entry
                     .0
@@ -416,7 +444,7 @@ impl Render for TabsWindow {
                     .text_size(px(12.))
                     .map(|t| {
                         if active {
-                            t.bg(rgb(PANE_BG)).text_color(rgb(TEXT_PRIMARY))
+                            t.bg(pane_fill()).text_color(rgb(TEXT_PRIMARY))
                         } else {
                             t.text_color(gpui::rgba(TEXT_SECONDARY))
                                 .hover(|t| t.bg(gpui::rgba(TAB_HOVER)))
@@ -570,7 +598,7 @@ impl Render for TabsWindow {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(PANE_BG))
+            .bg(pane_fill())
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
                 let m = &ks.modifiers;
@@ -769,6 +797,16 @@ fn open_tabs_window(cx: &mut App, initial: Vec<TabEntry>) {
                     appears_transparent: true,
                     traffic_light_position: None,
                 }),
+                // gpui maps Blurred to ACCENT_ENABLE_ACRYLICBLURBEHIND
+                // (SetWindowCompositionAttribute, Win10 1809+) — the same
+                // Win10-era acrylic Files' setting uses. Opt-in until the
+                // known drag-latency cost of that API is judged acceptable;
+                // a settings file is a P1 item.
+                window_background: if acrylic() {
+                    gpui::WindowBackgroundAppearance::Blurred
+                } else {
+                    gpui::WindowBackgroundAppearance::Opaque
+                },
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| TabsWindow::new(window, cx, initial)),

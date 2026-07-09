@@ -55,8 +55,16 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
   click リスナー無し）。Drag はタブの親でなく **兄弟**に張る — NC hit-test は
   点下の全 hitbox を見るため、親に張るとタブクリックが HTCAPTION に食われる。
   最大化時のフレーム食い込みは gpui の NCCALCSIZE 側で補正済み。
-- UI TODO: mica/acrylic バックドロップ（**Win10 ESU では動作不明** — Win11 実機
-  が来たら検証）・chrome 書体の Segoe UI Variable 化・システムアクセント色追従
+- **アクリル対応済み（opt-in）**: `RIKKA_ACRYLIC=1` で gpui の
+  `WindowBackgroundAppearance::Blurred`（= SetWindowCompositionAttribute
+  ACCENT_ENABLE_ACRYLICBLURBEHIND・Win10 1809+）を有効化し、chrome と
+  ペイン面が 72〜78% ティントの半透明になる（Win10 ESU 実機で透過確認済み）。
+  既定 OFF の理由 = この Win10 世代 API はウィンドウドラッグ時の遅延が既知
+  （wt はドラッグ中だけアクリルを切る対策をしている）。採否と既定値は
+  設定ファイル（P1）に吸収する。
+- UI TODO: mica バックドロップ（Win11 専用 — 実機が来たら DWMWA_SYSTEMBACKDROP_TYPE で）・
+  chrome 書体の Segoe UI Variable 化・システムアクセント色追従・
+  タブ close の hover-reveal（WinUI CloseButtonOverlayMode=Auto 相当）
 
 ## 非目標（プロトタイプでは持たない）
 
