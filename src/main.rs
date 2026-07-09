@@ -1,3 +1,9 @@
+// Release builds are GUI-subsystem: no console window tags along (and
+// closing it can no longer kill the app with it). Debug builds keep the
+// console for printf-style work; diagnostics in release go to the panic log
+// and SHOGUN_*_LOG files.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod ansi;
 mod app;
 mod image_upload;

@@ -388,12 +388,18 @@ impl NativeSshClient {
                 .stderr(Stdio::null())
                 .spawn();
             #[cfg(windows)]
-            let child_result = tokio::process::Command::new("cmd")
-                .args(["/c", &expanded])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn();
+            let child_result = {
+                // CREATE_NO_WINDOW: with the GUI subsystem the app has no
+                // console for the child to inherit, and a bare `cmd` spawn
+                // would pop a visible console window per ProxyCommand.
+                let mut c = tokio::process::Command::new("cmd");
+                c.args(["/c", &expanded])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .creation_flags(0x08000000);
+                c.spawn()
+            };
 
             let mut child = child_result.context("ProxyCommand の起動に失敗しました")?;
             let stdin = child.stdin.take().context("ProxyCommand stdin 取得失敗")?;

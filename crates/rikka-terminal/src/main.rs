@@ -11,6 +11,11 @@
 //! Ctrl+Shift+C/V (and Ctrl/Shift+Insert) copy/paste;
 //! Shift+PageUp/PageDown pages the scrollback.
 
+// Release builds are GUI-subsystem: no console window tags along (and
+// closing it can no longer kill the app with it). Debug builds keep the
+// console for printf-style work; release diagnostics go to the panic log.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod hub;
 mod tsf;
 
