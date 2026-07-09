@@ -33,6 +33,7 @@ public class E2E {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int x, int y, int w, int h, bool repaint);
     [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
@@ -97,10 +98,6 @@ function Click([int]$x, [int]$y) {
     Start-Sleep -Milliseconds 200
 }
 
-# Physical px at 200% scale: strip 38 logical = 76, buttons 46 logical = 92.
-$stripMidY = 38
-$btnW = 92
-
 $proc = Start-Process -FilePath $ExePath -PassThru
 Write-Output "PID=$($proc.Id)"
 Start-Sleep -Seconds $StartWaitSec
@@ -111,6 +108,13 @@ if ($hwnd -eq [IntPtr]::Zero) { Write-Output 'FAIL: window not found'; exit 1 }
 Start-Sleep -Milliseconds 400
 [E2E]::SetForegroundWindow($hwnd) | Out-Null
 Start-Sleep -Milliseconds 600
+
+# Physical px from the window's ACTUAL DPI (the window may land on any
+# monitor; 200%-hardcoded coordinates miss buttons on a 150% display).
+$scale = [E2E]::GetDpiForWindow($hwnd) / 96.0
+Write-Output ("scale={0}" -f $scale)
+$stripMidY = [int](19 * $scale)   # middle of the 40-logical strip
+$btnW = [int](46 * $scale)        # caption button width
 
 # -- 1. drag the empty strip (single tab -> plenty of filler) ---------------
 $r0 = Get-Rect $hwnd

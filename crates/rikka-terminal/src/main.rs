@@ -38,19 +38,28 @@ use rikka_terminal_core::{PtyResizer, ReportMods, TerminalSession, xtversion};
 const MONO_FONT: &str = "Consolas";
 /// Pane padding (logical px); half on each side via `.p_1()`.
 const PAD: f32 = 8.0;
-/// Tab strip height (logical px).
-const TAB_STRIP_H: f32 = 38.0;
-// ── chrome palette: soft-fluent, Files-app direction ─────────────────────────
-// The chrome sits a hair darker/cooler than the terminal surface; state
-// changes are low-contrast white overlays; the accent appears only as the
-// active tab's underline.
+/// Tab strip height (logical px): WinUI TabView geometry — 8px breathing room
+/// on top (TabViewHeaderPadding) + 32px tab zone (TabViewItemMinHeight).
+const TAB_STRIP_H: f32 = 40.0;
+const TAB_H: f32 = 32.0;
+// ── chrome palette: Files (files.community) = WinUI TabView restyled ─────────
+// Tokens lifted from TabView_themeresources.xaml / Common_themeresources_any
+// (both MIT), dark theme. The one deliberate deviation: the selected tab's
+// background is our pane surface instead of SolidBackgroundFillColorTertiary,
+// because the whole point of that brush is "selected tab merges with the
+// surface below it" and our surface below is the pane.
 const CHROME_BG: u32 = 0x161618;
-const HAIRLINE: u32 = 0xFFFFFF0A;
-const TAB_HOVER: u32 = 0xFFFFFF0A;
-const TAB_ACTIVE: u32 = 0xFFFFFF14;
-const TEXT_ACTIVE: u32 = 0xE8DCC8;
-const TEXT_MUTED: u32 = 0x8F8B80;
-const ACCENT: u32 = 0x60CDFF;
+/// Pane surface; the selected tab shares it (the WinUI merge illusion).
+const PANE_BG: u32 = 0x1A1A1A;
+/// LayerOnMicaBaseAltFillColorSecondary — unselected tab hover.
+const TAB_HOVER: u32 = 0xFFFFFF0F;
+/// SubtleFillColorSecondary — small button (close / add / caption) hover.
+const SUBTLE_HOVER: u32 = 0xFFFFFF0F;
+/// TextFillColorPrimary / TextFillColorSecondary.
+const TEXT_PRIMARY: u32 = 0xFFFFFF;
+const TEXT_SECONDARY: u32 = 0xFFFFFFC5;
+/// DividerStrokeColorDefault — the 1px separators between unselected tabs.
+const DIVIDER: u32 = 0xFFFFFF15;
 /// PTY-burst coalescing window (same rationale/value as shogun-desktop).
 pub(crate) const FRAME_COALESCE: Duration = Duration::from_millis(8);
 
@@ -312,14 +321,14 @@ fn caption_button(glyph: &'static str, area: WindowControlArea) -> impl IntoElem
         // the system caption icons (what Files/wt render).
         .font_family("Segoe MDL2 Assets")
         .text_size(px(10.))
-        .text_color(rgb(TEXT_MUTED))
+        .text_color(gpui::rgba(TEXT_SECONDARY))
         .hover(move |t| {
             if close {
                 // The one non-monochrome hover in the chrome: the standard
                 // Windows close red.
-                t.bg(gpui::rgba(0xC42B1CFF)).text_color(rgb(0xFFFFFF))
+                t.bg(gpui::rgba(0xC42B1CFF)).text_color(rgb(TEXT_PRIMARY))
             } else {
-                t.bg(gpui::rgba(TAB_HOVER)).text_color(rgb(TEXT_ACTIVE))
+                t.bg(gpui::rgba(SUBTLE_HOVER)).text_color(rgb(TEXT_PRIMARY))
             }
         })
         .window_control_area(area)
@@ -356,20 +365,22 @@ impl Render for TabsWindow {
         }
 
         // ── tab strip = the titlebar (appears_transparent hides the native
-        // one; Files integrates tabs the same way) ─────────────────────────
+        // one; Files integrates tabs the same way). Geometry and states are
+        // WinUI TabView's: 32px tabs bottom-aligned under 8px of breathing
+        // room, top-rounded 8px, the selected tab merging seamlessly into
+        // the pane surface below (no accent, no bottom border), and 1px
+        // separators between unselected neighbors. ─────────────────────────
         let maximized = window.is_maximized();
+        let active_ix = self.active;
         let strip = div()
             .w_full()
             .h(px(TAB_STRIP_H))
             .flex()
             .flex_row()
-            .items_center()
-            .gap_1()
+            .items_end()
             .pl_2()
             .bg(rgb(CHROME_BG))
-            .border_b_1()
-            .border_color(gpui::rgba(HAIRLINE))
-            .children(self.tabs.iter().enumerate().map(|(ix, entry)| {
+            .children(self.tabs.iter().enumerate().flat_map(|(ix, entry)| {
                 let title = entry
                     .0
                     .session
@@ -378,72 +389,93 @@ impl Render for TabsWindow {
                     .clone()
                     .unwrap_or_else(|| format!("シェル {}", ix + 1));
                 let title: String = title.chars().take(20).collect();
-                let active = ix == self.active;
-                div()
+                let active = ix == active_ix;
+                // Separator to the left of this tab — hidden next to the
+                // selected tab, whose silhouette does the separating.
+                let sep = (ix > 0 && !active && ix - 1 != active_ix).then(|| {
+                    div()
+                        .w(px(1.))
+                        .h(px(16.))
+                        .mb(px((TAB_H - 16.0) / 2.0))
+                        .bg(gpui::rgba(DIVIDER))
+                        .into_any_element()
+                });
+                let tab = div()
                     .id(("tab", ix))
-                    .relative()
-                    .h(px(28.))
-                    .px_3()
+                    .h(px(TAB_H))
+                    .min_w(px(100.))
+                    .max_w(px(240.))
+                    .pl(px(8.))
+                    .pr(px(4.))
+                    .py(px(3.))
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_2()
-                    .rounded_md()
-                    .when(active, |t| t.bg(gpui::rgba(TAB_ACTIVE)))
-                    .hover(|t| t.bg(gpui::rgba(TAB_HOVER)))
-                    .text_color(if active {
-                        rgb(TEXT_ACTIVE)
-                    } else {
-                        rgb(TEXT_MUTED)
-                    })
+                    .rounded_tl(px(8.))
+                    .rounded_tr(px(8.))
                     .text_size(px(12.))
-                    .child(title)
+                    .map(|t| {
+                        if active {
+                            t.bg(rgb(PANE_BG)).text_color(rgb(TEXT_PRIMARY))
+                        } else {
+                            t.text_color(gpui::rgba(TEXT_SECONDARY))
+                                .hover(|t| t.bg(gpui::rgba(TAB_HOVER)))
+                        }
+                    })
                     .child(
-                        // ✕ — quiet until hovered, like Files' tab close.
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(title),
+                    )
+                    .child(
+                        // WinUI tab close: 32×24 hit target, ControlCornerRadius,
+                        // E711 glyph at 12px.
                         div()
                             .id(("tab-close", ix))
-                            .size(px(16.))
+                            .w(px(32.))
+                            .h(px(24.))
+                            .ml(px(4.))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded_full()
-                            .text_size(px(11.))
-                            .text_color(rgb(TEXT_MUTED))
-                            .hover(|t| t.bg(gpui::rgba(0xFFFFFF14)).text_color(rgb(TEXT_ACTIVE)))
-                            .child("✕")
+                            .rounded(px(4.))
+                            .font_family("Segoe MDL2 Assets")
+                            .text_size(px(12.))
+                            .text_color(gpui::rgba(TEXT_SECONDARY))
+                            .hover(|t| t.bg(gpui::rgba(SUBTLE_HOVER)).text_color(rgb(TEXT_PRIMARY)))
+                            .child("\u{E711}")
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
                                 this.close_at(ix, window, cx);
                             })),
                     )
-                    .child(
-                        // The accent shows up exactly once: under the active
-                        // tab.
-                        div()
-                            .absolute()
-                            .bottom_0()
-                            .left_2()
-                            .right_2()
-                            .h(px(2.))
-                            .rounded_full()
-                            .when(active, |b| b.bg(rgb(ACCENT))),
-                    )
                     .on_click(cx.listener(move |this, _: &ClickEvent, _win, cx| {
                         this.switch_to(ix, cx);
                     }))
+                    .into_any_element();
+                sep.into_iter().chain(std::iter::once(tab))
             }))
             .child(
+                // WinUI add-tab button: 32×24, E710 at 12px, centered in the
+                // tab zone.
                 div()
                     .id("tab-new")
-                    .size(px(26.))
+                    .w(px(32.))
+                    .h(px(24.))
+                    .ml(px(4.))
+                    .mb(px((TAB_H - 24.0) / 2.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_md()
-                    .text_color(rgb(TEXT_MUTED))
-                    .text_size(px(15.))
-                    .hover(|t| t.bg(gpui::rgba(TAB_HOVER)).text_color(rgb(TEXT_ACTIVE)))
-                    .child("+")
+                    .rounded(px(4.))
+                    .font_family("Segoe MDL2 Assets")
+                    .text_size(px(12.))
+                    .text_color(gpui::rgba(TEXT_SECONDARY))
+                    .hover(|t| t.bg(gpui::rgba(SUBTLE_HOVER)).text_color(rgb(TEXT_PRIMARY)))
+                    .child("\u{E710}")
                     .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
                         this.new_tab(cx);
                     })),
@@ -538,7 +570,7 @@ impl Render for TabsWindow {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x1A1A1A))
+            .bg(rgb(PANE_BG))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
                 let m = &ks.modifiers;
