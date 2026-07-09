@@ -251,11 +251,18 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       ズレる罠を踏んだ）→ **タスクバー表示が A→あ→A とトグルに完全追従**。
       TSF ログも focus→AdviseSink→RequestLock(0x6)→blur の全経路を確認。
       仮説確定: 実 text store 付き文書を SetFocus すればインジケータは追従する。
-      残 = M1b: ITfContextOwnerCompositionSink で preedit/commit 判別
-      → preedit は ime.marked 相当へ・commit は PTY 送信・drain/wake 配線・
-      RequestLock 再入 upgrade (TS_E_SYNCHRONOUS/TS_S_ASYNC) 対応・
-      GetTextExt へ実 caret 供給（候補窓位置）。ゲート既定 off は M1b 完了まで
-      維持。Linux(IBus)/mac は同 trait の別 backend として後日ラウンド可能
+      **M1b 実装＋実機検証済（2026-07-09・自律 e2e）**: composition sink
+      （store と同一 COM object に多重 implement）で preedit/commit を判別、
+      Preedit→ime.marked（inline 描画）・Commit→focused pane の PTY・commit 後
+      文書リセット（drain 時 = lock 外で OnTextChange）・focus 時 waker（TSF
+      callback 内から foreground executor 経由で notify 予約）→render で drain
+      （blur で未 drain 破棄 = 誤 PTY 着弾防止）・RequestLock 再入 upgrade
+      (TS_E_SYNCHRONOUS/TS_S_ASYNC)。`e2e/tsf-typing-test.ps1`（段階式・vision
+      で座標決定）で シェル窓に「あいうえお」を compose→preedit inline 表示→
+      Enter 確定→bash プロンプト着弾 まで全経路スクショ＋ログ確認。
+      残: 実運用 soak（殿が SHOGUN_TSF=1 で常用して様子見）→問題なければ既定 on 判断
+      （殿裁可事項）・GetTextExt へ実 caret 供給（候補窓が既定位置に出る、M2）・
+      Linux(IBus)/mac は同 trait の別 backend として後日ラウンド可能
 - [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）
