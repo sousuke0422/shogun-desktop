@@ -89,7 +89,13 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
 | `-w/--window`（既存窓へのルーティング） | **TODO**: 単一インスタンス IPC が必要 |
 | `split-pane`/`sp`・`focus-tab`・`move-focus`・`move-pane` | **TODO**: ペイン分割の実装後 |
 
+さらに **Linux 系ターミナルの共通引数**（P3 Linux 移植への布石）も本体が受ける:
+`-e <cmd>…` / `-- <cmd>…`（以降全部コマンド）・`--working-directory`・`-t/-T/--title`・
+`--geometry CxR[+X+Y]`・`--maximize`/`--full-screen`・`--hold`/`--class`/`--name`（受理）・
+`-v/--version`。`rt <dir>` は code 流にそのディレクトリでシェルを開く（1個1タブ・rt 拡張）。
+
 例: `rt --pos 150,150 --size 100,30 nt -d C:\work --title 作業 ; nt -p cmd ; ping localhost`
+例: `rt -e ssh anchor` ・ `rt --geometry 120x40+100+100 -- btop` ・ `rt . C:\work`
 
 ## 非目標（プロトタイプでは持たない）
 

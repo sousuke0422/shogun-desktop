@@ -16,6 +16,13 @@
 //! - `;` between commands: every `new-tab` lands in the ONE window this
 //!   process opens, same as a fresh `wt` launch
 //!
+//! Also speaks the common-core flags of Linux terminal emulators (xterm /
+//! gnome-terminal / alacritty / kitty), groundwork for the P3 Linux port:
+//! `-e cmd args…` (rest-of-argv command), `-- cmd args…`, `--working-directory`,
+//! `-t/-T/--title`, `--hold` (accepted; today's no-restart behavior already
+//! holds), `--maximize`/`--full-screen`, `--geometry CxR[+X+Y]`,
+//! `--class`/`--name` (accepted, no X11 here), `-v/--version`.
+//!
 //! Deliberately TODO (structural work, tracked in README):
 //! - `-w/--window` routing to an existing window (needs single-instance IPC)
 //! - `split-pane`/`sp` (needs pane splits), `focus-tab`, `move-focus`,
@@ -35,6 +42,10 @@ pub struct TabSpec {
     pub title: Option<String>,
     /// Positional command line (argv, already OS-split). Replaces the shell.
     pub cmdline: Vec<String>,
+    /// `--hold` (alacritty/kitty): keep the tab after the command exits.
+    /// Accepted for compatibility — sessions already freeze-and-stay today;
+    /// becomes meaningful once exit-closes-tab lands.
+    pub hold: bool,
 }
 
 /// Parsed launch request.
@@ -95,9 +106,25 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
                         launch.maximized = true;
                         it.next();
                     }
-                    "-F" | "--fullscreen" => {
+                    "-F" | "--fullscreen" | "--full-screen" => {
                         launch.fullscreen = true;
                         it.next();
+                    }
+                    "--maximize" => {
+                        launch.maximized = true;
+                        it.next();
+                    }
+                    "--geometry" => {
+                        it.next();
+                        let v = value_of(&mut it, "--geometry")?;
+                        let g = parse_geometry(&v)?;
+                        launch.size_cells = Some((g.0, g.1));
+                        if let Some(pos) = g.2 {
+                            launch.pos = Some(pos);
+                        }
+                    }
+                    "-v" | "--version" => {
+                        return Err(concat!("RikkaTerminal ", env!("CARGO_PKG_VERSION")).into());
                     }
                     "-f" | "--focus" => {
                         it.next(); // always focused; accepted for compat
@@ -162,8 +189,21 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
         while let Some(a) = it.next() {
             match a.as_str() {
                 "-p" | "--profile" => spec.profile = Some(value_of(&mut it, "-p")?),
-                "-d" | "--startingDirectory" => spec.dir = Some(value_of(&mut it, "-d")?),
-                "--title" => spec.title = Some(value_of(&mut it, "--title")?),
+                "-d" | "--startingDirectory" | "--working-directory" | "--directory" => {
+                    spec.dir = Some(value_of(&mut it, "-d")?)
+                }
+                "-t" | "-T" | "--title" => spec.title = Some(value_of(&mut it, "--title")?),
+                // xterm/alacritty `-e` and gnome-terminal/foot `--`: the REST
+                // of the arguments are the command, verbatim.
+                "-e" | "--command" | "--" => {
+                    spec.cmdline.extend(it.by_ref());
+                }
+                "--hold" => spec.hold = true,
+                // X11 concepts, accepted so Linux-style invocations don't
+                // error out on Windows.
+                "--class" | "--name" => {
+                    let _ = value_of(&mut it, &a)?;
+                }
                 // Accepted for wt compatibility; no visual counterpart yet.
                 "--tabColor" | "--colorScheme" => {
                     let _ = value_of(&mut it, &a)?;
@@ -210,10 +250,37 @@ pub fn expand_dir_tabs(tabs: Vec<TabSpec>) -> Vec<TabSpec> {
                     dir: Some(dir.clone()),
                     title: spec.title.clone(),
                     cmdline: Vec::new(),
+                    hold: spec.hold,
                 })
                 .collect()
         })
         .collect()
+}
+
+/// xterm-style `--geometry COLSxROWS[+X+Y]`. Negative (edge-relative)
+/// offsets are not supported.
+fn parse_geometry(s: &str) -> Result<(u16, u16, Option<(f32, f32)>), String> {
+    let err = || format!("--geometry は \"CxR\" または \"CxR+X+Y\" 形式です: {s}");
+    let (size, rest) = match s.find(['+', '-']) {
+        Some(i) => (&s[..i], Some(&s[i..])),
+        None => (s, None),
+    };
+    let (c, r) = size.split_once(['x', 'X']).ok_or_else(err)?;
+    let c: u16 = c.trim().parse().map_err(|_| err())?;
+    let r: u16 = r.trim().parse().map_err(|_| err())?;
+    let pos = match rest {
+        None => None,
+        Some(rest) => {
+            let parts: Vec<&str> = rest.split('+').filter(|p| !p.is_empty()).collect();
+            if rest.contains('-') || parts.len() != 2 {
+                return Err(err());
+            }
+            let x: f32 = parts[0].trim().parse().map_err(|_| err())?;
+            let y: f32 = parts[1].trim().parse().map_err(|_| err())?;
+            Some((x, y))
+        }
+    };
+    Ok((c, r, pos))
 }
 
 pub const HELP: &str = "rt — RikkaTerminal (wt 互換 CLI)\n\n\
@@ -224,6 +291,11 @@ options:\n  -M, --maximized      最大化で起動\n  -F, --fullscreen     フ�
 new-tab (nt):\n  -p, --profile <shell>          シェル (pwsh / powershell / cmd / 実行ファイル)\n  \
 -d, --startingDirectory <dir>  開始ディレクトリ\n  --title <title>                初期タブタイトル\n  \
 <command...>                   シェルの代わりに実行するコマンド\n\n\
+Linux 互換 (xterm / gnome-terminal / alacritty / kitty の共通形):\n  \
+-e <cmd> [args...] / -- <cmd> [args...]   以降全部をコマンドとして実行\n  \
+--working-directory <dir>      開始ディレクトリ\n  -t / -T <title>                タイトル\n  \
+--geometry CxR[+X+Y]           サイズ(セル)と位置\n  --maximize / --full-screen     最大化 / フルスクリーン\n  \
+--hold / --class / --name      受理 (hold は現状常時相当)\n  -v, --version                  バージョン表示\n\n\
 未対応 (TODO): -w/--window, split-pane, focus-tab, move-focus, move-pane";
 
 /// Modal error/usage box — the GUI-subsystem binary has no console.
@@ -353,6 +425,59 @@ mod tests {
         // happens to name a directory.
         let l = parse(v(&["nt", "-d", &tmp, &tmp])).unwrap();
         assert_eq!(expand_dir_tabs(l.tabs.clone()), l.tabs);
+    }
+
+    #[test]
+    fn xterm_dash_e_takes_the_rest() {
+        let l = parse(v(&["-e", "vim", "-R", "file.txt"])).unwrap();
+        assert_eq!(l.tabs[0].cmdline, v(&["vim", "-R", "file.txt"]));
+    }
+
+    #[test]
+    fn gnome_double_dash_takes_the_rest() {
+        let l = parse(v(&[
+            "--working-directory",
+            "C:\\src",
+            "--",
+            "htop",
+            "-d",
+            "5",
+        ]))
+        .unwrap();
+        assert_eq!(l.tabs[0].dir.as_deref(), Some("C:\\src"));
+        assert_eq!(l.tabs[0].cmdline, v(&["htop", "-d", "5"]));
+    }
+
+    #[test]
+    fn linux_title_and_hold_flags() {
+        let l = parse(v(&["-T", "監視", "--hold", "--class", "Rikka"])).unwrap();
+        assert_eq!(l.tabs[0].title.as_deref(), Some("監視"));
+        assert!(l.tabs[0].hold);
+    }
+
+    #[test]
+    fn geometry_parses_size_and_position() {
+        let l = parse(v(&["--geometry", "120x40+100+200"])).unwrap();
+        assert_eq!(l.size_cells, Some((120, 40)));
+        assert_eq!(l.pos, Some((100.0, 200.0)));
+        let l = parse(v(&["--geometry", "80x24"])).unwrap();
+        assert_eq!(l.size_cells, Some((80, 24)));
+        assert_eq!(l.pos, None);
+        assert!(parse(v(&["--geometry", "120x40-5+9"])).is_err());
+        assert!(parse(v(&["--geometry", "big"])).is_err());
+    }
+
+    #[test]
+    fn gnome_style_window_flags() {
+        let l = parse(v(&["--maximize"])).unwrap();
+        assert!(l.maximized);
+        let l = parse(v(&["--full-screen"])).unwrap();
+        assert!(l.fullscreen);
+    }
+
+    #[test]
+    fn version_reports_via_err() {
+        assert!(parse(v(&["-v"])).unwrap_err().contains("RikkaTerminal"));
     }
 
     #[test]
