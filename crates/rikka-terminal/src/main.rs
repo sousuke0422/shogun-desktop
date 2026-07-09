@@ -16,6 +16,7 @@
 // console for printf-style work; release diagnostics go to the panic log.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cli;
 mod hub;
 mod tsf;
 
@@ -27,7 +28,7 @@ use anyhow::Result;
 use gpui::{
     App, Application, Bounds, ClickEvent, Context, ElementInputHandler, Entity,
     EntityInputHandler as _, FocusHandle, KeyDownEvent, ScrollDelta, ScrollWheelEvent,
-    TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions, canvas, div,
+    TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions, canvas, div, point,
     prelude::*, px, rgb, size,
 };
 use parking_lot::FairMutex;
@@ -128,8 +129,14 @@ impl PtyResizer for LocalResizer {
     }
 }
 
-/// Spawn `shell` on a local PTY and wire it into an engine session.
-fn spawn_local_shell(shell: &str, cols: u16, rows: u16) -> Result<TerminalSession> {
+/// Spawn `program args…` on a local PTY and wire it into an engine session.
+fn spawn_local_shell(
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    cols: u16,
+    rows: u16,
+) -> Result<TerminalSession> {
     let pty = native_pty_system();
     let pair = pty.openpty(PtySize {
         rows,
@@ -137,7 +144,11 @@ fn spawn_local_shell(shell: &str, cols: u16, rows: u16) -> Result<TerminalSessio
         pixel_width: 0,
         pixel_height: 0,
     })?;
-    let mut cmd = CommandBuilder::new(shell);
+    let mut cmd = CommandBuilder::new(program);
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.cwd(dir);
+    }
     cmd.env("TERM_PROGRAM", xtversion::TERM_PROGRAM);
     cmd.env("TERM_PROGRAM_VERSION", xtversion::TERM_PROGRAM_VERSION);
     let _child = pair.slave.spawn_command(cmd)?;
@@ -169,9 +180,31 @@ fn shell_candidates() -> Vec<String> {
 
 /// New shell session wrapped as a movable tab (driver task included).
 fn create_tab(cx: &mut App) -> Option<TabEntry> {
-    let session = shell_candidates()
+    create_tab_spec(cx, &cli::TabSpec::default())
+}
+
+/// Tab from a CLI spec (wt semantics): an explicit commandline replaces the
+/// shell entirely; `-p` narrows the shell to one candidate; `--title` seeds
+/// the tab title until the application's OSC 0/2 takes over.
+fn create_tab_spec(cx: &mut App, spec: &cli::TabSpec) -> Option<TabEntry> {
+    let candidates: Vec<String> = if !spec.cmdline.is_empty() {
+        vec![spec.cmdline[0].clone()]
+    } else if let Some(p) = &spec.profile {
+        vec![p.clone()]
+    } else {
+        shell_candidates()
+    };
+    let args: &[String] = if spec.cmdline.len() > 1 {
+        &spec.cmdline[1..]
+    } else {
+        &[]
+    };
+    let session = candidates
         .iter()
-        .find_map(|shell| spawn_local_shell(shell, 80, 24).ok())?;
+        .find_map(|program| spawn_local_shell(program, args, spec.dir.as_deref(), 80, 24).ok())?;
+    if let Some(t) = &spec.title {
+        *session.title.lock() = Some(t.clone());
+    }
     Some(hub::new_tab(cx, session))
 }
 
@@ -901,11 +934,40 @@ fn apply_dark_titlebars() {}
 /// Open a tab-group window hosting `initial` and register it for merge-all
 /// and release cleanup.
 fn open_tabs_window(cx: &mut App, initial: Vec<TabEntry>) {
-    let bounds = Bounds::centered(None, size(px(1000.), px(640.)), cx);
+    open_tabs_window_opts(cx, initial, &cli::Launch::default());
+}
+
+/// Open a tab-group window with wt-style launch geometry. `--size` uses cell
+/// ESTIMATES (real metrics need a live window; the PTY refits to the painted
+/// pane on the first frame, so only the window's outer size is approximate).
+fn open_tabs_window_opts(cx: &mut App, initial: Vec<TabEntry>, launch: &cli::Launch) {
+    const EST_CW: f32 = 8.5;
+    const EST_CH: f32 = 21.0;
+    let win_size = match launch.size_cells {
+        Some((c, r)) => size(
+            px(c as f32 * EST_CW + PAD * 2.0),
+            px(r as f32 * EST_CH + TAB_STRIP_H + PAD * 2.0),
+        ),
+        None => size(px(1000.), px(640.)),
+    };
+    let bounds = match launch.pos {
+        Some((x, y)) => Bounds {
+            origin: point(px(x), px(y)),
+            size: win_size,
+        },
+        None => Bounds::centered(None, win_size, cx),
+    };
+    let window_bounds = if launch.fullscreen {
+        WindowBounds::Fullscreen(bounds)
+    } else if launch.maximized {
+        WindowBounds::Maximized(bounds)
+    } else {
+        WindowBounds::Windowed(bounds)
+    };
     let handle = cx
         .open_window(
             WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_bounds: Some(window_bounds),
                 titlebar: Some(TitlebarOptions {
                     title: Some("RikkaTerminal".into()),
                     // Hides the native titlebar (gpui: hide_title_bar) — the
@@ -953,13 +1015,30 @@ fn main() {
     // %TEMP%/shogun-tsf/panic.log.
     rikka_terminal_core::install_panic_log();
     rikka_terminal_core::install_file_logger("rikka-terminal");
-    Application::new().run(|cx| {
+    // wt-compatible CLI (see `cli`). Errors and --help go to a message box —
+    // the GUI-subsystem binary has no console.
+    let launch = match cli::parse(std::env::args().skip(1).collect()) {
+        Ok(launch) => launch,
+        Err(msg) => {
+            cli::error_box(&msg);
+            return;
+        }
+    };
+    Application::new().run(move |cx| {
         // The engine's renderer rides gpui-component primitives; initialise
         // its statics and pin the dark theme (the grid brings its own colors).
         gpui_component::init(cx);
         gpui_component::theme::Theme::change(gpui_component::theme::ThemeMode::Dark, None, cx);
         hub::init(cx);
-        let initial = create_tab(cx).into_iter().collect();
-        open_tabs_window(cx, initial);
+        let specs = if launch.tabs.is_empty() {
+            vec![cli::TabSpec::default()]
+        } else {
+            launch.tabs.clone()
+        };
+        let initial: Vec<TabEntry> = specs
+            .iter()
+            .filter_map(|spec| create_tab_spec(cx, spec))
+            .collect();
+        open_tabs_window_opts(cx, initial, &launch);
     });
 }

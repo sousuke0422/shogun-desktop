@@ -73,6 +73,23 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
   chrome 書体の Segoe UI Variable 化・システムアクセント色追従・
   タブ close の hover-reveal（WinUI CloseButtonOverlayMode=Auto 相当）
 
+## wt 互換 CLI（`rt`）
+
+`rt.exe`（`rikka-terminal.exe` の別名 bin・同一バイナリ）は Windows Terminal の
+`wt` コマンドライン文法のサブセットを実装する（parser: `src/cli.rs`・ユニット
+テスト付き。エラーと `--help` は GUI サブシステムのためメッセージボックス表示）。
+
+| wt 構文 | 状態 |
+|---|---|
+| `-M/--maximized`・`-F/--fullscreen`・`--pos x,y`・`--size c,r` | ✔ |
+| `new-tab`/`nt`: `-d`・`-p`（シェル名）・`--title`・裸の command line | ✔ |
+| `;` による複数コマンド連結（1 窓に複数タブ） | ✔ |
+| `--tabColor`/`--colorScheme`/`--suppressApplicationTitle` | 受理して無視（設定基盤待ち） |
+| `-w/--window`（既存窓へのルーティング） | **TODO**: 単一インスタンス IPC が必要 |
+| `split-pane`/`sp`・`focus-tab`・`move-focus`・`move-pane` | **TODO**: ペイン分割の実装後 |
+
+例: `rt --pos 150,150 --size 100,30 nt -d C:\work --title 作業 ; nt -p cmd ; ping localhost`
+
 ## 非目標（プロトタイプでは持たない）
 
 - 分割・設定ファイル・フォント同梱・検索・タブDnD（ロードマップ P1 残）
