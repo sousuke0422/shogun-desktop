@@ -83,6 +83,11 @@ portable-pty が自動サイドロードする（wezterm と同じ機構）。�
 「pwsh から生 DCS → 赤ブロック描画」を確認済み。**ペア世代の混在は禁物**
 （無出力 PTY になる — assets/conpty/README.md 参照）。
 既知の確認待ち: 新 ConPTY 経由で OSC 0 タブタイトルが届いていない疑い。
+**kitty graphics (APC) は 1.24 ConPTY でも剥がされる**（実測 2026-07-10:
+APC 本体が消え ST の `\` だけ素通しされる）— wt 自身が kitty 非対応のため。
+ローカル画像は sixel を使うこと（SSH 経路なら kitty も従来どおり可）。
+将来の芽: conpty の passthrough フラグ + portable-pty の flags 指定
+（現状 0 固定）を組み合わせられれば APC も通せる可能性。
 
 ## wt 互換 CLI（`rt`）
 
