@@ -21,7 +21,7 @@ use anyhow::Result;
 use gpui::{
     App, Application, Bounds, ClickEvent, Context, ElementInputHandler, Entity, FocusHandle,
     KeyDownEvent, ScrollDelta, ScrollWheelEvent, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, canvas, div, prelude::*, px, rgb, size,
+    WindowControlArea, WindowOptions, canvas, div, prelude::*, px, rgb, size,
 };
 use parking_lot::FairMutex;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -295,6 +295,37 @@ impl TabsWindow {
     }
 }
 
+/// Native caption button (min/max/close), Files-style. The
+/// `window_control_area` hitbox makes WM_NCHITTEST return
+/// HTMINBUTTON/HTMAXBUTTON/HTCLOSE and gpui's NC handlers run the native
+/// action (ShowWindowAsync / WM_CLOSE) — no click listener wanted, or the
+/// strip would have to reimplement press/release semantics.
+fn caption_button(glyph: &'static str, area: WindowControlArea) -> impl IntoElement {
+    let close = matches!(area, WindowControlArea::Close);
+    div()
+        .w(px(46.))
+        .h_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        // Segoe MDL2 Assets ships on Windows 10+; its E92x/E8BB glyphs are
+        // the system caption icons (what Files/wt render).
+        .font_family("Segoe MDL2 Assets")
+        .text_size(px(10.))
+        .text_color(rgb(TEXT_MUTED))
+        .hover(move |t| {
+            if close {
+                // The one non-monochrome hover in the chrome: the standard
+                // Windows close red.
+                t.bg(gpui::rgba(0xC42B1CFF)).text_color(rgb(0xFFFFFF))
+            } else {
+                t.bg(gpui::rgba(TAB_HOVER)).text_color(rgb(TEXT_ACTIVE))
+            }
+        })
+        .window_control_area(area)
+        .child(glyph)
+}
+
 impl Render for TabsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // OSC 0/2 of the active tab → OS window title (deduped).
@@ -324,7 +355,9 @@ impl Render for TabsWindow {
             }
         }
 
-        // ── tab strip ────────────────────────────────────────────────────
+        // ── tab strip = the titlebar (appears_transparent hides the native
+        // one; Files integrates tabs the same way) ─────────────────────────
+        let maximized = window.is_maximized();
         let strip = div()
             .w_full()
             .h(px(TAB_STRIP_H))
@@ -332,7 +365,7 @@ impl Render for TabsWindow {
             .flex_row()
             .items_center()
             .gap_1()
-            .px_2()
+            .pl_2()
             .bg(rgb(CHROME_BG))
             .border_b_1()
             .border_color(gpui::rgba(HAIRLINE))
@@ -414,7 +447,24 @@ impl Render for TabsWindow {
                     .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
                         this.new_tab(cx);
                     })),
-            );
+            )
+            .child(
+                // Empty strip = the window's drag surface. HTCAPTION buys
+                // drag, double-click maximize, Aero-snap and the system menu
+                // natively. Deliberately a SIBLING of the tabs, not their
+                // parent: the NC hit-test checks every hitbox under the
+                // point, so a parent drag area would eat tab clicks.
+                div()
+                    .flex_1()
+                    .h_full()
+                    .window_control_area(WindowControlArea::Drag),
+            )
+            .child(caption_button("\u{E921}", WindowControlArea::Min))
+            .child(caption_button(
+                if maximized { "\u{E923}" } else { "\u{E922}" },
+                WindowControlArea::Max,
+            ))
+            .child(caption_button("\u{E8BB}", WindowControlArea::Close));
 
         // ── terminal pane (active tab) ───────────────────────────────────
         let pane = if let Some(snap) = self.active_session().map(|s| s.snapshot.lock().clone()) {
@@ -428,6 +478,12 @@ impl Render for TabsWindow {
                 .flex_1()
                 .w_full()
                 .p_1()
+                // Focus-on-click lives on the PANE, not the window root: gpui's
+                // focus listener calls prevent_default on every mouse down over
+                // a focusable hitbox, and gpui-Windows reads that as "the app
+                // consumed this click" — which would swallow the caption
+                // buttons' and drag area's non-client handling up in the strip.
+                .track_focus(&self.terminal_focus.clone())
                 .child(
                     div()
                         .relative()
@@ -483,7 +539,6 @@ impl Render for TabsWindow {
             .flex()
             .flex_col()
             .bg(rgb(0x1A1A1A))
-            .track_focus(&self.terminal_focus.clone())
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
                 let m = &ks.modifiers;
@@ -632,9 +687,10 @@ impl Render for TabsWindow {
     }
 }
 
-/// Dark titlebars for every window of this process (Files direction: the
-/// native white bar clashes with the dark chrome). DWM attribute only —
-/// no gpui changes.
+/// Dark-mode DWM frames for every window of this process. The titlebar
+/// itself is hidden (appears_transparent), but the attribute still colors
+/// the remaining 1px window border and any pre-first-paint frame flash.
+/// DWM attribute only — no gpui changes.
 #[cfg(windows)]
 fn apply_dark_titlebars() {
     use windows::Win32::Foundation::{HWND, LPARAM};
@@ -676,7 +732,9 @@ fn open_tabs_window(cx: &mut App, initial: Vec<TabEntry>) {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("RikkaTerminal".into()),
-                    appears_transparent: false,
+                    // Hides the native titlebar (gpui: hide_title_bar) — the
+                    // tab strip takes over via window_control_area hitboxes.
+                    appears_transparent: true,
                     traffic_light_position: None,
                 }),
                 ..Default::default()
@@ -688,11 +746,16 @@ fn open_tabs_window(cx: &mut App, initial: Vec<TabEntry>) {
         return;
     };
     hub::register_window(cx, handle.into(), entity.downgrade());
-    // Window closed (X or last-tab close): stop the surviving tabs' drivers;
-    // the sessions drop with the entity and close their PTYs.
-    cx.observe_release(&entity, |win: &mut TabsWindow, _| {
+    // Window closed (caption ✕ or last-tab close): stop the surviving tabs'
+    // drivers; the sessions drop with the entity and close their PTYs. Quit
+    // once no window is left — with the titlebar integrated, the caption ✕
+    // is the product's real close button and must end the process.
+    cx.observe_release(&entity, |win: &mut TabsWindow, cx| {
         for tab in &win.tabs {
             tab.0.shutdown();
+        }
+        if hub::live_windows(cx) == 0 {
+            cx.quit();
         }
     })
     .detach();

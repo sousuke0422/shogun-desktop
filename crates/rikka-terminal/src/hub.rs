@@ -119,6 +119,15 @@ pub fn register_window(cx: &mut App, handle: AnyWindowHandle, entity: WeakEntity
     reg.windows.push((handle, entity));
 }
 
+/// Live tab windows left after pruning the dead. Used by the release
+/// observer to quit once the last window is gone (the releasing window's
+/// weak is already dead inside its own release callback).
+pub fn live_windows(cx: &mut App) -> usize {
+    let reg = cx.global_mut::<WindowRegistry>();
+    reg.windows.retain(|(_, w)| w.upgrade().is_some());
+    reg.windows.len()
+}
+
 /// Every live window except `except`, pruning the dead.
 pub fn other_windows(
     cx: &mut App,

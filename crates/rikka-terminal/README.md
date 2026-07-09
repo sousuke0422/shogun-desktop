@@ -46,9 +46,17 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
 - フォントは Consolas（システム解決・CJK は DirectWrite fallback 任せ）
 - **UI の方向性 = Files (files.community) 系のソフト Fluent**: 低コントラストの
   レイヤ面（白 8〜12% オーバーレイ）・角丸ピルタブ＋hover・アクセントは
-  アクティブタブ下の 2px バーのみ・ヘアライン境界・DWM 暗色タイトルバー。
-  次段候補: タブのタイトルバー統合（appears_transparent + ドラッグ領域）・
-  mica/acrylic・chrome 書体の Segoe UI Variable 化
+  アクティブタブ下の 2px バーのみ・ヘアライン境界。
+- **タブはタイトルバー統合済み**（appears_transparent でネイティブバーを消し、
+  タブ列がタイトルバーを兼ねる）: 空き領域が `WindowControlArea::Drag`
+  （HTCAPTION = ドラッグ・ダブルクリック最大化・スナップ・システムメニューが
+  ネイティブ）、min/max/close は Segoe MDL2 Assets グリフの自前ボタン
+  （`window_control_area` hitbox → gpui の NC ハンドラがネイティブ動作を実行、
+  click リスナー無し）。Drag はタブの親でなく **兄弟**に張る — NC hit-test は
+  点下の全 hitbox を見るため、親に張るとタブクリックが HTCAPTION に食われる。
+  最大化時のフレーム食い込みは gpui の NCCALCSIZE 側で補正済み。
+- UI TODO: mica/acrylic バックドロップ（**Win10 ESU では動作不明** — Win11 実機
+  が来たら検証）・chrome 書体の Segoe UI Variable 化・システムアクセント色追従
 
 ## 非目標（プロトタイプでは持たない）
 
