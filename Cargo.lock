@@ -5540,6 +5540,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rikka-terminal"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "gpui",
+ "gpui-component",
+ "parking_lot",
+ "portable-pty",
+ "rikka-terminal-core",
+]
+
+[[package]]
 name = "rikka-terminal-agent-integration"
 version = "0.1.0"
 

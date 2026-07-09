@@ -4,6 +4,7 @@
 # are wired in via [patch.crates-io] below.
 [workspace]
 members = [
+    "crates/rikka-terminal",
     "crates/rikka-terminal-core",
     "crates/rikka-terminal-agent-integration",
     "crates/rikka-terminal-gpui-ime",

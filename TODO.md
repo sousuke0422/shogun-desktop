@@ -325,6 +325,13 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       ファミリー統一。**プロダクト名/実行時 identity（TERM_PROGRAM・XTVERSION
       の "rikka-terminal"）は据え置き** — パッケージ名のみの変更。app は
       `pub use rikka_terminal_core as terminal;` で旧パス互換のまま。
+      **同日 P0 プロトタイプ完成**: `crates/rikka-terminal`（bin・13.4MB）=
+      ローカル ConPTY(pwsh→cmd fallback) + gpui 1窓を core に直結した薄い殻
+      （~400行）。設計は crates/rikka-terminal/README.md。smoke e2e
+      （`e2e/rikka-terminal-smoke.ps1`）で pwsh 起動・SGR色・OSC タイトル・
+      URL下線・ペースト実行をスクショ実証。engine の transport 非依存が確定。
+      残ロードマップ: P1 タブ(aki-term吸収)/設定/フォント同梱・P2 リポ切り・
+      P3 Linux/mac。
       旧 aki-term 構想（wt 代替タブ付きターミナル・設計書あり実装未着手）は
       本構想に吸収候補。検討事項: リポ切りとクレート側ライセンス選定
       （shogun-desktop に GPL 化予定は無い — gpui が Apache-2.0 になり

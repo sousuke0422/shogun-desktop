@@ -1,0 +1,22 @@
+# RikkaTerminal — the standalone terminal application built on
+# rikka-terminal-core. This is the *product* crate (the engine keeps the
+# -core suffix); it lives in the shogun-desktop monorepo until the repo
+# split and is deliberately thin: local ConPTY + a gpui window + the engine.
+#
+# Layering: this crate may depend on the engine and its satellites, never
+# the other way around. No SSH, no shogun-desktop settings.
+[package]
+name = "rikka-terminal"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+rikka-terminal-core = { path = "../rikka-terminal-core" }
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+portable-pty = "0.9"
+anyhow = "1"
+parking_lot = "0.12"
+futures = "0.3"
