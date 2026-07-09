@@ -939,6 +939,9 @@ pub fn render_grid(
     // (empirically verified 2026-07-03).
     ime_preedit: Option<String>,
 ) -> impl IntoElement {
+    // Frame-time harness (SHOGUN_FRAMETIME): times this element build and
+    // marks the frame boundary on drop. No-op when the env var is unset.
+    let _ft_build = crate::frametime::build_guard(snap.cells.len());
     let (cursor_row, cursor_col) = snap.cursor;
     let grid_cols = snap.cols;
     let font_name = font.to_string();
@@ -994,6 +997,9 @@ pub fn render_grid(
             canvas(
                 |_bounds, _window, _cx| (),
                 move |bounds, (), window, cx: &mut App| {
+                    // Accumulates this row's paint time into the current
+                    // frame's total on drop (SHOGUN_FRAMETIME harness).
+                    let _ft_paint = crate::frametime::paint_guard();
                     let ox = f32::from(bounds.origin.x);
                     let oy = f32::from(bounds.origin.y);
                     let font_size = px(13.);

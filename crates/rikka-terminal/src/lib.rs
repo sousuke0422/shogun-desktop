@@ -1,3 +1,4 @@
+pub mod frametime;
 pub mod ime;
 pub mod keys;
 pub mod kitty_graphics;
