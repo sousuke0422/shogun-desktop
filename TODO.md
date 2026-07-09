@@ -232,6 +232,23 @@ git log（2026-07-03 以降）および TODO 記述を突合した結果、「�
       線幅はセル幅基準（lw=cw/8, hw=cw/4）— 旧来の高さ基準は monospace で light 線が
       約 2 倍太く見えた。geometry で拾えない字のみ `shape_line` でフォント描画。
       `crates/rikka-terminal/src/renderer.rs`（paint_box_char / is_geom_box_char）
+- [ ] **タスクバー IME インジケータ（あ/A）追従 — TSF text store 実装中**
+      （2026-07-09 着手・M1a 実機検証待ち）。真因は実機トレースで確定: Win11 新
+      MS-IME は IMN_SETOPENSTATUS/SETCONVERSIONMODE を送らず（candidate/
+      composition のみ着信）、モード状態は TSF 側 — IMM32-only の gpui では
+      インジケータが追従しない。失敗2件は記録済み: ①空 doc AssociateFocus =
+      入力を強奪して日本語入力全壊（即 revert）②winit 流 ImmAssociateContextEx
+      (IACE_DEFAULT) = 入力無事だがインジケータ不動。正攻法 =
+      `crates/rikka-terminal-gpui-ime` の ITextStoreACP text store（arcweft
+      MIT adapt・CREDITS 帰属・26 メソッド + lock model・Windows compile 済
+      400586b）。M1a (4d0ef14) = SHOGUN_TSF env ゲートで shell window の
+      focus_in/out から focus/blur のみ配線（gpui 無改変・既定挙動不変）。
+      **検証法**: `$env:SHOGUN_TSF="1"` で起動→shell 窓 focus→半角/全角で
+      タスクバー表示が追従するか（ゲート下は入力が死ぬのが正常 = focus-only）。
+      追従すれば M1b: ITfContextOwnerCompositionSink で preedit/commit 判別
+      → preedit は ime.marked 相当へ・commit は PTY 送信・sync() drain 配線・
+      本窓タブへも展開・RequestLock 再入 upgrade (TS_E_SYNCHRONOUS/TS_S_ASYNC)
+      対応。Linux(IBus)/mac は同 trait の別 backend として後日ラウンド可能
 - [ ] 選択中の自動スクロール抑止（出力が流れるとハイライトが内容とずれる）
 - [ ] リサイズ時のリフロー
 - [ ] 検索・設定ファイル・タブ/分割（「本物のターミナル」級の将来項目）
