@@ -15,11 +15,11 @@ hidden = ["Azure Cloud Shell"]
 
 # Your own profiles. They lead the menu, before the wt ones. command is argv
 # (command[0] is the program); dir is an optional starting directory.
-# [[profiles.custom]]
+# [[profiles.list]]
 # name = "Dev PowerShell"
 # command = ["pwsh.exe", "-NoLogo"]
 # dir = "C:\\work"
 
-# [[profiles.custom]]
+# [[profiles.list]]
 # name = "Arch (WSL)"
 # command = ["wsl.exe", "-d", "Arch"]

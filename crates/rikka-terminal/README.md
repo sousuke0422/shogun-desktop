@@ -102,7 +102,7 @@ use_windows_terminal = true          # wt のプロファイルを取り込む�
 hidden = ["Azure Cloud Shell"]       # 非表示（name か guid）
 default = "Dev"                      # 新規タブ既定（省略時は wt の defaultProfile）
 
-[[profiles.custom]]                  # 独自プロファイル（メニュー先頭）
+[[profiles.list]]                    # 独自プロファイル（どの OS でも・メニュー先頭）
 name = "Dev"
 command = ["pwsh.exe", "-NoLogo"]    # argv（command[0] が起動プログラム）
 dir = "C:\\work"                     # 開始ディレクトリ（任意）

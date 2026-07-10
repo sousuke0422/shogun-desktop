@@ -2,7 +2,8 @@
 //! job today is turning Windows Terminal profiles on/off in the new-tab menu.
 //! The wt list is the source of truth; this file is a thin filter over it, so
 //! a user who lives in wt gets their shells for free and can hide the ones
-//! they never launch here. Own profiles are defined inline and lead the menu.
+//! they never launch here. Own profiles are first-class (`[[profiles.list]]`,
+//! works on any platform) and lead the menu.
 //!
 //! ```toml
 //! [profiles]
@@ -11,7 +12,7 @@
 //! default = "Dev"                      # new-tab default (name or guid);
 //!                                       # omitted = wt's own defaultProfile
 //!
-//! [[profiles.custom]]                  # own profiles (lead the list)
+//! [[profiles.list]]                    # own profiles (any platform; lead the menu)
 //! name = "Dev"
 //! command = ["pwsh.exe", "-NoLogo"]    # argv; command[0] is the program
 //! dir = "C:\\work"                     # optional starting directory
@@ -38,14 +39,15 @@ pub struct ProfilesSection {
     /// New-tab default, by name or guid. `None` = honor wt's defaultProfile.
     #[serde(default)]
     pub default: Option<String>,
-    /// Profiles defined here in rikka's own config; they lead the menu.
+    /// Profiles defined in rikka's own config; platform-neutral and first —
+    /// they lead the menu ahead of any imported wt profiles.
     #[serde(default)]
-    pub custom: Vec<CustomProfile>,
+    pub list: Vec<ProfileDef>,
 }
 
 /// A profile defined in rikka's config rather than borrowed from wt.
 #[derive(Debug, Clone, Deserialize)]
-pub struct CustomProfile {
+pub struct ProfileDef {
     /// Display name and tab title.
     pub name: String,
     /// Command line as argv; `command[0]` is the program to spawn.
@@ -55,13 +57,13 @@ pub struct CustomProfile {
     pub dir: Option<String>,
 }
 
-impl CustomProfile {
-    /// A synthetic guid (`custom:<name>`) keeps config `default`/`hidden`
+impl ProfileDef {
+    /// A synthetic guid (`user:<name>`) keeps config `default`/`hidden`
     /// matching uniform across wt and own profiles.
     fn to_profile(&self) -> WtProfile {
         WtProfile {
             name: self.name.clone(),
-            guid: format!("custom:{}", self.name),
+            guid: format!("user:{}", self.name),
             argv: self.command.clone(),
             dir: self.dir.clone(),
         }
@@ -74,7 +76,7 @@ impl Default for ProfilesSection {
             use_windows_terminal: true,
             hidden: Vec::new(),
             default: None,
-            custom: Vec::new(),
+            list: Vec::new(),
         }
     }
 }
@@ -116,14 +118,14 @@ impl Config {
     /// drop `hidden` (by name or guid), and pick the default (config first,
     /// else wt's defaultProfile guid, else the first profile).
     pub fn build_menu(&self, wt: Vec<WtProfile>, wt_default_guid: Option<String>) -> Menu {
-        // Own profiles lead the list; wt's follow when enabled. A custom
+        // Own profiles lead the list; wt's follow when enabled. An own
         // profile with an empty command line is ignored.
         let mut all: Vec<WtProfile> = self
             .profiles
-            .custom
+            .list
             .iter()
             .filter(|c| !c.command.is_empty())
-            .map(CustomProfile::to_profile)
+            .map(ProfileDef::to_profile)
             .collect();
         if self.profiles.use_windows_terminal {
             all.extend(wt);
@@ -186,7 +188,7 @@ mod tests {
                 use_windows_terminal: true,
                 hidden: vec!["Ubuntu".into(), "{c}".into()],
                 default: None,
-                custom: vec![],
+                list: vec![],
             },
         };
         let m = cfg.build_menu(wt(), Some("{p}".into()));
@@ -202,7 +204,7 @@ mod tests {
                 use_windows_terminal: true,
                 hidden: vec![],
                 default: Some("Ubuntu".into()),
-                custom: vec![],
+                list: vec![],
             },
         };
         let m = cfg.build_menu(wt(), Some("{p}".into()));
@@ -221,18 +223,18 @@ mod tests {
     }
 
     #[test]
-    fn custom_profiles_lead_the_menu() {
+    fn list_profiles_lead_the_menu() {
         let cfg: Config = toml::from_str(
             "[profiles]\n\
              default = \"Dev\"\n\
-             [[profiles.custom]]\n\
+             [[profiles.list]]\n\
              name = \"Dev\"\n\
              command = [\"pwsh.exe\", \"-NoLogo\"]\n\
              dir = \"C:/work\"\n",
         )
         .unwrap();
         let m = cfg.build_menu(wt(), Some("{p}".into()));
-        assert_eq!(m.profiles.len(), 4); // 1 custom + 3 wt
+        assert_eq!(m.profiles.len(), 4); // 1 own + 3 wt
         assert_eq!(m.profiles[0].name, "Dev");
         assert_eq!(m.profiles[0].argv, ["pwsh.exe", "-NoLogo"]);
         assert_eq!(m.profiles[0].dir.as_deref(), Some("C:/work"));
@@ -240,11 +242,11 @@ mod tests {
     }
 
     #[test]
-    fn custom_only_with_wt_disabled() {
+    fn list_only_with_wt_disabled() {
         let cfg: Config = toml::from_str(
             "[profiles]\n\
              use_windows_terminal = false\n\
-             [[profiles.custom]]\n\
+             [[profiles.list]]\n\
              name = \"Bash\"\n\
              command = [\"bash.exe\"]\n",
         )
@@ -256,11 +258,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_custom_command_is_ignored() {
+    fn empty_list_command_is_ignored() {
         let cfg: Config = toml::from_str(
             "[profiles]\n\
              use_windows_terminal = false\n\
-             [[profiles.custom]]\n\
+             [[profiles.list]]\n\
              name = \"Broken\"\n\
              command = []\n",
         )
