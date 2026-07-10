@@ -750,6 +750,27 @@ impl Render for TabsWindow {
             .items_end()
             .pl_2()
             .bg(chrome_fill())
+            // Wheel anywhere over the strip scrolls the tabs horizontally
+            // (both axes fold into horizontal, browser-style), and never
+            // reaches the terminal below. No-op when the tabs already fit.
+            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _win, cx| {
+                let maxw = this.strip_scroll.max_offset().width / px(1.);
+                if maxw <= 0.0 {
+                    return;
+                }
+                let step = match ev.delta {
+                    ScrollDelta::Pixels(p) => f32::from(p.x) + f32::from(p.y),
+                    ScrollDelta::Lines(l) => (l.x + l.y) * 40.0,
+                };
+                if step == 0.0 {
+                    return;
+                }
+                let cur = this.strip_scroll.offset().x / px(1.);
+                let nx = (cur + step).clamp(-maxw, 0.0);
+                this.strip_scroll.set_offset(point(px(nx), px(0.)));
+                cx.stop_propagation();
+                cx.notify();
+            }))
             .when(needs_scroll, |s| {
                 s.child(scroll_arrow("tab-scroll-left", "\u{E76B}", 1.0))
             })
