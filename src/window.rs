@@ -992,10 +992,21 @@ impl ShogunWindow {
     ) {
         self.selected_tab = index;
         self.sync_focus_reports();
-        // Switching to a terminal tab focuses its input, matching the
-        // window-activation behavior (non-terminal tabs keep their focus).
-        if self.window_active && self.is_terminal_tab() {
-            window.focus(&self.terminal_focus);
+        if self.is_terminal_tab() {
+            // Focus the terminal input so typing works without a click.
+            if self.window_active {
+                window.focus(&self.terminal_focus);
+            }
+        } else {
+            // Non-terminal tab (settings / agents / …): release the terminal
+            // focus so its TSF/IME lets go (blur → on_focus_out → the store
+            // pops its document and discards the pending composition, so a
+            // half-typed 日本語 is dropped instead of committing into the
+            // terminal you just left). Otherwise the lingering focus eats
+            // keystrokes and the IME mode stays stuck on the terminal context.
+            window.blur();
+            // Also drop the visible preedit.
+            self.ime.update(cx, |ime, _cx| ime.marked = None);
         }
         cx.notify();
     }
