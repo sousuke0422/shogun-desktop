@@ -307,6 +307,29 @@ impl TabsWindow {
         window
             .on_focus_out(&terminal_focus, cx, |_, _, _| tsf::on_input_blur())
             .detach();
+        // Re-assert TSF focus once the OS window is FOREGROUND. The store's
+        // SetFocus must run while our window is active for the active TIP to
+        // bind the taskbar IME indicator to us and for stricter IMEs (Google
+        // 日本語入力) to engage — basic composition works even bound in the
+        // wrong context, but the indicator and those IMEs do not. The
+        // window.focus() above fires on_focus_in during construction, before
+        // the window is foreground, so this activation hook corrects it (and
+        // re-binds after an alt-tab away and back).
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() && this.terminal_focus.is_focused(window) {
+                let view = cx.weak_entity();
+                let async_cx = cx.to_async();
+                tsf::on_input_focus(Box::new(move || {
+                    let view = view.clone();
+                    async_cx
+                        .spawn(async move |cx| {
+                            let _ = view.update(cx, |_, cx| cx.notify());
+                        })
+                        .detach();
+                }));
+            }
+        })
+        .detach();
         let mut this = Self {
             tabs: Vec::new(),
             active: 0,
