@@ -84,7 +84,13 @@ fn main() {
             .terminal
             .font_features,
     ));
-    Application::new().run(|cx| {
+    // `--shell-window` (alias `--shell`) opens straight into a single shell
+    // window instead of the full agent console — a lean surface for testing
+    // the terminal pane (IME / selection / resize) in isolation.
+    let shell_only = std::env::args()
+        .skip(1)
+        .any(|a| a == "--shell-window" || a == "--shell");
+    Application::new().run(move |cx| {
         let mut fonts: Vec<Cow<'static, [u8]>> = vec![
             Cow::Borrowed(MORALERSPACE_NEON),
             Cow::Borrowed(TWEMOJI_MOZILLA),
@@ -189,6 +195,10 @@ fn main() {
                 Some(window::TERMINAL_KEY_CONTEXT),
             ),
         ]);
-        open_shogun_window(cx);
+        if shell_only {
+            crate::shell_window::open_shell_window(cx);
+        } else {
+            open_shogun_window(cx);
+        }
     });
 }
