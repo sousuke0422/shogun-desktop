@@ -109,8 +109,16 @@ pub struct WindowRegistry {
 
 impl Global for WindowRegistry {}
 
-pub fn init(cx: &mut App) {
+/// The new-tab profile menu (wt profiles filtered by rikka's config),
+/// app-global so every window — including ones spun off by detach — shares
+/// the same list and default.
+pub struct ProfileMenu(pub crate::config::Menu);
+
+impl Global for ProfileMenu {}
+
+pub fn init(cx: &mut App, menu: crate::config::Menu) {
     cx.set_global(WindowRegistry::default());
+    cx.set_global(ProfileMenu(menu));
 }
 
 pub fn register_window(cx: &mut App, handle: AnyWindowHandle, entity: WeakEntity<TabsWindow>) {

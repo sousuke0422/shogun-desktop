@@ -1,0 +1,25 @@
+# RikkaTerminal config — copy to %APPDATA%\rikka-terminal\config.toml to use.
+# Every field is optional; with no config the new-tab menu simply mirrors
+# Windows Terminal's profiles and opens wt's default profile.
+
+[profiles]
+# Pull Windows Terminal's profiles into the new-tab (⌄) menu. Default: true.
+use_windows_terminal = true
+
+# Hide profiles you never launch here, by display name or guid. wt profiles
+# already marked "hidden" are dropped automatically.
+hidden = ["Azure Cloud Shell"]
+
+# New-tab default, by name or guid. Omit to honor wt's own defaultProfile.
+# default = "PowerShell"
+
+# Your own profiles. They lead the menu, before the wt ones. command is argv
+# (command[0] is the program); dir is an optional starting directory.
+# [[profiles.custom]]
+# name = "Dev PowerShell"
+# command = ["pwsh.exe", "-NoLogo"]
+# dir = "C:\\work"
+
+# [[profiles.custom]]
+# name = "Arch (WSL)"
+# command = ["wsl.exe", "-d", "Arch"]

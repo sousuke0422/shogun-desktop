@@ -89,6 +89,33 @@ APC 本体が消え ST の `\` だけ素通しされる）— wt 自身が kitty
 将来の芽: conpty の passthrough フラグ + portable-pty の flags 指定
 （現状 0 固定）を組み合わせられれば APC も通せる可能性。
 
+## 新規タブのプロファイル（wt 参照 ＋ 独自定義）
+
+新規タブの [+] 右の ⌄ からプロファイルを選んでタブを開ける。源は Windows
+Terminal の `profiles.list`（読み取り専用・二重管理不要）と rikka 独自 config の
+両方。独自 config は `%APPDATA%/rikka-terminal/config.toml`（雛形は本クレートの
+`config.example.toml`・パーサは `src/config.rs`/`src/wt_profiles.rs`・ユニットテスト付き）:
+
+```toml
+[profiles]
+use_windows_terminal = true          # wt のプロファイルを取り込む（既定 true）
+hidden = ["Azure Cloud Shell"]       # 非表示（name か guid）
+default = "Dev"                      # 新規タブ既定（省略時は wt の defaultProfile）
+
+[[profiles.custom]]                  # 独自プロファイル（メニュー先頭）
+name = "Dev"
+command = ["pwsh.exe", "-NoLogo"]    # argv（command[0] が起動プログラム）
+dir = "C:\\work"                     # 開始ディレクトリ（任意）
+```
+
+- wt の `commandline` はそのまま（`%VAR%` 展開）、`source`（PowerShell Core・WSL 系）は
+  `pwsh.exe` / `wsl -d <name>` に解決。VS/Azure は再現不能なので除外
+- 独自プロファイルがメニュー先頭・wt が後続。`hidden`/`default` は両方に効く
+- 既定は「config の `default` → wt の defaultProfile → 先頭」の順で解決（既存優先）
+- プロファイル 1 つ以下なら ⌄ は出ない（[+] は既定プロファイルで開く）
+- `use_windows_terminal = false` にすれば独自プロファイルだけの構成も可
+- config が無い/壊れていても起動は止まらず、組み込みのシェル探索にフォールバック
+
 ## wt 互換 CLI（`rt`）
 
 `rt.exe` は**薄いランチャー**（隣の `rikka-terminal.exe` へ argv を横流しして

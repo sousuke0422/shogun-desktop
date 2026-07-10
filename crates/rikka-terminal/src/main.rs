@@ -17,8 +17,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cli;
+mod config;
 mod hub;
 mod tsf;
+mod wt_profiles;
 
 use std::io::{Read, Write};
 use std::sync::{Arc, atomic::Ordering};
@@ -45,7 +47,9 @@ use rikka_terminal_core::{PtyResizer, ReportMods, TerminalSession, xtversion};
 /// Default font: always present on Windows; CJK falls through DirectWrite's
 /// system fallback. Bundled fonts are a P1 item.
 const MONO_FONT: &str = "Consolas";
-/// Pane padding (logical px); half on each side via `.p_1()`.
+/// Horizontal pane padding (logical px); half on each side via `.px_1()`.
+/// No vertical padding — the grid sits flush against the tab strip (a top
+/// band of pane background reads as an ugly gap below the tabs).
 const PAD: f32 = 8.0;
 /// Tab strip height (logical px): WinUI TabView geometry — 8px breathing room
 /// on top (TabViewHeaderPadding) + 32px tab zone (TabViewItemMinHeight).
@@ -178,9 +182,32 @@ fn shell_candidates() -> Vec<String> {
     }
 }
 
+/// A wt profile as a CLI spec: its resolved argv replaces the shell, its
+/// name seeds the tab title (until the app's OSC 0/2 overrides it).
+fn profile_to_spec(p: &wt_profiles::WtProfile) -> cli::TabSpec {
+    cli::TabSpec {
+        profile: None,
+        dir: p.dir.clone(),
+        title: Some(p.name.clone()),
+        cmdline: p.argv.clone(),
+        hold: false,
+    }
+}
+
+/// The spec a plain new-tab opens: the configured default wt profile, or the
+/// built-in shell search when no profile menu is active.
+fn default_spec(cx: &App) -> cli::TabSpec {
+    let menu = &cx.global::<hub::ProfileMenu>().0;
+    match menu.default.and_then(|i| menu.profiles.get(i)) {
+        Some(p) => profile_to_spec(p),
+        None => cli::TabSpec::default(),
+    }
+}
+
 /// New shell session wrapped as a movable tab (driver task included).
 fn create_tab(cx: &mut App) -> Option<TabEntry> {
-    create_tab_spec(cx, &cli::TabSpec::default())
+    let spec = default_spec(cx);
+    create_tab_spec(cx, &spec)
 }
 
 /// Tab from a CLI spec (wt semantics): an explicit commandline replaces the
@@ -225,6 +252,8 @@ pub struct TabsWindow {
     rows: u16,
     /// Last OSC title applied to the OS window (dedup).
     applied_title: Option<String>,
+    /// The new-tab profile dropdown is open (rendered below the strip).
+    profile_menu: bool,
 }
 
 impl ImeHost for TabsWindow {
@@ -287,6 +316,7 @@ impl TabsWindow {
             cols: 0,
             rows: 0,
             applied_title: None,
+            profile_menu: false,
         };
         for entry in initial {
             this.adopt(entry, cx);
@@ -396,6 +426,23 @@ impl TabsWindow {
         if let Some(entry) = create_tab(cx) {
             self.adopt(entry, cx);
         }
+        self.profile_menu = false;
+    }
+
+    /// Open a new tab from the profile at `idx` in the shared menu.
+    fn new_tab_profile(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let spec = cx
+            .global::<hub::ProfileMenu>()
+            .0
+            .profiles
+            .get(idx)
+            .map(profile_to_spec);
+        if let Some(spec) = spec
+            && let Some(entry) = create_tab_spec(cx, &spec)
+        {
+            self.adopt(entry, cx);
+        }
+        self.profile_menu = false;
     }
 }
 
@@ -472,7 +519,7 @@ impl Render for TabsWindow {
         // Fit the ACTIVE tab's PTY to the pane (viewport minus strip/padding).
         let vp = window.viewport_size();
         let content_w = (vp.width / px(1.)) - PAD;
-        let content_h = (vp.height / px(1.)) - PAD - TAB_STRIP_H;
+        let content_h = (vp.height / px(1.)) - TAB_STRIP_H;
         if content_w > cw && content_h > ch {
             let new_cols = ((content_w / cw) as u16).max(2);
             let new_rows = ((content_h / ch) as u16).max(2);
@@ -493,6 +540,18 @@ impl Render for TabsWindow {
         // separators between unselected neighbors. ─────────────────────────
         let maximized = window.is_maximized();
         let active_ix = self.active;
+        // New-tab profile menu (wt profiles, config-filtered). >1 profile
+        // shows the dropdown chevron next to [+]; the list is rendered below
+        // the strip when open.
+        let profiles: Vec<(usize, String)> = cx
+            .global::<hub::ProfileMenu>()
+            .0
+            .profiles
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, p.name.clone()))
+            .collect();
+        let has_profile_menu = profiles.len() > 1;
         let strip = div()
             .w_full()
             .h(px(TAB_STRIP_H))
@@ -601,6 +660,30 @@ impl Render for TabsWindow {
                         this.new_tab(cx);
                     })),
             )
+            .when(has_profile_menu, |strip| {
+                // ChevronDown next to [+]: opens the profile list (wt-style
+                // split new-tab button).
+                strip.child(
+                    div()
+                        .id("tab-new-menu")
+                        .w(px(18.))
+                        .h(px(24.))
+                        .mb(px((TAB_H - 24.0) / 2.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .font_family("Segoe MDL2 Assets")
+                        .text_size(px(8.))
+                        .text_color(gpui::rgba(TEXT_SECONDARY))
+                        .hover(|t| t.bg(gpui::rgba(SUBTLE_HOVER)).text_color(rgb(TEXT_PRIMARY)))
+                        .child("\u{E70D}")
+                        .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
+                            this.profile_menu = !this.profile_menu;
+                            cx.notify();
+                        })),
+                )
+            })
             .child(
                 // Empty strip = the window's drag surface. HTCAPTION buys
                 // drag, double-click maximize, Aero-snap and the system menu
@@ -630,7 +713,7 @@ impl Render for TabsWindow {
             div()
                 .flex_1()
                 .w_full()
-                .p_1()
+                .px_1()
                 // Focus-on-click lives on the PANE, not the window root: gpui's
                 // focus listener calls prevent_default on every mouse down over
                 // a focusable hitbox, and gpui-Windows reads that as "the app
@@ -857,7 +940,7 @@ impl Render for TabsWindow {
                     let rows = s.rows.load(Ordering::Relaxed).max(1) as usize;
                     let col = ((((event.position.x / px(1.)) - pad) / cw).max(0.0) as usize)
                         .min(cols - 1);
-                    let row = ((((event.position.y / px(1.)) - pad - TAB_STRIP_H) / ch).max(0.0)
+                    let row = ((((event.position.y / px(1.)) - TAB_STRIP_H) / ch).max(0.0)
                         as usize)
                         .min(rows - 1);
                     let mods = ReportMods {
@@ -893,6 +976,54 @@ impl Render for TabsWindow {
             )
             .child(strip)
             .child(pane)
+            .when(self.profile_menu, |root| {
+                // Click-away scrim behind the list; a click anywhere else
+                // closes the menu. Rendered before the list so the list wins
+                // the overlap.
+                root.child(
+                    div()
+                        .id("profile-scrim")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
+                            this.profile_menu = false;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(TAB_STRIP_H))
+                        .left(px(8.))
+                        .flex()
+                        .flex_col()
+                        .min_w(px(200.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .bg(rgb(CHROME_BG))
+                        .border_1()
+                        .border_color(gpui::rgba(DIVIDER))
+                        .children(profiles.into_iter().map(|(idx, name)| {
+                            div()
+                                .id(("profile", idx))
+                                .px(px(12.))
+                                .py(px(6.))
+                                .text_size(px(13.))
+                                .text_color(gpui::rgba(TEXT_SECONDARY))
+                                .hover(|t| {
+                                    t.bg(gpui::rgba(TAB_HOVER)).text_color(rgb(TEXT_PRIMARY))
+                                })
+                                .child(name)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _win, cx| {
+                                    cx.stop_propagation();
+                                    this.new_tab_profile(idx, cx);
+                                    cx.notify();
+                                }))
+                        })),
+                )
+            })
     }
 }
 
@@ -1029,12 +1160,17 @@ fn main() {
         // its statics and pin the dark theme (the grid brings its own colors).
         gpui_component::init(cx);
         gpui_component::theme::Theme::change(gpui_component::theme::ThemeMode::Dark, None, cx);
-        hub::init(cx);
+        // New-tab profiles: wt's list filtered by rikka's config (read once
+        // at startup; a broken/absent config or wt just yields an empty menu
+        // and the built-in shell search).
+        let (wt, wt_default) = wt_profiles::discover();
+        let menu = config::Config::load().build_menu(wt, wt_default);
+        hub::init(cx, menu);
         // `rt <dir>` opens the default shell there (code-style; one tab
         // per directory).
         let specs = cli::expand_dir_tabs(launch.tabs.clone());
         let specs = if specs.is_empty() {
-            vec![cli::TabSpec::default()]
+            vec![default_spec(cx)]
         } else {
             specs
         };
