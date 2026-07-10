@@ -91,6 +91,11 @@ impl ShellWindow {
             if let Some(s) = view.session.as_ref() {
                 s.report_focus(view.window_active);
             }
+            // Auto-focus the terminal input on activation so typing works
+            // without clicking first (the pane is otherwise click-to-focus).
+            if view.window_active {
+                window.focus(&view.terminal_focus);
+            }
         })
         .detach();
         let terminal_focus = cx.focus_handle();

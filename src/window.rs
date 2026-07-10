@@ -240,6 +240,13 @@ impl ShogunWindow {
         cx.observe_window_activation(window, |view, window, _cx| {
             view.window_active = window.is_window_active();
             view.sync_focus_reports();
+            // Auto-focus the terminal input when the window activates on a
+            // terminal tab, so typing works without clicking first (the pane
+            // is otherwise click-to-focus). Guarded to terminal tabs so we
+            // never steal focus from the settings inputs.
+            if view.window_active && view.is_terminal_tab() {
+                window.focus(&view.terminal_focus);
+            }
         })
         .detach();
         let terminal_focus = cx.focus_handle();
@@ -980,12 +987,23 @@ impl ShogunWindow {
         &mut self,
         index: usize,
         _event: &ClickEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.selected_tab = index;
         self.sync_focus_reports();
+        // Switching to a terminal tab focuses its input, matching the
+        // window-activation behavior (non-terminal tabs keep their focus).
+        if self.window_active && self.is_terminal_tab() {
+            window.focus(&self.terminal_focus);
+        }
         cx.notify();
+    }
+
+    /// Tabs 0 (shogun) and 5 (multiagent) host a terminal surface; the rest
+    /// (agents / dashboard / settings) do not.
+    fn is_terminal_tab(&self) -> bool {
+        matches!(self.selected_tab, 0 | 5)
     }
 
     /// Focus reporting (?1004): a terminal surface here counts as focused
