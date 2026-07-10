@@ -28,10 +28,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use gpui::{
-    App, Application, Bounds, ClickEvent, Context, ElementInputHandler, Entity,
-    EntityInputHandler as _, FocusHandle, KeyDownEvent, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions,
-    canvas, div, point, prelude::*, px, rgb, size,
+    App, Application, Bounds, ClickEvent, Context, Entity, FocusHandle, KeyDownEvent, ScrollDelta,
+    ScrollHandle, ScrollWheelEvent, TitlebarOptions, Window, WindowBounds, WindowControlArea,
+    WindowOptions, div, point, prelude::*, px, rgb, size,
 };
 use parking_lot::FairMutex;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -832,62 +831,31 @@ impl Render for TabsWindow {
                             images.as_deref(),
                             ime_preedit,
                         ))
-                        .child(
-                            // Paint-phase overlay: IME handler + selection
-                            // listeners. Nothing draws here.
-                            canvas(
-                                |_bounds, _window, _cx| (),
-                                move |bounds, (), window, cx| {
-                                    window.handle_input(
-                                        &focus_handle,
-                                        ElementInputHandler::new(bounds, ime.clone()),
-                                        cx,
-                                    );
-                                    // TSF: feed the caret rect (client
-                                    // physical px) so the IME candidate
-                                    // window opens at the terminal cursor.
-                                    if focus_handle.is_focused(window) {
-                                        let caret = ime.update(cx, |ime, cx| {
-                                            ime.bounds_for_range(0..0, bounds, window, cx)
-                                        });
-                                        let scale = window.scale_factor();
-                                        tsf::set_caret(caret.map(|b| {
-                                            rikka_terminal_gpui_ime::CaretRect {
-                                                left: (f32::from(b.origin.x) * scale) as i32,
-                                                top: (f32::from(b.origin.y) * scale) as i32,
-                                                right: ((f32::from(b.origin.x)
-                                                    + f32::from(b.size.width))
-                                                    * scale)
-                                                    as i32,
-                                                bottom: ((f32::from(b.origin.y)
-                                                    + f32::from(b.size.height))
-                                                    * scale)
-                                                    as i32,
-                                            }
-                                        }));
+                        // Shared pane overlay (IME handler + selection
+                        // listeners + caret). Single-sourced in the engine so
+                        // shogun-desktop and rikka hit-test identically.
+                        .child(rikka_terminal_core::pane::pane_overlay(
+                            focus_handle,
+                            ime,
+                            view,
+                            0,
+                            cw,
+                            ch,
+                            grid_rows,
+                            grid_cols,
+                            // Pipe the caret rect to TSF so the IME candidate
+                            // window opens at the terminal cursor.
+                            move |caret| {
+                                tsf::set_caret(caret.map(|(left, top, right, bottom)| {
+                                    rikka_terminal_gpui_ime::CaretRect {
+                                        left,
+                                        top,
+                                        right,
+                                        bottom,
                                     }
-                                    selection::register_mouse_selection(
-                                        window,
-                                        view.clone(),
-                                        bounds,
-                                        0,
-                                        cw,
-                                        ch,
-                                        grid_rows,
-                                        grid_cols,
-                                    );
-                                },
-                            )
-                            // Pin to the relative wrapper's origin: a bare
-                            // `absolute()` has auto insets and falls back to
-                            // the static position BELOW the grid sibling,
-                            // which breaks the bounds every listener checks
-                            // (selection dead, IME caret 400px off).
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full(),
-                        ),
+                                }));
+                            },
+                        )),
                 )
                 // Right-click menu, same actions as the Ctrl+Shift chords.
                 // Attached to the pane — a plain flex div, NEVER a scroll

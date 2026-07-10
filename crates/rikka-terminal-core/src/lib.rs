@@ -3,6 +3,7 @@ pub mod ime;
 pub mod keys;
 pub mod kitty_graphics;
 pub mod notify;
+pub mod pane;
 pub mod progress;
 pub mod pty_session;
 pub mod renderer;
