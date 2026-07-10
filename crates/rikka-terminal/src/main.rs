@@ -688,6 +688,10 @@ impl Render for TabsWindow {
                         .id("tab-new-menu")
                         .w(px(18.))
                         .h(px(24.))
+                        // Breathing room from [+]: they are distinct actions
+                        // (new default tab vs. pick a profile), not a merged
+                        // split button.
+                        .ml(px(6.))
                         .mb(px((TAB_H - 24.0) / 2.0))
                         .flex()
                         .items_center()
