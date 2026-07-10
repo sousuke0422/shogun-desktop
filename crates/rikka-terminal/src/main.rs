@@ -29,9 +29,9 @@ use std::time::Duration;
 use anyhow::Result;
 use gpui::{
     App, Application, Bounds, ClickEvent, Context, ElementInputHandler, Entity,
-    EntityInputHandler as _, FocusHandle, KeyDownEvent, ScrollDelta, ScrollWheelEvent,
-    TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions, canvas, div, point,
-    prelude::*, px, rgb, size,
+    EntityInputHandler as _, FocusHandle, KeyDownEvent, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions,
+    canvas, div, point, prelude::*, px, rgb, size,
 };
 use parking_lot::FairMutex;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -254,6 +254,9 @@ pub struct TabsWindow {
     applied_title: Option<String>,
     /// The new-tab profile dropdown is open (rendered below the strip).
     profile_menu: bool,
+    /// Horizontal scroll of the tab viewport (Firefox-style overflow: when
+    /// tabs would push the caption buttons, they scroll here instead).
+    strip_scroll: ScrollHandle,
 }
 
 impl ImeHost for TabsWindow {
@@ -317,6 +320,7 @@ impl TabsWindow {
             rows: 0,
             applied_title: None,
             profile_menu: false,
+            strip_scroll: ScrollHandle::default(),
         };
         for entry in initial {
             this.adopt(entry, cx);
@@ -456,6 +460,9 @@ fn caption_button(glyph: &'static str, area: WindowControlArea) -> impl IntoElem
     div()
         .w(px(46.))
         .h_full()
+        // Never shrink: the caption group stays pinned right and full-size no
+        // matter how many tabs crowd the strip (they scroll instead).
+        .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
@@ -552,14 +559,27 @@ impl Render for TabsWindow {
             .map(|(i, p)| (i, p.name.clone()))
             .collect();
         let has_profile_menu = profiles.len() > 1;
-        let strip = div()
-            .w_full()
-            .h(px(TAB_STRIP_H))
+        // Firefox-style tab overflow: tabs shrink to a 100px floor, then
+        // scroll (caption buttons stay pinned) once even the floored tabs
+        // plus [+]/⌄ can't fit left of the caption group and the arrows.
+        let plus_w = 32.0 + if has_profile_menu { 18.0 } else { 0.0 };
+        let avail = (vp.width / px(1.)) - 8.0 - (3.0 * 46.0) - (2.0 * 24.0);
+        let needs_scroll = (self.tabs.len() as f32 * 100.0 + plus_w) > avail;
+        let tab_viewport = div()
+            .id("tab-viewport")
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .flex()
             .flex_row()
             .items_end()
-            .pl_2()
-            .bg(chrome_fill())
+            .map(|v| {
+                if needs_scroll {
+                    v.overflow_x_scroll().track_scroll(&self.strip_scroll)
+                } else {
+                    v.overflow_hidden()
+                }
+            })
             .children(self.tabs.iter().enumerate().flat_map(|(ix, entry)| {
                 let title = entry
                     .0
@@ -685,16 +705,58 @@ impl Render for TabsWindow {
                 )
             })
             .child(
-                // Empty strip = the window's drag surface. HTCAPTION buys
-                // drag, double-click maximize, Aero-snap and the system menu
-                // natively. Deliberately a SIBLING of the tabs, not their
-                // parent: the NC hit-test checks every hitbox under the
-                // point, so a parent drag area would eat tab clicks.
+                // Trailing drag filler INSIDE the viewport: draggable empty
+                // space when tabs are few; collapses to zero (and the tabs
+                // scroll) when they overflow. HTCAPTION buys native drag,
+                // double-click maximize, snap and the system menu.
                 div()
                     .flex_1()
                     .h_full()
                     .window_control_area(WindowControlArea::Drag),
-            )
+            );
+
+        // ChevronLeft / ChevronRight, shown only when the tabs overflow. Each
+        // click nudges the viewport by ~2 tabs, clamped to the scroll range.
+        let scroll_arrow = |id: &'static str, glyph: &'static str, dir: f32| {
+            div()
+                .id(id)
+                .flex_shrink_0()
+                .w(px(22.))
+                .h(px(24.))
+                .mb(px((TAB_H - 24.0) / 2.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .font_family("Segoe MDL2 Assets")
+                .text_size(px(10.))
+                .text_color(gpui::rgba(TEXT_SECONDARY))
+                .hover(|t| t.bg(gpui::rgba(SUBTLE_HOVER)).text_color(rgb(TEXT_PRIMARY)))
+                .child(glyph)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _win, cx| {
+                    let cur = this.strip_scroll.offset().x / px(1.);
+                    let maxw = this.strip_scroll.max_offset().width / px(1.);
+                    let nx = (cur + dir * 220.0).clamp(-maxw, 0.0);
+                    this.strip_scroll.set_offset(point(px(nx), px(0.)));
+                    cx.notify();
+                }))
+        };
+
+        let strip = div()
+            .w_full()
+            .h(px(TAB_STRIP_H))
+            .flex()
+            .flex_row()
+            .items_end()
+            .pl_2()
+            .bg(chrome_fill())
+            .when(needs_scroll, |s| {
+                s.child(scroll_arrow("tab-scroll-left", "\u{E76B}", 1.0))
+            })
+            .child(tab_viewport)
+            .when(needs_scroll, |s| {
+                s.child(scroll_arrow("tab-scroll-right", "\u{E76C}", -1.0))
+            })
             .child(caption_button("\u{E921}", WindowControlArea::Min))
             .child(caption_button(
                 if maximized { "\u{E923}" } else { "\u{E922}" },
