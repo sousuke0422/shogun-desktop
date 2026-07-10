@@ -1517,6 +1517,27 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_url_reconstructs_full_uri_on_both_rows() {
+        // A realistic long URL (query string) soft-wrapped by a narrow term:
+        // every linked cell, on either row, must resolve to the WHOLE URL,
+        // which is what a click hands to open_url.
+        let mut term = make_term(38, 5);
+        let full = "https://example.com/some/really/long/path/that/wraps?q=value&more=1";
+        advance_bytes(&mut term, full.as_bytes());
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.links, vec![full.to_string()]);
+        let idx0 = snap.cells[0][5].link.expect("row 0 should be linked");
+        let idx1 = snap.cells[1][5]
+            .link
+            .expect("row 1 (wrap) should be linked");
+        assert_eq!(snap.links[idx0 as usize], full);
+        assert_eq!(
+            snap.links[idx1 as usize], full,
+            "wrap continuation truncated"
+        );
+    }
+
+    #[test]
     fn osc8_wins_over_implicit_detection() {
         let mut term = make_term(40, 2);
         // The visible text looks like a URL, but OSC 8 says it points
