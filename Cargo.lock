@@ -5631,6 +5631,12 @@ dependencies = [
 [[package]]
 name = "rikka-terminal-windows-integration"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rikka-terminal-ipc",
+ "windows 0.61.3",
+ "windows-core 0.61.2",
+]
 
 [[package]]
 name = "ring"

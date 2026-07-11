@@ -11,10 +11,23 @@ description = "RikkaTerminal's Windows OS-integration home. First tenant: the de
 name = "rikka-handoff"
 path = "src/main.rs"
 
-[dependencies]
-# P1 is an inert registration placeholder — no deps.
-# P2 adds the COM server:
-#   windows = { version = "0.x", features = [
-#     "Win32_System_Com", "Win32_System_Console", "Win32_Foundation",
-#     "Win32_Security", "Win32_System_Pipes",
-#   ] }
+# Windows-only by nature: off-Windows the bin compiles to an inert stub with
+# no dependencies at all.
+[target.'cfg(windows)'.dependencies]
+rikka-terminal-ipc = { path = "../rikka-terminal-ipc" }
+anyhow = "1"
+# Direct dep required: the #[interface]/#[implement] expansions reference the
+# literal crate path `windows_core::…`.
+windows-core = "0.61"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.61"
+features = [
+    # (the #[interface]/#[implement] macros and the *_Impl traits ship
+    # unconditionally in windows 0.61 — no feature gate)
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+]

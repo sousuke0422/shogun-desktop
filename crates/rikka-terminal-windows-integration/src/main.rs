@@ -1,29 +1,31 @@
 //! RikkaTerminal handoff shim (`rikka-handoff.exe`).
 //!
-//! Windows 11's "default terminal application" hands a newly launched console
+//! Windows' "default terminal application" hands a newly launched console
 //! session to the registered terminal over COM (`ITerminalHandoff3`). This
-//! binary is that registered terminal COM server. It lives in its OWN crate so
-//! `rt` itself never links COM/handoff code — the separation the design calls
-//! for: the shim owns COM, `rt` stays a plain terminal.
+//! binary is that COM server. It lives in its OWN crate so `rt` itself never
+//! links COM/handoff code — the shim owns COM, `rt` stays a plain terminal.
 //!
-//! # P1 — UI registration (this file)
-//! An INERT placeholder. The sparse package manifest only needs this exe to
-//! EXIST for RikkaTerminal to enumerate in the default-terminal dropdown;
-//! nothing activates it unless the user SELECTS RikkaTerminal as the default,
-//! which P1 deliberately does not do. So P1 ships a stub that does nothing.
-//!
-//! # P2 — shared IPC (next)
-//! Implement the COM class factory + `ITerminalHandoff3`. In
-//! `EstablishPtyHandoff`, `DuplicateHandle` the PTY in/out/signal pipes into
-//! the running `rt` main process (start it once if absent), then send an
-//! `AttachPty { .., target: NewWindow }` message over the shared named pipe.
-//! The shim connects DIRECTLY to `rt` main (no launcher chain), returns S_OK,
-//! and exits. Elevated handoffs branch to a new elevated `rt` (P3).
+//! P1 shipped it as an inert dropdown placeholder; P2 (this) implements the
+//! server: COM activates the exe with `-Embedding` only once the user has
+//! selected RikkaTerminal as the default terminal, `EstablishPtyHandoff`
+//! relays the console session to the running `rikka-terminal` monarch over
+//! the shared IPC (see `server`), and the process exits. Without a running
+//! monarch the handoff fails over to conhost — the cold start (launching
+//! `rikka-terminal` with inherited handles, IPC.md "attach cold") is a later
+//! increment.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod server;
+
 fn main() {
-    // Inert until P2. COM would launch us with `-Embedding` only after
-    // RikkaTerminal is selected as the default terminal (not in P1); until the
-    // real class-factory message loop lands, just exit cleanly rather than
-    // linger as a dead COM server.
+    // COM launches a LocalServer32 with `-Embedding`; anything else is a
+    // manual or installer launch and stays inert (P1 behavior — the sparse
+    // package only needs the exe to exist).
+    #[cfg(windows)]
+    if std::env::args()
+        .any(|a| a.eq_ignore_ascii_case("-embedding") || a.eq_ignore_ascii_case("/embedding"))
+    {
+        server::run();
+    }
 }
