@@ -31,7 +31,10 @@ fn env_override() -> Option<bool> {
     static OVERRIDE: OnceLock<Option<bool>> = OnceLock::new();
     *OVERRIDE.get_or_init(|| {
         std::env::var("SHOGUN_TSF").ok().map(|v| {
-            !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no")
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
         })
     })
 }
