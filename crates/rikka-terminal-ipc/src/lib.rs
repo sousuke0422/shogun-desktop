@@ -144,13 +144,24 @@ pub struct Response {
 
 impl Response {
     pub fn ok() -> Self {
-        Self { ok: true, ..Default::default() }
+        Self {
+            ok: true,
+            ..Default::default()
+        }
     }
     pub fn with_window(id: u64) -> Self {
-        Self { ok: true, window_id: Some(id), ..Default::default() }
+        Self {
+            ok: true,
+            window_id: Some(id),
+            ..Default::default()
+        }
     }
     pub fn error(msg: impl Into<String>) -> Self {
-        Self { ok: false, error: Some(msg.into()), ..Default::default() }
+        Self {
+            ok: false,
+            error: Some(msg.into()),
+            ..Default::default()
+        }
     }
 }
 
@@ -177,7 +188,11 @@ fn json_err(e: serde_json::Error) -> io::Error {
 /// Write `body` inside a `{ "v": PROTOCOL_VERSION, … }` envelope as one
 /// length-prefixed frame.
 pub fn write_frame<W: Write, T: Serialize>(w: &mut W, body: &T) -> io::Result<()> {
-    let json = serde_json::to_vec(&EnvelopeRef { v: PROTOCOL_VERSION, body }).map_err(json_err)?;
+    let json = serde_json::to_vec(&EnvelopeRef {
+        v: PROTOCOL_VERSION,
+        body,
+    })
+    .map_err(json_err)?;
     let len = u32::try_from(json.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame exceeds u32"))?;
     w.write_all(&len.to_le_bytes())?;
@@ -214,7 +229,11 @@ mod tests {
             argv: vec!["pwsh".into()],
             ..Default::default()
         });
-        let s = serde_json::to_string(&EnvelopeRef { v: PROTOCOL_VERSION, body: &req }).unwrap();
+        let s = serde_json::to_string(&EnvelopeRef {
+            v: PROTOCOL_VERSION,
+            body: &req,
+        })
+        .unwrap();
         assert!(s.contains("\"v\":1"), "{s}");
         assert!(s.contains("\"op\":\"spawn\""), "{s}");
         assert!(s.contains("\"target\":\"new\""), "{s}");
@@ -224,7 +243,11 @@ mod tests {
     fn attach_target_window_frame_roundtrips() {
         let req = Request::Attach(AttachArgs {
             pid: 42,
-            handles: Handles { input: 3, output: 4, ..Default::default() },
+            handles: Handles {
+                input: 3,
+                output: 4,
+                ..Default::default()
+            },
             target: Target::Window(7),
             ..Default::default()
         });

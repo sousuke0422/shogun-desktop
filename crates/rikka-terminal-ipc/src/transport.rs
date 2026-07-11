@@ -7,7 +7,9 @@
 //! `interprocess` directly.
 
 use crate::{Request, Response, read_frame, write_frame};
-use interprocess::local_socket::{GenericNamespaced, Listener, ListenerOptions, Stream, prelude::*};
+use interprocess::local_socket::{
+    GenericNamespaced, Listener, ListenerOptions, Stream, prelude::*,
+};
 use std::io;
 
 /// The per-user endpoint name (namespaced): Windows maps it to `\\.\pipe\…`,
