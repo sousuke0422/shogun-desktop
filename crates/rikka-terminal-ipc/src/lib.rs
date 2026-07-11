@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::{self, Read, Write};
 
+pub mod transport;
+
 /// Protocol version, carried in every frame's envelope (`{ "v": … }`).
 pub const PROTOCOL_VERSION: u32 = 1;
 
