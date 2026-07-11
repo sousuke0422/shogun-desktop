@@ -15,7 +15,7 @@ exclude = ["crates/alacritty_terminal", "crates/gpui"]
 
 [package]
 name = "shogun-desktop"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 
 [dependencies]
