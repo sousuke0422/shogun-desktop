@@ -5,6 +5,7 @@ pub mod kitty_graphics;
 pub mod notify;
 pub mod pane;
 pub mod progress;
+pub mod pty_handoff;
 pub mod pty_session;
 pub mod renderer;
 pub mod selection;
