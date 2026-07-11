@@ -856,16 +856,24 @@ impl Render for TabsWindow {
                         ))
                         // Shared pane overlay (IME handler + selection
                         // listeners + caret). Single-sourced in the engine so
-                        // shogun-desktop and rikka hit-test identically.
+                        // shogun-desktop and rikka hit-test identically. The
+                        // wrapper above is already the grid's content box, so
+                        // the overlay pins flush (inset 0); the PTY resize is
+                        // driven from the viewport, so no size sink is needed.
                         .child(rikka_terminal_core::pane::pane_overlay(
-                            focus_handle,
-                            ime,
-                            view,
-                            0,
-                            cw,
-                            ch,
-                            grid_rows,
-                            grid_cols,
+                            rikka_terminal_core::pane::PaneOverlay {
+                                focus_handle,
+                                ime,
+                                view,
+                                pane: 0,
+                                cw,
+                                ch,
+                                grid_rows,
+                                grid_cols,
+                                inset: 0.0,
+                                caret_enabled: true,
+                                measured: None,
+                            },
                             // Pipe the caret rect to TSF so the IME candidate
                             // window opens at the terminal cursor.
                             move |caret| {

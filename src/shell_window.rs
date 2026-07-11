@@ -13,10 +13,9 @@ use crate::window::{
     TerminalSendBacktab, TerminalSendTab, measure_cell_metrics,
 };
 use gpui::{
-    App, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
-    IntoElement, KeyDownEvent, ParentElement, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent,
-    StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, canvas, div,
-    prelude::*, px, size,
+    App, Bounds, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, ParentElement, Render,
+    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, Window,
+    WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{Root, v_flex};
@@ -565,9 +564,10 @@ impl Render for ShellWindow {
             // Overlay: registers the IME input handler (GPUI only routes
             // WM_CHAR / IME composition to a registered handler) and the
             // shared mouse-selection listeners, and reports the pane size for
-            // PTY resize. Nothing may be *drawn* from this canvas — paint
-            // calls issued here never reach the screen (verified 2026-07-03);
-            // the preedit and selection highlight are painted by render_grid.
+            // PTY resize. The hit-testing/IME core is single-sourced in the
+            // engine (`rikka_terminal_core::pane`) so a fix or regression test
+            // here also covers RikkaTerminal; nothing is *drawn* from it
+            // (verified 2026-07-03) — render_grid paints preedit + selection.
             //
             // The canvas lives OUTSIDE the scroll container, as a sibling in
             // a relative wrapper: taffy sizes absolute children of a scroll
@@ -575,62 +575,37 @@ impl Render for ShellWindow {
             // height tracked the grid (rows × cell) instead of the viewport —
             // rows could then never shrink or grow past the spawn size (the
             // resize-never-fires bug, found 2026-07-05). The wrapper's box IS
-            // the pane's border box, and the pane never scrolls (the grid
-            // always fits exactly), so the overlay geometry is identical.
-            let overlay = canvas(
-                |_bounds, _window, _cx| (),
-                move |bounds, (), window, cx: &mut App| {
-                    // Report the painted pane size back to the view
-                    // (deferred notify — we are inside paint) so the
-                    // PTY is resized to the true fit.
-                    let painted = (bounds.size.width / px(1.), bounds.size.height / px(1.));
-                    let (pw, ph) = pane_measured.get();
-                    if (pw - painted.0).abs() > 0.5 || (ph - painted.1).abs() > 0.5 {
-                        pane_measured.set(painted);
-                        let view = view.clone();
-                        cx.defer(move |cx| view.update(cx, |_, cx| cx.notify()));
-                    }
-
-                    window.handle_input(
-                        &focus_handle,
-                        ElementInputHandler::new(bounds, ime.clone()),
-                        cx,
-                    );
-
-                    // TSF (gated): feed the caret rect (client physical px) so
-                    // the IME candidate window opens at the terminal cursor.
-                    if crate::tsf::enabled() && focus_handle.is_focused(window) {
-                        let caret = ime
-                            .update(cx, |ime, cx| ime.bounds_for_range(0..0, bounds, window, cx));
-                        let scale = window.scale_factor();
-                        crate::tsf::set_caret(caret.map(|b| rikka_terminal_gpui_ime::CaretRect {
-                            left: (f32::from(b.origin.x) * scale) as i32,
-                            top: (f32::from(b.origin.y) * scale) as i32,
-                            right: ((f32::from(b.origin.x) + f32::from(b.size.width)) * scale)
-                                as i32,
-                            bottom: ((f32::from(b.origin.y) + f32::from(b.size.height)) * scale)
-                                as i32,
-                        }));
-                    }
-                    selection::register_mouse_selection(
-                        window,
-                        view.clone(),
-                        bounds,
-                        0,
-                        cw,
-                        ch,
-                        grid_rows,
-                        grid_cols,
-                    );
+            // the pane's border box; the overlay insets by the pane's `.p_1()`
+            // so it lines up with the grid content box, and the `measured`
+            // sink hands the painted size back for the PTY resize.
+            let overlay = rikka_terminal_core::pane::pane_overlay(
+                rikka_terminal_core::pane::PaneOverlay {
+                    focus_handle,
+                    ime,
+                    view,
+                    pane: 0,
+                    cw,
+                    ch,
+                    grid_rows,
+                    grid_cols,
+                    inset: TERMINAL_PANE_PADDING_PX / 2.0,
+                    caret_enabled: crate::tsf::enabled(),
+                    measured: Some(pane_measured),
                 },
-            )
-            // Pinned to the pane's content box (border box minus the
-            // pane's p_1 padding) via the relative wrapper.
-            .absolute()
-            .top(px(TERMINAL_PANE_PADDING_PX / 2.0))
-            .left(px(TERMINAL_PANE_PADDING_PX / 2.0))
-            .right(px(TERMINAL_PANE_PADDING_PX / 2.0))
-            .bottom(px(TERMINAL_PANE_PADDING_PX / 2.0));
+                // TSF (gated by caret_enabled above): feed the caret rect
+                // (client physical px) so the IME candidate window opens at
+                // the terminal cursor.
+                move |caret| {
+                    crate::tsf::set_caret(caret.map(|(left, top, right, bottom)| {
+                        rikka_terminal_gpui_ime::CaretRect {
+                            left,
+                            top,
+                            right,
+                            bottom,
+                        }
+                    }));
+                },
+            );
 
             div()
                 .relative()
