@@ -9,6 +9,7 @@ members = [
     "crates/rikka-terminal-agent-integration",
     "crates/rikka-terminal-gpui-ime",
     "crates/rikka-terminal-ssh-integration",
+    "crates/rikka-terminal-windows-integration",
     "crates/shogun-core",
 ]
 exclude = ["crates/alacritty_terminal", "crates/gpui"]

@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  RikkaTerminal — sparse (external-location) package manifest.
+
+  PURPOSE (P1 = "UI registration"): make RikkaTerminal appear as a selectable
+  entry in the Windows 11 "Default terminal application" dropdown, WITHOUT
+  putting rt.exe inside an MSIX and WITHOUT changing the active default
+  (HKCU\Console\%%Startup is untouched — installing this only ADDS a candidate).
+
+  HOW IT WORKS (verified against microsoft/terminal Package.appxmanifest):
+  Windows enumerates the dropdown from two well-known windows.appExtension
+  entries — "com.microsoft.windows.console.host" and
+  "com.microsoft.windows.terminal.host" — each carrying a <Clsid>. The
+  DisplayName is what shows in the dropdown. The com:Extension below maps those
+  CLSIDs to executables (console side reuses our vendored OpenConsole.exe; the
+  terminal side is our own rikka-handoff.exe stub).
+
+  EXTERNAL LOCATION: this package carries NO binaries. rt.exe, OpenConsole.exe
+  and rikka-handoff.exe all live in the normal (unpackaged) install dir, which
+  is supplied at install time via `Add-AppxPackage -ExternalLocation <dir>`.
+  uap10:AllowExternalContent=true is what permits that. So rt stays a plain exe.
+
+  BEFORE PACKING — replace the three REPLACE_ME markers:
+    * Publisher  : MUST exactly match the subject of your signing cert
+                   (self-signed for local testing).
+    * two CLSIDs : generate fresh with `[guid]::NewGuid()` — do NOT reuse WT's.
+  The two GUIDs below are random placeholders; regenerate your own.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 com desktop rescap">
+
+  <Identity
+    Name="RikkaTerminal"
+    Publisher="CN=REPLACE_ME_CERT_SUBJECT"
+    Version="0.1.0.0" />
+
+  <Properties>
+    <DisplayName>RikkaTerminal</DisplayName>
+    <PublisherDisplayName>RikkaTerminal</PublisherDisplayName>
+    <Logo>Images\StoreLogo.png</Logo>
+    <!-- Permits the external-location install (binaries stay unpackaged). -->
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Dependencies>
+    <!-- Floor = Win10 2004 (19041), the sparse external-location minimum
+         (AllowExternalContent). The default-terminal handoff also works on
+         Windows 10 — set via WT's own Startup dropdown, the OS honors the
+         delegation (confirmed on a Win10 box) — even though Win10's Settings
+         app no longer surfaces the option. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App"
+      Executable="rikka-terminal.exe"
+      uap10:RuntimeBehavior="packagedClassicApp"
+      uap10:TrustLevel="mediumIL">
+      <uap:VisualElements
+        DisplayName="RikkaTerminal"
+        Description="RikkaTerminal"
+        BackgroundColor="transparent"
+        Square150x150Logo="Images\Square150x150Logo.png"
+        Square44x44Logo="Images\Square44x44Logo.png" />
+
+      <Extensions>
+        <!-- ① Console-host provider (IConsoleHandoff). We reuse the vendored
+             Microsoft OpenConsole.exe as the console host, registered under our
+             OWN fresh CLSID (never WT's {2EACA947...}). -->
+        <uap3:Extension Category="windows.appExtension">
+          <uap3:AppExtension
+            Name="com.microsoft.windows.console.host"
+            Id="RikkaConsoleHost"
+            DisplayName="RikkaTerminal"
+            Description="RikkaTerminal console host"
+            PublicFolder="Public">
+            <uap3:Properties>
+              <Clsid>{7B9A6E10-4C2D-4E8F-A1B3-2F6C8D9E0A11}</Clsid> <!-- REPLACE_ME (fresh GUID) -->
+            </uap3:Properties>
+          </uap3:AppExtension>
+        </uap3:Extension>
+
+        <!-- ② Terminal provider (ITerminalHandoff3). This is what shows in the
+             dropdown as "RikkaTerminal" and receives EstablishPtyHandoff. In
+             P1 the target exe (rikka-handoff.exe) is a stub; P2 makes it relay
+             to the running rt main over the shared pipe. -->
+        <uap3:Extension Category="windows.appExtension">
+          <uap3:AppExtension
+            Name="com.microsoft.windows.terminal.host"
+            Id="RikkaTerminalHost"
+            DisplayName="RikkaTerminal"
+            Description="RikkaTerminal"
+            PublicFolder="Public">
+            <uap3:Properties>
+              <Clsid>{C3E8F214-5A7B-4D9E-8C1F-3B6E9A2D4F55}</Clsid> <!-- REPLACE_ME (fresh GUID) -->
+            </uap3:Properties>
+          </uap3:AppExtension>
+        </uap3:Extension>
+
+        <!-- CLSID -> executable mapping. NOTE (confirm on a Win11 build):
+             WT's manifest declares the appExtensions above; whether this
+             com:Extension is strictly required or the FullTrust exe can
+             self-register its class factory at runtime (-Embedding) needs
+             device verification. Included here as the explicit, safe form. -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer Executable="OpenConsole.exe" DisplayName="RikkaTerminal Console Host">
+              <com:Class Id="7B9A6E10-4C2D-4E8F-A1B3-2F6C8D9E0A11" /> <!-- REPLACE_ME -->
+            </com:ExeServer>
+            <com:ExeServer Executable="rikka-handoff.exe" DisplayName="RikkaTerminal" Arguments="-Embedding">
+              <com:Class Id="C3E8F214-5A7B-4D9E-8C1F-3B6E9A2D4F55" /> <!-- REPLACE_ME -->
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

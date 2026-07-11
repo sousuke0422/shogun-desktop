@@ -1,0 +1,20 @@
+[package]
+name = "rikka-terminal-windows-integration"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "RikkaTerminal's Windows OS-integration home. First tenant: the default-terminal handoff shim (rikka-handoff.exe) — registered as the terminal COM server (ITerminalHandoff3), receives the OS handoff, relays it to the running RikkaTerminal over the shared IPC. Kept out of rt so rt itself never links COM."
+
+# The manifest (crates/rikka-terminal/packaging/AppxManifest.xml) references
+# this as `rikka-handoff.exe`, so pin the binary name independent of the crate.
+[[bin]]
+name = "rikka-handoff"
+path = "src/main.rs"
+
+[dependencies]
+# P1 is an inert registration placeholder — no deps.
+# P2 adds the COM server:
+#   windows = { version = "0.x", features = [
+#     "Win32_System_Com", "Win32_System_Console", "Win32_Foundation",
+#     "Win32_Security", "Win32_System_Pipes",
+#   ] }
