@@ -27,6 +27,7 @@ pub struct SettingsTab {
     pub desktop_notifications: bool,
     pub desktop_notifications_multiagent: bool,
     pub tmux_forward_titles: bool,
+    pub tsf: bool,
     pub terminal_identity: crate::settings::TerminalIdentity,
     pub term_name: crate::settings::TermName,
     agents: Vec<String>,
@@ -116,6 +117,7 @@ impl SettingsTab {
             desktop_notifications: settings.terminal.desktop_notifications,
             desktop_notifications_multiagent: settings.terminal.desktop_notifications_multiagent,
             tmux_forward_titles: settings.terminal.tmux_forward_titles,
+            tsf: settings.terminal.tsf,
             terminal_identity: settings.terminal.identity,
             term_name: settings.terminal.term,
             agents: settings.sessions.agents.clone(),
@@ -166,6 +168,7 @@ impl SettingsTab {
                 desktop_notifications: self.desktop_notifications,
                 desktop_notifications_multiagent: self.desktop_notifications_multiagent,
                 tmux_forward_titles: self.tmux_forward_titles,
+                tsf: self.tsf,
                 identity: self.terminal_identity,
                 term: self.term_name,
             },
@@ -183,6 +186,7 @@ pub fn render_settings_tab(
     accept_all_host_keys_toggle: impl IntoElement,
     font_preset_buttons: impl IntoElement,
     notification_toggles: impl IntoElement,
+    tsf_toggle: impl IntoElement,
     terminal_identity_selector: impl IntoElement,
     term_name_selector: impl IntoElement,
     term_name_warning: Option<SharedString>,
@@ -260,6 +264,11 @@ pub fn render_settings_tab(
                         ))
                         .child(field_label("デスクトップ通知（OSC 9 / 777）"))
                         .child(notification_toggles)
+                        .child(field_label("日本語入力（IME / TSF）"))
+                        .child(tsf_toggle)
+                        .child(hint(
+                            "オンでタスクバーの あ/A がこの窓に追従し、Google 日本語入力・Mozc が正しく変換できる。オフは従来の IMM32 のみ（インジケータ非追従）。切替は次に端末へ入った時に反映",
+                        ))
                         .child(field_label("端末の名乗り（XTVERSION）"))
                         .child(terminal_identity_selector)
                         .child(hint(

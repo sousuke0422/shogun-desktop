@@ -9,17 +9,44 @@
 //! to the PTY. We drive focus/blur from the app's own window focus events so
 //! gpui stays untouched.
 //!
-//! Gated by the `SHOGUN_TSF` env var until the TSF input path has soaked;
-//! default behaviour is unchanged (pure IMM32).
+//! Controlled by the `terminal.tsf` setting (on by default). The `SHOGUN_TSF`
+//! env var, if set, overrides the setting either way (`SHOGUN_TSF=0` forces
+//! off) — the e2e harness and quick A/B checks use it.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rikka_terminal_gpui_ime::{ImeEvent, TextSnapshot, TsfTextClient};
 
-/// Opt-in while the TSF input path is under validation.
+/// Runtime enable flag. Seeded from `terminal.tsf` at startup (see
+/// [`set_enabled`], called from `main`) and updated when settings are saved.
+/// Defaults on so a process that never seeds it still uses the TSF path.
+static ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// `SHOGUN_TSF` override, parsed once: `Some(true/false)` when the var is set,
+/// `None` when absent (fall through to the setting). Presence means on unless
+/// the value is an explicit falsey token, so `SHOGUN_TSF=1` and a bare
+/// `SHOGUN_TSF=` both force on while `SHOGUN_TSF=0` forces off.
+fn env_override() -> Option<bool> {
+    static OVERRIDE: OnceLock<Option<bool>> = OnceLock::new();
+    *OVERRIDE.get_or_init(|| {
+        std::env::var("SHOGUN_TSF").ok().map(|v| {
+            !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no")
+        })
+    })
+}
+
+/// Whether the TSF input path is active. The env override wins; otherwise the
+/// persisted `terminal.tsf` setting (via [`set_enabled`]).
 pub fn enabled() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("SHOGUN_TSF").is_some())
+    env_override().unwrap_or_else(|| ENABLED.load(Ordering::Relaxed))
+}
+
+/// Apply the persisted `terminal.tsf` setting. Call at startup and whenever
+/// settings are saved. The env override, when present, still wins in
+/// [`enabled`], so this is a no-op from the user's point of view under it.
+pub fn set_enabled(on: bool) {
+    ENABLED.store(on, Ordering::Relaxed);
 }
 
 /// A terminal has no editable document — the store starts empty and is reset

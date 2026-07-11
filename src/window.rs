@@ -1049,6 +1049,9 @@ impl ShogunWindow {
         crate::terminal::renderer::set_font_features(crate::settings::parse_font_features(
             &settings.terminal.font_features,
         ));
+        // TSF gate is read per-frame, so store it live (the toggle already
+        // did, but a save from any state re-syncs it); then persist below.
+        crate::tsf::set_enabled(settings.terminal.tsf);
         self.status_message = match save_settings(&settings) {
             Ok(()) => "設定を保存しました".into(),
             Err(err) => format!("保存失敗: {err}").into(),
@@ -1602,6 +1605,17 @@ impl Render for ShogunWindow {
                                 cx.notify();
                             })),
                     );
+                let tsf_toggle = Switch::new("tsf-ime")
+                    .checked(self.settings_tab.tsf)
+                    .label("TSF IME を使う（あ/A 追従・既定オン）")
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.settings_tab.tsf = *checked;
+                        // The gate is read per-frame; flip it live. On the
+                        // settings tab the terminal is already blurred, so the
+                        // change takes effect on the next terminal focus.
+                        crate::tsf::set_enabled(*checked);
+                        cx.notify();
+                    }));
                 let identity = self.settings_tab.terminal_identity;
                 let terminal_identity_selector = RadioGroup::horizontal("terminal-identity")
                     .selected_index(Some(match identity {
@@ -1720,6 +1734,7 @@ impl Render for ShogunWindow {
                     accept_all_host_keys_toggle,
                     font_preset_buttons,
                     notification_toggles,
+                    tsf_toggle,
                     terminal_identity_selector,
                     term_name_selector,
                     term_name_warning,

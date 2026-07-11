@@ -56,6 +56,14 @@ pub struct TerminalSettings {
     /// remote rc/attach routes act only when that var is set.
     #[serde(default = "default_true")]
     pub tmux_forward_titles: bool,
+    /// Windows TSF IME path. On: give the taskbar input indicator (あ/A) a
+    /// real text-store-backed focus document so it tracks this window, and
+    /// route composition through TSF (Google 日本語入力 / Mozc then compose
+    /// correctly). Off: fall back to the plain IMM32 path (no indicator
+    /// tracking). On by default. The `SHOGUN_TSF` env var, if set, overrides
+    /// this either way (`SHOGUN_TSF=0` forces off) — used by the e2e harness.
+    #[serde(default = "default_true")]
+    pub tsf: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
@@ -145,6 +153,7 @@ impl Default for TerminalSettings {
             term: TermName::default(),
             font_features: String::new(),
             tmux_forward_titles: true,
+            tsf: true,
         }
     }
 }
@@ -453,6 +462,7 @@ mod tests {
                 term: TermName::XtermGhostty,
                 font_features: "ss01, ss03".into(),
                 tmux_forward_titles: false,
+                tsf: false,
             },
             ..Default::default()
         };
@@ -461,6 +471,7 @@ mod tests {
         assert_eq!(parsed.terminal.font, "Cica");
         assert!(!parsed.terminal.desktop_notifications);
         assert!(parsed.terminal.desktop_notifications_multiagent);
+        assert!(!parsed.terminal.tsf);
     }
 
     #[test]
@@ -469,6 +480,15 @@ mod tests {
         // Master switch on; the noisy multiagent tab swallowed by default.
         assert!(parsed.terminal.desktop_notifications);
         assert!(!parsed.terminal.desktop_notifications_multiagent);
+    }
+
+    #[test]
+    fn tsf_defaults_on_when_absent() {
+        // Existing settings files predate the field; it must default on so the
+        // TSF IME path is the out-of-the-box behavior.
+        let parsed: ShogunDesktopSettings = toml::from_str("[terminal]\nfont = \"x\"\n").unwrap();
+        assert!(parsed.terminal.tsf);
+        assert!(ShogunDesktopSettings::default().terminal.tsf);
     }
 
     #[test]

@@ -78,12 +78,13 @@ fn main() {
     rikka_terminal_core::install_file_logger("shogun-desktop");
     // OpenType features apply engine-globally; set them before the first
     // frame (saving settings re-applies at runtime).
+    let startup_settings = settings::load_settings().unwrap_or_default();
     rikka_terminal_core::renderer::set_font_features(settings::parse_font_features(
-        &settings::load_settings()
-            .unwrap_or_default()
-            .terminal
-            .font_features,
+        &startup_settings.terminal.font_features,
     ));
+    // Seed the TSF enable flag from settings (on by default); saving settings
+    // re-applies it at runtime, and the SHOGUN_TSF env var still overrides.
+    tsf::set_enabled(startup_settings.terminal.tsf);
     // `--shell-window` (alias `--shell`) opens straight into a single shell
     // window instead of the full agent console — a lean surface for testing
     // the terminal pane (IME / selection / resize) in isolation.
