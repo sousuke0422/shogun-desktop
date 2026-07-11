@@ -95,7 +95,7 @@
             Description="RikkaTerminal console host"
             PublicFolder="Public">
             <uap3:Properties>
-              <Clsid>{7B9A6E10-4C2D-4E8F-A1B3-2F6C8D9E0A11}</Clsid> <!-- REPLACE_ME (fresh GUID) -->
+              <Clsid>{77F531BA-46BD-4E80-B0DF-8E45E1F7183B}</Clsid> <!-- minted 2026-07-12 ([guid]::NewGuid) -->
             </uap3:Properties>
           </uap3:AppExtension>
         </uap3:Extension>
@@ -112,7 +112,7 @@
             Description="Rikka Terminal"
             PublicFolder="Public">
             <uap3:Properties>
-              <Clsid>{C3E8F214-5A7B-4D9E-8C1F-3B6E9A2D4F55}</Clsid> <!-- REPLACE_ME (fresh GUID) -->
+              <Clsid>{0DA1B045-A599-4133-A9EE-A7A3893E1D62}</Clsid> <!-- minted 2026-07-12; must match CLSID_RIKKA_TERMINAL_HANDOFF in rikka-terminal-windows-integration -->
             </uap3:Properties>
           </uap3:AppExtension>
         </uap3:Extension>
@@ -125,10 +125,10 @@
         <com:Extension Category="windows.comServer">
           <com:ComServer>
             <com:ExeServer Executable="OpenConsole.exe" DisplayName="RikkaTerminal Console Host">
-              <com:Class Id="7B9A6E10-4C2D-4E8F-A1B3-2F6C8D9E0A11" /> <!-- REPLACE_ME -->
+              <com:Class Id="77F531BA-46BD-4E80-B0DF-8E45E1F7183B" />
             </com:ExeServer>
             <com:ExeServer Executable="rikka-handoff.exe" DisplayName="RikkaTerminal" Arguments="-Embedding">
-              <com:Class Id="C3E8F214-5A7B-4D9E-8C1F-3B6E9A2D4F55" /> <!-- REPLACE_ME -->
+              <com:Class Id="0DA1B045-A599-4133-A9EE-A7A3893E1D62" />
             </com:ExeServer>
           </com:ComServer>
         </com:Extension>
