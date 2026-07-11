@@ -5587,6 +5587,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rikka-terminal-ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rikka-terminal-ssh-integration"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,263 @@
+//! Shared local-IPC wire contract for RikkaTerminal.
+//!
+//! Used by three binaries — `rikka-terminal` (window process + monarch), `rt`
+//! (launcher), and `rikka-handoff` (the Windows default-terminal shim). This
+//! crate is the wire contract ONLY: message types, JSON (de)serialization, and
+//! length-prefixed framing. The transport (an `interprocess` local socket) and
+//! the platform handle transfer (`DuplicateHandle` / `SCM_RIGHTS`) live in the
+//! consumers. Design: `crates/rikka-terminal/IPC.md`.
+
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::io::{self, Read, Write};
+
+/// Protocol version, carried in every frame's envelope (`{ "v": … }`).
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Reject frames larger than this — guards against a corrupt length prefix.
+pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
+/// Where a new session should land.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Target {
+    /// A brand-new window — its own OS process (the crash-isolation default).
+    New,
+    /// A tab in the window with this id (explicit `-w <id>`, or a drag-merge).
+    Window(u64),
+}
+
+impl Default for Target {
+    fn default() -> Self {
+        Target::New
+    }
+}
+
+/// `spawn` payload — launcher path, strings only, all platforms.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpawnArgs {
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub argv: Vec<String>,
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub hold: bool,
+    #[serde(default)]
+    pub target: Target,
+}
+
+/// Handle values valid in the *sender's* process. The receiver pulls them
+/// across out-of-band (`DuplicateHandle` on Windows, `SCM_RIGHTS` on Unix).
+/// `i64` so a Windows HANDLE or a Unix fd both fit; `0` means "not present".
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct Handles {
+    pub input: i64,
+    pub output: i64,
+    #[serde(default)]
+    pub signal: i64,
+    #[serde(default)]
+    pub reference: i64,
+    #[serde(default)]
+    pub server: i64,
+    #[serde(default)]
+    pub client: i64,
+    /// A local ConPTY tab-move also carries the pseudoconsole + shell process.
+    #[serde(default)]
+    pub hpcon: i64,
+    #[serde(default)]
+    pub shell: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct StartupInfo {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub x: i32,
+    #[serde(default)]
+    pub y: i32,
+    #[serde(default)]
+    pub cols: u16,
+    #[serde(default)]
+    pub rows: u16,
+}
+
+/// `attach` payload — an OS handoff, a new window from a PTY, or a cross-window
+/// tab move. `pid` lets the receiver open the sender for the handle pull.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct AttachArgs {
+    pub pid: u32,
+    pub handles: Handles,
+    #[serde(default)]
+    pub startup: StartupInfo,
+    /// Serialized grid + scrollback for a tab-move; absent for an OS handoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<serde_json::Value>,
+    #[serde(default)]
+    pub elevated: bool,
+    #[serde(default)]
+    pub target: Target,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RegisterWindow {
+    pub pid: u32,
+    pub window_id: u64,
+    pub endpoint: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct WindowInfo {
+    pub id: u64,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// A request from a client (`rt` / `rikka-handoff` / a window process) to the
+/// monarch. Serializes to `{ "op": "<snake>", … }`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Request {
+    Ping,
+    Spawn(SpawnArgs),
+    Attach(AttachArgs),
+    RegisterWindow(RegisterWindow),
+    ListWindows,
+}
+
+/// The monarch's reply.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct Response {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows: Option<Vec<WindowInfo>>,
+}
+
+impl Response {
+    pub fn ok() -> Self {
+        Self { ok: true, ..Default::default() }
+    }
+    pub fn with_window(id: u64) -> Self {
+        Self { ok: true, window_id: Some(id), ..Default::default() }
+    }
+    pub fn error(msg: impl Into<String>) -> Self {
+        Self { ok: false, error: Some(msg.into()), ..Default::default() }
+    }
+}
+
+// ── framing: [u32 LE length][JSON of { "v": …, …body }] ──────────────────────
+
+#[derive(Deserialize)]
+struct Envelope<T> {
+    v: u32,
+    #[serde(flatten)]
+    body: T,
+}
+
+#[derive(Serialize)]
+struct EnvelopeRef<'a, T> {
+    v: u32,
+    #[serde(flatten)]
+    body: &'a T,
+}
+
+fn json_err(e: serde_json::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, e)
+}
+
+/// Write `body` inside a `{ "v": PROTOCOL_VERSION, … }` envelope as one
+/// length-prefixed frame.
+pub fn write_frame<W: Write, T: Serialize>(w: &mut W, body: &T) -> io::Result<()> {
+    let json = serde_json::to_vec(&EnvelopeRef { v: PROTOCOL_VERSION, body }).map_err(json_err)?;
+    let len = u32::try_from(json.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame exceeds u32"))?;
+    w.write_all(&len.to_le_bytes())?;
+    w.write_all(&json)?;
+    w.flush()
+}
+
+/// Read one length-prefixed frame; returns `(envelope version, body)`.
+pub fn read_frame<R: Read, T: DeserializeOwned>(r: &mut R) -> io::Result<(u32, T)> {
+    let mut len_buf = [0u8; 4];
+    r.read_exact(&mut len_buf)?;
+    let len = u32::from_le_bytes(len_buf) as usize;
+    if len > MAX_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame exceeds MAX_FRAME_BYTES",
+        ));
+    }
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf)?;
+    let env: Envelope<T> = serde_json::from_slice(&buf).map_err(json_err)?;
+    Ok((env.v, env.body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn spawn_json_is_flat_and_versioned() {
+        let req = Request::Spawn(SpawnArgs {
+            cwd: Some("/x".into()),
+            argv: vec!["pwsh".into()],
+            ..Default::default()
+        });
+        let s = serde_json::to_string(&EnvelopeRef { v: PROTOCOL_VERSION, body: &req }).unwrap();
+        assert!(s.contains("\"v\":1"), "{s}");
+        assert!(s.contains("\"op\":\"spawn\""), "{s}");
+        assert!(s.contains("\"target\":\"new\""), "{s}");
+    }
+
+    #[test]
+    fn attach_target_window_frame_roundtrips() {
+        let req = Request::Attach(AttachArgs {
+            pid: 42,
+            handles: Handles { input: 3, output: 4, ..Default::default() },
+            target: Target::Window(7),
+            ..Default::default()
+        });
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &req).unwrap();
+        let (v, got): (u32, Request) = read_frame(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(v, PROTOCOL_VERSION);
+        assert_eq!(got, req);
+    }
+
+    #[test]
+    fn response_roundtrips() {
+        let resp = Response::with_window(9);
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &resp).unwrap();
+        let (_, got): (u32, Response) = read_frame(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(got, resp);
+        assert_eq!(got.window_id, Some(9));
+    }
+
+    #[test]
+    fn unit_requests_roundtrip() {
+        for req in [Request::Ping, Request::ListWindows] {
+            let mut buf = Vec::new();
+            write_frame(&mut buf, &req).unwrap();
+            let (_, got): (u32, Request) = read_frame(&mut Cursor::new(&buf)).unwrap();
+            assert_eq!(got, req);
+        }
+    }
+
+    #[test]
+    fn oversized_length_prefix_is_rejected() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&u32::MAX.to_le_bytes());
+        let e = read_frame::<_, Request>(&mut Cursor::new(&buf)).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    }
+}

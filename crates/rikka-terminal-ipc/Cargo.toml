@@ -1,0 +1,10 @@
+[package]
+name = "rikka-terminal-ipc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Shared local-IPC wire contract for RikkaTerminal: message types + JSON + length-prefixed framing, used by rikka-terminal (monarch/window), rt (launcher), and rikka-handoff (Windows shim). Transport + handle transfer live in the consumers. See crates/rikka-terminal/IPC.md."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
