@@ -16,6 +16,8 @@
 // console for printf-style work; release diagnostics go to the panic log.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod attach;
 mod cli;
 mod config;
 mod hub;
@@ -1274,19 +1276,64 @@ fn forward_launch(endpoint: &str) -> std::io::Result<()> {
     }
 }
 
+/// A request accepted on the IPC thread, handed to the main (gpui) thread to
+/// open its window. An `Attach` session is already live (its PTY threads are
+/// pumping) — only the window wrapping needs the UI thread.
+enum Forwarded {
+    /// A forwarded launch: re-parse the CLI and open a window for it.
+    Spawn(Vec<String>),
+    /// An adopted OS handoff: wrap the session in a fresh window.
+    #[cfg(windows)]
+    Attach(Box<TerminalSession>, ipc::StartupInfo),
+}
+
+/// Adopt an `attach` on the IPC thread — the handle pull must finish while
+/// the sender still waits on our response — then queue the window opening.
+#[cfg(windows)]
+fn handle_attach(
+    tx: &futures::channel::mpsc::UnboundedSender<Forwarded>,
+    args: ipc::AttachArgs,
+) -> Result<()> {
+    if args.target != ipc::Target::New {
+        // Cross-window tab moves (`target: window:<id>`) land with inc6.
+        anyhow::bail!("attach: only target \"new\" is supported yet");
+    }
+    let session = attach::session_from_attach(&args)?;
+    tx.unbounded_send(Forwarded::Attach(Box::new(session), args.startup))
+        .map_err(|_| anyhow::anyhow!("monarch is shutting down"))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn handle_attach(
+    _tx: &futures::channel::mpsc::UnboundedSender<Forwarded>,
+    _args: ipc::AttachArgs,
+) -> Result<()> {
+    anyhow::bail!("attach is Windows-only (OS default-terminal handoff)")
+}
+
 /// Monarch side: accept forwarded launches on a background thread, and open a
 /// window for each on the main (gpui) thread via a channel.
 fn spawn_ipc_accept(cx: &mut App, monarch: ipc::transport::Monarch) {
-    let (tx, mut rx) = futures::channel::mpsc::unbounded::<Vec<String>>();
+    let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
     std::thread::Builder::new()
         .name("rikka-ipc".into())
         .spawn(move || {
             loop {
-                let Ok(mut conn) = monarch.accept() else { break };
+                let Ok(mut conn) = monarch.accept() else {
+                    break;
+                };
                 match conn.recv_request() {
                     Ok(ipc::Request::Spawn(s)) => {
-                        let _ = tx.unbounded_send(s.argv);
+                        let _ = tx.unbounded_send(Forwarded::Spawn(s.argv));
                         let _ = conn.send_response(&ipc::Response::ok());
+                    }
+                    Ok(ipc::Request::Attach(a)) => {
+                        let resp = match handle_attach(&tx, a) {
+                            Ok(()) => ipc::Response::ok(),
+                            Err(e) => ipc::Response::error(e.to_string()),
+                        };
+                        let _ = conn.send_response(&resp);
                     }
                     Ok(ipc::Request::Ping) => {
                         let _ = conn.send_response(&ipc::Response::ok());
@@ -1303,11 +1350,29 @@ fn spawn_ipc_accept(cx: &mut App, monarch: ipc::transport::Monarch) {
     async_cx
         .spawn(async move |cx| {
             use futures::StreamExt as _;
-            while let Some(argv) = rx.next().await {
-                let _ = cx.update(|cx| open_forwarded(cx, argv));
+            while let Some(msg) = rx.next().await {
+                let _ = cx.update(|cx| match msg {
+                    Forwarded::Spawn(argv) => open_forwarded(cx, argv),
+                    #[cfg(windows)]
+                    Forwarded::Attach(session, startup) => open_attached(cx, *session, startup),
+                });
             }
         })
         .detach();
+}
+
+/// Window for an adopted handoff session. Always its own new window, never an
+/// auto-tab (IPC.md's windowing rule); the tab title was seeded from the
+/// handoff's startup info when one was carried.
+#[cfg(windows)]
+fn open_attached(cx: &mut App, session: TerminalSession, startup: ipc::StartupInfo) {
+    let launch = cli::Launch {
+        size_cells: (startup.cols >= 2 && startup.rows >= 2)
+            .then_some((startup.cols, startup.rows)),
+        ..Default::default()
+    };
+    let entry = hub::new_tab(cx, session);
+    open_tabs_window_opts(cx, vec![entry], &launch);
 }
 
 /// Re-parse a forwarded CLI and open a window for it. Single-process for now;

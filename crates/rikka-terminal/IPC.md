@@ -68,7 +68,7 @@ Unknown `op` or `v` → error response. `ping` is liveness/handshake.
 { "v":1, "op":"spawn",
   "cwd":"…", "argv":["pwsh","-l"], "profile":"pwsh",
   "title":null, "hold":false,
-  "target":"new" | "window:<id>" }
+  "target":"new" | {"window":<id>} }
 ```
 
 Strings only. `target:"new"` → monarch spawns a new window process.
@@ -79,13 +79,20 @@ Strings only. `target:"new"` → monarch spawns a new window process.
 ```json
 { "v":1, "op":"attach",
   "pid":<sender pid>,
-  "handles":{ "in":…, "out":…, "signal":…, "ref":…, "server":…, "client":… },
+  "handles":{ "input":…, "output":…, "signal":…, "reference":…, "server":…, "client":… },
   "startup":{ "title":…, "x":…, "y":…, "cols":…, "rows":… },
   "state":<optional serialized grid+scrollback — tab-move only>,
   "elevated":false,
-  "target":"new" | "window:<id>" }
+  "target":"new" | {"window":<id>} }
 ```
 
+- **Who creates the VT pipes (OS handoff):** `ITerminalHandoff3` made `in`/
+  `out` **[out] params** — the *terminal* creates the pipe pair (so it owns
+  buffering choices) and returns the console's ends from the COM call;
+  `signal`/`reference`/`server`/`client` remain console-created `[in]`
+  handles. `handles.input`/`.output` in the message are therefore the shim's
+  OWN pipe ends (terminal side), pulled by the monarch like every other
+  handle.
 - **Handle transfer** = out-of-band, receiver-pulls:
   `OpenProcess(pid, PROCESS_DUP_HANDLE)` then
   `DuplicateHandle(sender → me, DUPLICATE_CLOSE_SOURCE)` per handle (ownership
