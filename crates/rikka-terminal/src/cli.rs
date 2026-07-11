@@ -19,6 +19,9 @@
 //!   `--attach-title`, and `--size` for the requested cells) — the
 //!   default-terminal cold start (IPC.md "attach cold"). Emitted by
 //!   rikka-handoff.exe with inherited handle values; never typed by hand
+//! - internal: `--window-process` — this instance was spawned by the running
+//!   monarch to host one window (crash isolation): skip the election, never
+//!   forward, register back instead. Never typed by hand
 //!
 //! Also speaks the common-core flags of Linux terminal emulators (xterm /
 //! gnome-terminal / alacritty / kitty), groundwork for the P3 Linux port:
@@ -78,6 +81,9 @@ pub struct Launch {
     /// `--attach`: a cold-start handoff. When set, the launch opens the
     /// adopted session instead of any `tabs`.
     pub attach: Option<AttachSpec>,
+    /// `--window-process`: spawned by the monarch to host one window — skip
+    /// the single-instance election and register with the spawner instead.
+    pub window_process: bool,
 }
 
 fn value_of(
@@ -190,6 +196,12 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
                     "--attach-title" => {
                         it.next();
                         attach_title = Some(value_of(&mut it, "--attach-title")?);
+                    }
+                    // Internal (the monarch): window-process mode — see
+                    // Launch::window_process.
+                    "--window-process" => {
+                        launch.window_process = true;
+                        it.next();
                     }
                     "-h" | "--help" | "-?" | "/?" => {
                         return Err(HELP.into());
@@ -542,6 +554,17 @@ mod tests {
         assert_eq!(a.title.as_deref(), Some("cmd"));
         assert_eq!(l.size_cells, Some((120, 40)));
         assert!(l.tabs.is_empty());
+    }
+
+    #[test]
+    fn window_process_flag_composes_with_a_normal_launch() {
+        let l = parse(v(&["--window-process", "nt", "-p", "pwsh"])).unwrap();
+        assert!(l.window_process);
+        assert_eq!(l.tabs[0].profile.as_deref(), Some("pwsh"));
+        // And with a relayed attach (the monarch's crash-isolation path).
+        let l = parse(v(&["--window-process", "--attach", "1,2,0,0,0,0"])).unwrap();
+        assert!(l.window_process);
+        assert!(l.attach.is_some());
     }
 
     #[test]

@@ -113,7 +113,9 @@ Strings only. `target:"new"` → monarch spawns a new window process.
 ```
 
 Window processes register with the monarch so it can route `target:"window:<id>"`
-and answer `-w` queries.
+and answer `-w` queries. v1: `window_id` = the process's pid, `endpoint` is
+empty (window processes bind no socket of their own until inc6's direct
+tab-move routing), and there is no liveness pruning yet.
 
 ## One primitive, three uses (`attach`)
 

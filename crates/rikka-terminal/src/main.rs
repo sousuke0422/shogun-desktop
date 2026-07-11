@@ -1234,6 +1234,9 @@ fn open_tabs_window_opts(cx: &mut App, initial: Vec<TabEntry>, launch: &cli::Lau
 enum Role {
     /// This process owns the socket — it hosts windows and serves forwards.
     Monarch(ipc::transport::Monarch),
+    /// Spawned by the monarch to host one window (crash isolation): no
+    /// socket, no forwarding — just register back with the spawner.
+    WindowProcess,
     /// Couldn't bind and couldn't forward (a rare race) — run a lone window.
     Standalone,
 }
@@ -1322,7 +1325,7 @@ fn open_inherited(cx: &mut App, launch: &cli::Launch) -> bool {
         return false;
     };
     let args = attach_request(a, launch);
-    match attach::session_from_local(&args) {
+    match attach::local_attach(&args).and_then(attach::LocalAttach::into_session) {
         Ok(session) => {
             open_attached(cx, session, args.startup);
             true
@@ -1354,7 +1357,9 @@ enum Forwarded {
 }
 
 /// Adopt an `attach` on the IPC thread — the handle pull must finish while
-/// the sender still waits on our response — then queue the window opening.
+/// the sender still waits on our response. The session then gets its own
+/// window process (crash isolation); only if that launch fails is it hosted
+/// in this process as a fallback.
 #[cfg(windows)]
 fn handle_attach(
     tx: &futures::channel::mpsc::UnboundedSender<Forwarded>,
@@ -1364,10 +1369,20 @@ fn handle_attach(
         // Cross-window tab moves (`target: window:<id>`) land with inc6.
         anyhow::bail!("attach: only target \"new\" is supported yet");
     }
-    let session = attach::session_from_attach(&args)?;
-    tx.unbounded_send(Forwarded::Attach(Box::new(session), args.startup))
-        .map_err(|_| anyhow::anyhow!("monarch is shutting down"))?;
-    Ok(())
+    let pulled = attach::pull_attach(&args)?;
+    match pulled.relay_to_window_process() {
+        // Dropping `pulled` closes our copies; the child keeps its
+        // inherited ones.
+        Ok(()) => Ok(()),
+        Err(e) => {
+            log::warn!("attach relay failed, adopting in-process: {e:#}");
+            let startup = pulled.startup.clone();
+            let session = pulled.into_session()?;
+            tx.unbounded_send(Forwarded::Attach(Box::new(session), startup))
+                .map_err(|_| anyhow::anyhow!("monarch is shutting down"))?;
+            Ok(())
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -1378,20 +1393,92 @@ fn handle_attach(
     anyhow::bail!("attach is Windows-only (OS default-terminal handoff)")
 }
 
-/// Monarch side: accept forwarded launches on a background thread, and open a
-/// window for each on the main (gpui) thread via a channel.
+/// The monarch's window bookkeeping (IPC.md `register_window` /
+/// `list_windows`). v1: window ids are pids and there is no liveness
+/// pruning — id-targeted routing lands with inc6's tab moves.
+#[derive(Default)]
+struct WindowDirectory(Vec<ipc::RegisterWindow>);
+
+impl WindowDirectory {
+    fn register(&mut self, r: ipc::RegisterWindow) {
+        match self.0.iter_mut().find(|w| w.pid == r.pid) {
+            Some(slot) => *slot = r,
+            None => self.0.push(r),
+        }
+    }
+
+    fn list(&self) -> Vec<ipc::WindowInfo> {
+        self.0
+            .iter()
+            .map(|w| ipc::WindowInfo {
+                id: w.window_id,
+                title: None,
+            })
+            .collect()
+    }
+}
+
+/// Launch a forwarded spawn as its own OS process (`--window-process` + the
+/// original argv, in the original cwd) — the crash-isolation core: one
+/// window dying can never take the others with it.
+fn spawn_window_process(s: &ipc::SpawnArgs) -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--window-process").args(&s.argv);
+    if let Some(cwd) = &s.cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd.spawn().map(drop)
+}
+
+/// Window process: tell the monarch we exist, off the UI thread. Fire and
+/// forget — if the monarch died meanwhile, coordination is paused anyway
+/// and this window just keeps running (the isolation guarantee).
+fn register_with_monarch(endpoint: String) {
+    std::thread::Builder::new()
+        .name("rikka-register".into())
+        .spawn(move || {
+            let Ok(mut conn) = ipc::transport::connect(&endpoint) else {
+                return;
+            };
+            let _ = conn.send_request(&ipc::Request::RegisterWindow(ipc::RegisterWindow {
+                pid: std::process::id(),
+                window_id: u64::from(std::process::id()),
+                endpoint: String::new(),
+            }));
+            let _ = conn.recv_response();
+        })
+        .ok();
+}
+
+/// Monarch side: accept forwarded launches on a background thread. Spawns
+/// and handoffs become their own window processes; the channel to the main
+/// (gpui) thread only carries the in-process fallbacks.
 fn spawn_ipc_accept(cx: &mut App, monarch: ipc::transport::Monarch) {
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
     std::thread::Builder::new()
         .name("rikka-ipc".into())
         .spawn(move || {
+            // The monarch hosts a window itself, so it is in the directory
+            // too (same id scheme: pid).
+            let mut directory = WindowDirectory::default();
+            directory.register(ipc::RegisterWindow {
+                pid: std::process::id(),
+                window_id: u64::from(std::process::id()),
+                endpoint: String::new(),
+            });
             loop {
                 let Ok(mut conn) = monarch.accept() else {
                     break;
                 };
                 match conn.recv_request() {
                     Ok(ipc::Request::Spawn(s)) => {
-                        let _ = tx.unbounded_send(Forwarded::Spawn(s.argv));
+                        // Crash isolation first; in-process only as fallback
+                        // (a monarch-resident window beats a dead launch).
+                        if let Err(e) = spawn_window_process(&s) {
+                            log::warn!("window-process spawn failed, opening in-process: {e}");
+                            let _ = tx.unbounded_send(Forwarded::Spawn(s.argv));
+                        }
                         let _ = conn.send_response(&ipc::Response::ok());
                     }
                     Ok(ipc::Request::Attach(a)) => {
@@ -1401,11 +1488,19 @@ fn spawn_ipc_accept(cx: &mut App, monarch: ipc::transport::Monarch) {
                         };
                         let _ = conn.send_response(&resp);
                     }
-                    Ok(ipc::Request::Ping) => {
+                    Ok(ipc::Request::RegisterWindow(r)) => {
+                        directory.register(r);
                         let _ = conn.send_response(&ipc::Response::ok());
                     }
-                    Ok(_) => {
-                        let _ = conn.send_response(&ipc::Response::error("unsupported op"));
+                    Ok(ipc::Request::ListWindows) => {
+                        let _ = conn.send_response(&ipc::Response {
+                            ok: true,
+                            windows: Some(directory.list()),
+                            ..Default::default()
+                        });
+                    }
+                    Ok(ipc::Request::Ping) => {
+                        let _ = conn.send_response(&ipc::Response::ok());
                     }
                     Err(_) => {} // client hung up; wait for the next connection
                 }
@@ -1441,8 +1536,9 @@ fn open_attached(cx: &mut App, session: TerminalSession, startup: ipc::StartupIn
     open_tabs_window_opts(cx, vec![entry], &launch);
 }
 
-/// Re-parse a forwarded CLI and open a window for it. Single-process for now;
-/// process-per-window crash isolation lands in a later increment.
+/// Re-parse a forwarded CLI and open a window for it IN THIS process — the
+/// fallback when the window-process spawn failed (isolation is best-effort;
+/// a launch must never be lost).
 fn open_forwarded(cx: &mut App, argv: Vec<String>) {
     let launch = cli::parse(argv).unwrap_or_default();
     let specs = cli::expand_dir_tabs(launch.tabs.clone());
@@ -1476,10 +1572,16 @@ fn main() {
     };
     // Single-instance election: become the monarch, or forward this launch to
     // the running one and exit (the forwarded launch opens its window there).
+    // A monarch-spawned window process skips all of it — the parent owns the
+    // socket, and electing or forwarding from here would boomerang the launch.
     let endpoint = ipc::transport::endpoint_name();
-    let role = match elect(&endpoint, &launch) {
-        Some(role) => role,
-        None => return,
+    let role = if launch.window_process {
+        Role::WindowProcess
+    } else {
+        match elect(&endpoint, &launch) {
+            Some(role) => role,
+            None => return,
+        }
     };
     Application::new().run(move |cx| {
         // The engine's renderer rides gpui-component primitives; initialise
@@ -1511,9 +1613,32 @@ fn main() {
                 .collect();
             open_tabs_window_opts(cx, initial, &launch);
         }
-        // Monarch: serve forwarded launches — each opens a window here.
-        if let Role::Monarch(monarch) = role {
-            spawn_ipc_accept(cx, monarch);
+        match role {
+            // Monarch: serve forwarded launches, handoffs and registrations.
+            Role::Monarch(monarch) => spawn_ipc_accept(cx, monarch),
+            // Window process: report in so list/route can see us.
+            Role::WindowProcess => register_with_monarch(endpoint),
+            Role::Standalone => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_directory_upserts_by_pid_and_lists_ids() {
+        let reg = |pid: u32, id: u64| ipc::RegisterWindow {
+            pid,
+            window_id: id,
+            endpoint: String::new(),
+        };
+        let mut dir = WindowDirectory::default();
+        dir.register(reg(100, 100));
+        dir.register(reg(200, 200));
+        dir.register(reg(100, 101)); // re-registration replaces, no duplicate
+        let ids: Vec<u64> = dir.list().iter().map(|w| w.id).collect();
+        assert_eq!(ids, vec![101, 200]);
+    }
 }
