@@ -66,18 +66,52 @@ pub fn session_from_attach(args: &ipc::AttachArgs) -> Result<TerminalSession> {
     .filter_map(|raw| pull(src, raw).transpose())
     .collect::<Result<_>>()?;
 
-    // The real size lands with the window's first frame fit; the startup
-    // count-chars (when the launch carried one) just seeds the interim.
-    let cols = if args.startup.cols >= 2 {
-        args.startup.cols
-    } else {
-        80
+    assemble(input, output, signal, keepalive, &args.startup)
+}
+
+/// A raw handle value that is ALREADY valid in this process — a cold start's
+/// inherited handles (IPC.md "attach cold": inheritance was the transfer, so
+/// there is nothing to duplicate, just ownership to take).
+fn owned_local(raw: i64) -> Option<OwnedHandle> {
+    (raw != 0).then(|| unsafe { OwnedHandle::from_raw_handle(raw as isize as _) })
+}
+
+/// Adopt a cold-start attach: the same message shape as the IPC path, but
+/// the handle values are interpreted in OUR handle table (inherited through
+/// CreateProcess by the handoff shim).
+pub fn session_from_local(args: &ipc::AttachArgs) -> Result<TerminalSession> {
+    let (Some(input), Some(output)) = (
+        owned_local(args.handles.input),
+        owned_local(args.handles.output),
+    ) else {
+        bail!("attach carries no input/output handles");
     };
-    let rows = if args.startup.rows >= 2 {
-        args.startup.rows
-    } else {
-        24
-    };
+    let signal = owned_local(args.handles.signal);
+    let keepalive: Vec<OwnedHandle> = [
+        args.handles.reference,
+        args.handles.server,
+        args.handles.client,
+        args.handles.hpcon,
+        args.handles.shell,
+    ]
+    .into_iter()
+    .filter_map(owned_local)
+    .collect();
+
+    assemble(input, output, signal, keepalive, &args.startup)
+}
+
+/// Common tail: owned handles → live session, startup seeding the interim
+/// size (the real one lands with the window's first frame fit) and title.
+fn assemble(
+    input: OwnedHandle,
+    output: OwnedHandle,
+    signal: Option<OwnedHandle>,
+    keepalive: Vec<OwnedHandle>,
+    startup: &ipc::StartupInfo,
+) -> Result<TerminalSession> {
+    let cols = if startup.cols >= 2 { startup.cols } else { 80 };
+    let rows = if startup.rows >= 2 { startup.rows } else { 24 };
     let session = build_handoff_session(
         cols,
         rows,
@@ -89,8 +123,64 @@ pub fn session_from_attach(args: &ipc::AttachArgs) -> Result<TerminalSession> {
         },
         &xtversion::engine_identity(),
     )?;
-    if let Some(title) = &args.startup.title {
+    if let Some(title) = &startup.title {
         *session.title.lock() = Some(title.clone());
     }
     Ok(session)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read as _, Write as _};
+    use std::os::windows::io::IntoRawHandle as _;
+
+    /// Inherited-style raw values (no duplication) become a live session:
+    /// output flows into the grid, input reaches the console side, and the
+    /// startup title lands. The IPC-pull variant differs only in the
+    /// DuplicateHandle front, exercised for real at P3.
+    #[test]
+    fn local_raw_values_become_a_live_session() {
+        let (out_read, mut out_write) = std::io::pipe().expect("output pipe");
+        let (mut in_read, in_write) = std::io::pipe().expect("input pipe");
+        let args = ipc::AttachArgs {
+            pid: std::process::id(),
+            handles: ipc::Handles {
+                input: in_write.into_raw_handle() as isize as i64,
+                output: out_read.into_raw_handle() as isize as i64,
+                ..Default::default()
+            },
+            startup: ipc::StartupInfo {
+                title: Some("cmd".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let session = session_from_local(&args).expect("session over inherited values");
+        assert_eq!(session.title.lock().as_deref(), Some("cmd"));
+
+        out_write.write_all(b"hi").unwrap();
+        drop(out_write);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while session.is_connected() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!session.is_connected(), "reader must reach EOF");
+        let row0: String = session.snapshot.lock().cells[0]
+            .iter()
+            .map(|c| c.c)
+            .collect();
+        assert!(row0.starts_with("hi"), "got {row0:?}");
+
+        session.send_bytes(b"x");
+        let mut buf = [0u8; 1];
+        in_read.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"x");
+    }
+
+    #[test]
+    fn local_attach_without_pipes_is_refused() {
+        let args = ipc::AttachArgs::default();
+        assert!(session_from_local(&args).is_err());
+    }
 }

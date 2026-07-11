@@ -15,6 +15,10 @@
 //!   `--colorScheme`, `--suppressApplicationTitle`, `--useApplicationTitle`)
 //! - `;` between commands: every `new-tab` lands in the ONE window this
 //!   process opens, same as a fresh `wt` launch
+//! - internal: `--attach in,out,signal,ref,server,client` (plus
+//!   `--attach-title`, and `--size` for the requested cells) — the
+//!   default-terminal cold start (IPC.md "attach cold"). Emitted by
+//!   rikka-handoff.exe with inherited handle values; never typed by hand
 //!
 //! Also speaks the common-core flags of Linux terminal emulators (xterm /
 //! gnome-terminal / alacritty / kitty), groundwork for the P3 Linux port:
@@ -48,6 +52,18 @@ pub struct TabSpec {
     pub hold: bool,
 }
 
+/// Internal: an OS default-terminal handoff riding in this launch (the cold
+/// start of IPC.md "attach cold"). Set by rikka-handoff.exe; the handle
+/// values are valid in THIS process via CreateProcess handle inheritance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachSpec {
+    /// Raw handle values in wire order: input, output, signal, reference,
+    /// server, client. `0` = absent (input/output are never 0).
+    pub handles: [i64; 6],
+    /// Startup title from the handoff's TERMINAL_STARTUP_INFO.
+    pub title: Option<String>,
+}
+
 /// Parsed launch request.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Launch {
@@ -59,6 +75,9 @@ pub struct Launch {
     pub size_cells: Option<(u16, u16)>,
     /// One entry per `new-tab` command; empty = single default tab.
     pub tabs: Vec<TabSpec>,
+    /// `--attach`: a cold-start handoff. When set, the launch opens the
+    /// adopted session instead of any `tabs`.
+    pub attach: Option<AttachSpec>,
 }
 
 fn value_of(
@@ -78,9 +97,25 @@ fn parse_pair(s: &str, opt: &str) -> Result<(f32, f32), String> {
     }
 }
 
+/// `--attach` value: exactly six comma-separated handle values.
+fn parse_attach(s: &str) -> Result<AttachSpec, String> {
+    let vals: Option<Vec<i64>> = s.split(',').map(|p| p.trim().parse().ok()).collect();
+    let handles: [i64; 6] = vals
+        .and_then(|v| v.try_into().ok())
+        .ok_or_else(|| format!("--attach は in,out,signal,ref,server,client の6値です: {s}"))?;
+    if handles[0] == 0 || handles[1] == 0 {
+        return Err("--attach: input/output ハンドルは必須です".into());
+    }
+    Ok(AttachSpec {
+        handles,
+        title: None,
+    })
+}
+
 /// Parse `rt` arguments (argv without the program name).
 pub fn parse(args: Vec<String>) -> Result<Launch, String> {
     let mut launch = Launch::default();
+    let mut attach_title: Option<String> = None;
 
     // Split into `;`-delimited command groups (wt separates commands with a
     // standalone `;` token; `\;` escapes a literal semicolon positional).
@@ -144,6 +179,17 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
                         return Err("-w/--window (既存ウィンドウへのルーティング) は未対応です \
                              (TODO: 単一インスタンス IPC)"
                             .into());
+                    }
+                    // Internal (rikka-handoff.exe): default-terminal cold
+                    // start — see AttachSpec.
+                    "--attach" => {
+                        it.next();
+                        let v = value_of(&mut it, "--attach")?;
+                        launch.attach = Some(parse_attach(&v)?);
+                    }
+                    "--attach-title" => {
+                        it.next();
+                        attach_title = Some(value_of(&mut it, "--attach-title")?);
                     }
                     "-h" | "--help" | "-?" | "/?" => {
                         return Err(HELP.into());
@@ -223,6 +269,11 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
         launch.tabs.push(spec);
     }
 
+    match (&mut launch.attach, attach_title) {
+        (Some(a), title) => a.title = title,
+        (None, Some(_)) => return Err("--attach-title は --attach と共に使います".into()),
+        (None, None) => {}
+    }
     Ok(launch)
 }
 
@@ -473,6 +524,33 @@ mod tests {
         assert!(l.maximized);
         let l = parse(v(&["--full-screen"])).unwrap();
         assert!(l.fullscreen);
+    }
+
+    #[test]
+    fn attach_parses_handles_title_and_size() {
+        let l = parse(v(&[
+            "--attach",
+            "10,20,30,40,50,60",
+            "--attach-title",
+            "cmd",
+            "--size",
+            "120,40",
+        ]))
+        .unwrap();
+        let a = l.attach.expect("attach spec");
+        assert_eq!(a.handles, [10, 20, 30, 40, 50, 60]);
+        assert_eq!(a.title.as_deref(), Some("cmd"));
+        assert_eq!(l.size_cells, Some((120, 40)));
+        assert!(l.tabs.is_empty());
+    }
+
+    #[test]
+    fn attach_rejects_malformed_values() {
+        // Wrong arity, junk, and missing mandatory pipes all error.
+        assert!(parse(v(&["--attach", "1,2,3"])).is_err());
+        assert!(parse(v(&["--attach", "1,2,3,4,5,x"])).is_err());
+        assert!(parse(v(&["--attach", "0,2,3,4,5,6"])).is_err());
+        assert!(parse(v(&["--attach-title", "t"])).is_err());
     }
 
     #[test]

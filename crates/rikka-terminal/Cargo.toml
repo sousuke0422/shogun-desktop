@@ -20,6 +20,7 @@ gpui = "0.2.2"
 gpui-component = "0.5.1"
 portable-pty = "0.9"
 anyhow = "1"
+log = "0.4"
 parking_lot = "0.12"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }

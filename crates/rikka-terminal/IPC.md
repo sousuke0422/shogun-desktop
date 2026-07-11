@@ -135,7 +135,10 @@ The request rides *in the launch*, not over the socket — no wait-for-server ra
 - **attach cold:** the shim does `CreateProcess(rikka-terminal --attach …,
   bInheritHandles=TRUE)`, passing the PTY handle values as args; the started main
   adopts the *inherited* handles (inheritance is the transfer — no
-  `DuplicateHandle`) and becomes monarch.
+  `DuplicateHandle`) and becomes monarch. Concrete form:
+  `--attach <in,out,signal,ref,server,client>` (six values, `0` = absent),
+  plus `--attach-title <t>` and the regular `--size c,r` carrying the
+  startup-info title and count-chars.
 - **Race:** two starts → both try to bind. Winner = monarch (handles its own
   request). Loser forwards its request over IPC (an attach loser
   `DuplicateHandle`s into the winner) and exits.

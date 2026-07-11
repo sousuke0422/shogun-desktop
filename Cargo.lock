@@ -5572,6 +5572,7 @@ dependencies = [
  "futures",
  "gpui",
  "gpui-component",
+ "log",
  "parking_lot",
  "portable-pty",
  "rikka-terminal-core",

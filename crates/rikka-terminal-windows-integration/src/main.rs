@@ -10,9 +10,9 @@
 //! selected RikkaTerminal as the default terminal, `EstablishPtyHandoff`
 //! relays the console session to the running `rikka-terminal` monarch over
 //! the shared IPC (see `server`), and the process exits. Without a running
-//! monarch the handoff fails over to conhost — the cold start (launching
-//! `rikka-terminal` with inherited handles, IPC.md "attach cold") is a later
-//! increment.
+//! monarch it cold-starts one instead — `rikka-terminal --attach` with the
+//! handle values, transferred by CreateProcess inheritance (IPC.md "attach
+//! cold").
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(windows)]

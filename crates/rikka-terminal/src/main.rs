@@ -1241,39 +1241,105 @@ enum Role {
 /// Bind the per-user socket (become monarch), or forward this launch to the
 /// running monarch. Returns `None` when the launch was forwarded (this process
 /// should exit); `Some(role)` when this process should run.
-fn elect(endpoint: &str) -> Option<Role> {
+fn elect(endpoint: &str, launch: &cli::Launch) -> Option<Role> {
     for _ in 0..5 {
         match ipc::transport::Monarch::bind(endpoint) {
             Ok(monarch) => return Some(Role::Monarch(monarch)),
             // Someone holds the socket — forward our launch to them and exit.
             // If they vanished mid-race the connect fails; loop and re-bind.
-            Err(_) if forward_launch(endpoint).is_ok() => return None,
+            Err(_) if forward_launch(endpoint, launch).is_ok() => return None,
             Err(_) => continue,
         }
     }
     Some(Role::Standalone)
 }
 
-/// Forward this process's CLI (raw argv + cwd) to the monarch as a `spawn`.
-fn forward_launch(endpoint: &str) -> std::io::Result<()> {
+/// The wire form of a cold-start handoff: the same message the shim would
+/// have sent warm, except the handles now live in THIS process (inherited
+/// through CreateProcess), so the pid is ours and a monarch pulls from us.
+fn attach_request(a: &cli::AttachSpec, launch: &cli::Launch) -> ipc::AttachArgs {
+    let [input, output, signal, reference, server, client] = a.handles;
+    ipc::AttachArgs {
+        pid: std::process::id(),
+        handles: ipc::Handles {
+            input,
+            output,
+            signal,
+            reference,
+            server,
+            client,
+            ..Default::default()
+        },
+        startup: ipc::StartupInfo {
+            title: a.title.clone(),
+            x: 0,
+            y: 0,
+            cols: launch.size_cells.map_or(0, |s| s.0),
+            rows: launch.size_cells.map_or(0, |s| s.1),
+        },
+        state: None,
+        elevated: false,
+        target: ipc::Target::New,
+    }
+}
+
+/// Forward this launch to the running monarch and exit: a plain CLI goes as
+/// a `spawn` (raw argv + cwd, re-parsed there); a cold-start handoff that
+/// LOST the bind race goes as a regular `attach` — the winner pulls the
+/// inherited handles straight out of this process (IPC.md's race rule).
+fn forward_launch(endpoint: &str, launch: &cli::Launch) -> std::io::Result<()> {
     let mut conn = ipc::transport::connect(endpoint)?;
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_owned));
-    let argv: Vec<String> = std::env::args().skip(1).collect();
-    conn.send_request(&ipc::Request::Spawn(ipc::SpawnArgs {
-        cwd,
-        argv,
-        ..Default::default()
-    }))?;
+    let req = match &launch.attach {
+        Some(a) => ipc::Request::Attach(attach_request(a, launch)),
+        None => {
+            let cwd = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.to_str().map(str::to_owned));
+            let argv: Vec<String> = std::env::args().skip(1).collect();
+            ipc::Request::Spawn(ipc::SpawnArgs {
+                cwd,
+                argv,
+                ..Default::default()
+            })
+        }
+    };
+    conn.send_request(&req)?;
     if conn.recv_response()?.ok {
         Ok(())
     } else {
         Err(std::io::Error::new(
             std::io::ErrorKind::Other,
-            "monarch rejected the spawn",
+            "monarch rejected the forwarded launch",
         ))
     }
+}
+
+/// Open the cold-start handoff window when this launch carries one. Returns
+/// false when there is nothing to adopt or the adoption failed.
+#[cfg(windows)]
+fn open_inherited(cx: &mut App, launch: &cli::Launch) -> bool {
+    let Some(a) = &launch.attach else {
+        return false;
+    };
+    let args = attach_request(a, launch);
+    match attach::session_from_local(&args) {
+        Ok(session) => {
+            open_attached(cx, session, args.startup);
+            true
+        }
+        Err(e) => {
+            log::warn!("cold-start attach failed, opening a normal window: {e:#}");
+            false
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn open_inherited(_cx: &mut App, launch: &cli::Launch) -> bool {
+    if launch.attach.is_some() {
+        log::warn!("--attach is Windows-only (OS default-terminal handoff)");
+    }
+    false
 }
 
 /// A request accepted on the IPC thread, handed to the main (gpui) thread to
@@ -1411,7 +1477,7 @@ fn main() {
     // Single-instance election: become the monarch, or forward this launch to
     // the running one and exit (the forwarded launch opens its window there).
     let endpoint = ipc::transport::endpoint_name();
-    let role = match elect(&endpoint) {
+    let role = match elect(&endpoint, &launch) {
         Some(role) => role,
         None => return,
     };
@@ -1426,19 +1492,25 @@ fn main() {
         let (wt, wt_default) = wt_profiles::discover();
         let menu = config::Config::load().build_menu(wt, wt_default);
         hub::init(cx, menu);
-        // `rt <dir>` opens the default shell there (code-style; one tab
-        // per directory).
-        let specs = cli::expand_dir_tabs(launch.tabs.clone());
-        let specs = if specs.is_empty() {
-            vec![default_spec(cx)]
-        } else {
-            specs
-        };
-        let initial: Vec<TabEntry> = specs
-            .iter()
-            .filter_map(|spec| create_tab_spec(cx, spec))
-            .collect();
-        open_tabs_window_opts(cx, initial, &launch);
+        // A cold-start handoff rides in this launch (IPC.md "attach cold"):
+        // adopt the inherited handles as the initial window. On failure fall
+        // through to a normal launch — a visible window beats a silent death
+        // for diagnosis (the file log has the why).
+        if !open_inherited(cx, &launch) {
+            // `rt <dir>` opens the default shell there (code-style; one tab
+            // per directory).
+            let specs = cli::expand_dir_tabs(launch.tabs.clone());
+            let specs = if specs.is_empty() {
+                vec![default_spec(cx)]
+            } else {
+                specs
+            };
+            let initial: Vec<TabEntry> = specs
+                .iter()
+                .filter_map(|spec| create_tab_spec(cx, spec))
+                .collect();
+            open_tabs_window_opts(cx, initial, &launch);
+        }
         // Monarch: serve forwarded launches — each opens a window here.
         if let Role::Monarch(monarch) = role {
             spawn_ipc_accept(cx, monarch);

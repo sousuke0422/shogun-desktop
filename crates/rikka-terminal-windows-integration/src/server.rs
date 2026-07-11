@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use rikka_terminal_ipc as ipc;
-use windows::Win32::Foundation::{CLASS_E_NOAGGREGATION, E_FAIL, HANDLE, S_OK};
+use windows::Win32::Foundation::{
+    CLASS_E_NOAGGREGATION, E_FAIL, HANDLE, HANDLE_FLAG_INHERIT, S_OK, SetHandleInformation,
+};
 use windows::Win32::System::Com::{
     CLSCTX_LOCAL_SERVER, COINIT_MULTITHREADED, CoInitializeEx, CoRegisterClassObject,
     CoRevokeClassObject, CoUninitialize, IClassFactory, IClassFactory_Impl, REGCLS_SINGLEUSE,
@@ -206,24 +208,80 @@ fn establish(
     };
 
     let endpoint = ipc::transport::endpoint_name();
-    let mut conn = ipc::transport::connect(&endpoint)
-        .context("no running rikka-terminal monarch (cold start is a later increment)")?;
-    conn.send_request(&ipc::Request::Attach(args))?;
-    let resp = conn.recv_response()?;
-    if !resp.ok {
-        anyhow::bail!(
-            "monarch rejected the handoff: {}",
-            resp.error.unwrap_or_default()
-        );
+    match ipc::transport::connect(&endpoint) {
+        // Warm: a monarch is running — it pulls our handles while we block
+        // on the response (DUPLICATE_CLOSE_SOURCE closes our copies).
+        Ok(mut conn) => {
+            conn.send_request(&ipc::Request::Attach(args))?;
+            let resp = conn.recv_response()?;
+            if !resp.ok {
+                anyhow::bail!(
+                    "monarch rejected the handoff: {}",
+                    resp.error.unwrap_or_default()
+                );
+            }
+        }
+        // Cold: no monarch — the attach rides in the launch itself (IPC.md
+        // "attach cold"), so there is no wait-for-server race to lose.
+        Err(_) => cold_start(&args)?,
     }
 
-    // The monarch's DUPLICATE_CLOSE_SOURCE pull has already closed our
-    // forwarded handles; only the console-side pipe ends are still ours.
-    // Hand them out — reply marshaling duplicates them into the caller.
+    // Our forwarded handles are gone (pulled warm, or inherited cold and
+    // owned by the child now — the flagged copies die with this process);
+    // only the console-side pipe ends are still meaningfully ours. Hand them
+    // out — reply marshaling duplicates them into the caller.
     unsafe {
         *input = console_in_read;
         *output = console_out_write;
     }
+    Ok(())
+}
+
+/// IPC.md "attach cold": flag the six handles inheritable and start
+/// `rikka-terminal` with their raw values on `--attach`; inheritance IS the
+/// transfer. The child adopts them and becomes the monarch — or loses the
+/// bind race to a sibling and forwards a normal attach from its own process
+/// (the values are valid there either way). No post-spawn handshake: the
+/// console's writes simply buffer in the pipes until the child drains them.
+fn cold_start(args: &ipc::AttachArgs) -> anyhow::Result<()> {
+    let handles = [
+        args.handles.input,
+        args.handles.output,
+        args.handles.signal,
+        args.handles.reference,
+        args.handles.server,
+        args.handles.client,
+    ];
+    for raw in handles {
+        if raw != 0 {
+            unsafe {
+                SetHandleInformation(
+                    HANDLE(raw as isize as _),
+                    HANDLE_FLAG_INHERIT.0,
+                    HANDLE_FLAG_INHERIT,
+                )
+            }
+            .context("SetHandleInformation(HANDLE_FLAG_INHERIT)")?;
+        }
+    }
+    let exe = std::env::current_exe()
+        .context("current_exe")?
+        .with_file_name("rikka-terminal.exe");
+    let csv = handles.map(|v| v.to_string()).join(",");
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("--attach").arg(csv);
+    if let Some(title) = &args.startup.title {
+        cmd.arg("--attach-title").arg(title);
+    }
+    if args.startup.cols >= 2 && args.startup.rows >= 2 {
+        cmd.arg("--size")
+            .arg(format!("{},{}", args.startup.cols, args.startup.rows));
+    }
+    // Rust's std spawns with bInheritHandles=TRUE (its STARTF_USESTDHANDLES
+    // stdio plumbing requires it) — the "handle leak" footgun is exactly the
+    // transfer we want here.
+    cmd.spawn()
+        .with_context(|| format!("cold start: spawn {}", exe.display()))?;
     Ok(())
 }
 
