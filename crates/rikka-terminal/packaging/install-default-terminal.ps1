@@ -19,14 +19,16 @@
     * Edit AppxManifest.xml: replace the REPLACE_ME Publisher and the two GUIDs
       (generate fresh ones with [guid]::NewGuid()).
     * Make -Publisher below match the manifest's <Identity Publisher="..."> EXACTLY.
-    * Build the binaries first:  cargo build --release -p shogun-desktop  (rt +
-      rikka-handoff live in target\release; OpenConsole.exe/conpty.dll are the
-      vendored pair under crates\rikka-terminal\assets\conpty).
+    * Build the binaries first:
+        cargo build --release -p rikka-terminal -p rikka-terminal-windows-integration
+      (rikka-terminal.exe + rikka-handoff.exe land in target\release;
+      OpenConsole.exe/conpty.dll are the vendored pair under
+      crates\rikka-terminal\assets\conpty).
 
   Keep this file ASCII-only.
 #>
 param(
-    [string]$Publisher        = "CN=RikkaTerminal Dev",
+    [string]$Publisher        = "CN=sousuke0422",
     [string]$ExternalLocation = "$env:LOCALAPPDATA\RikkaTerminal",
     [string]$BuildDir         = "$PSScriptRoot\..\..\..\target\release",
     [string]$ConPtyDir        = "$PSScriptRoot\..\assets\conpty",
@@ -38,6 +40,9 @@ param(
 $ErrorActionPreference = 'Stop'
 
 if ($Uninstall) {
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        Import-Module Appx -UseWindowsPowerShell -WarningAction SilentlyContinue
+    }
     Get-AppxPackage -Name 'RikkaTerminal' | ForEach-Object {
         Write-Host "Removing $($_.PackageFullName)"
         Remove-AppxPackage $_.PackageFullName
@@ -117,6 +122,12 @@ if ($LASTEXITCODE -ne 0) { throw "MakeAppx pack failed ($LASTEXITCODE)." }
 if ($LASTEXITCODE -ne 0) { throw "SignTool sign failed ($LASTEXITCODE)." }
 
 # --- 6. install, pointing at the external binaries --------------------------
+# The Appx module loads only in Windows PowerShell, not PowerShell 7 — there
+# Add-AppxPackage fails with 0x80131539 ("not supported on this platform"). On
+# pwsh 7 bridge to Windows PowerShell; on Windows PowerShell 5.1 it's native.
+if ($PSVersionTable.PSVersion.Major -ge 6) {
+    Import-Module Appx -UseWindowsPowerShell -WarningAction SilentlyContinue
+}
 Add-AppxPackage -Path $msix -ExternalLocation $ExternalLocation
 
 # --- 7. verify --------------------------------------------------------------

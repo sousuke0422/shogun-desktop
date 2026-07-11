@@ -11,8 +11,17 @@ over COM. Two roles, each a CLSID:
 
 | Role | Interface | Provider here |
 |------|-----------|---------------|
-| Console host | `IConsoleHandoff` | vendored `OpenConsole.exe` (Microsoft's), under our own fresh CLSID |
+| Console host | `IConsoleHandoff` | vendored `OpenConsole.exe`, or our own impl — CLSID caveat below |
 | Terminal | `ITerminalHandoff3` (`EstablishPtyHandoff`) | `rikka-handoff.exe` (the shim) |
+
+> **Console-CLSID caveat (a P2 decision).** The *terminal* CLSID is freely ours
+> — rikka-handoff.exe registers it. The *console* CLSID is not: OpenConsole
+> bakes its console-handoff CLSID per build (WT Stable `{2EACA947}` vs Preview
+> `{06EC847C}` differ), so reusing OpenConsole means matching ITS baked value
+> (collision-prone, and the ConPTY build may lack the defterm role). Existing
+> third parties (contour/wezterm) lean toward implementing `IConsoleHandoff`
+> themselves instead — own a fresh console CLSID in rikka-handoff.exe too. For
+> P1 (enumeration only) any unique GUID works.
 
 The dropdown is enumerated from two well-known `windows.appExtension` entries in
 the package manifest — `com.microsoft.windows.console.host` and
@@ -23,9 +32,9 @@ two CLSIDs into `HKCU\Console\%%Startup` (`DelegationConsole` /
 WT Stable/Preview/Canary coexist — we're just another distinct provider.
 
 The dropdown pictured is Windows Terminal's own (Settings > Startup), so this
-works on **Windows 10 as well as 11**: Win10's Settings app dropped the
-equivalent entry, but WT's dropdown still writes the delegation and the OS
-honors it (confirmed on a Win10 box). Sparse external-location packages need
+works on **Windows 10 (2004+) as well as 11** — confirmed on 19045 (Win10
+22H2), where RikkaTerminal lists in Settings > For developers > Default
+terminal application AND in Windows Terminal's own Startup dropdown. Sparse external-location packages need
 Win10 2004 (build 19041) or newer.
 
 `rt` stays a plain unpackaged exe: a **sparse package with external location**
@@ -61,7 +70,8 @@ normal folder. The COM/handoff code lives in its own crate
 
 1. In `AppxManifest.xml`, replace `REPLACE_ME` Publisher + the two GUIDs
    (`[guid]::NewGuid()`), and make the script's `-Publisher` match exactly.
-2. `cargo build --release -p shogun-desktop` (builds `rt` + `rikka-handoff`).
+2. `cargo build --release -p rikka-terminal -p rikka-terminal-windows-integration`
+   (produces `rikka-terminal.exe` + `rikka-handoff.exe` in `target\release`).
 3. From an **admin** shell (once, for cert trust):
    `crates\rikka-terminal\packaging\install-default-terminal.ps1`
 4. Open **Windows Terminal > Settings > Startup > Default terminal

@@ -38,12 +38,12 @@
 
   <Identity
     Name="RikkaTerminal"
-    Publisher="CN=REPLACE_ME_CERT_SUBJECT"
+    Publisher="CN=sousuke0422"
     Version="0.1.0.0" />
 
   <Properties>
     <DisplayName>RikkaTerminal</DisplayName>
-    <PublisherDisplayName>RikkaTerminal</PublisherDisplayName>
+    <PublisherDisplayName>sousuke0422 and contributors</PublisherDisplayName>
     <Logo>Images\StoreLogo.png</Logo>
     <!-- Permits the external-location install (binaries stay unpackaged). -->
     <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
@@ -52,9 +52,9 @@
   <Dependencies>
     <!-- Floor = Win10 2004 (19041), the sparse external-location minimum
          (AllowExternalContent). The default-terminal handoff also works on
-         Windows 10 — set via WT's own Startup dropdown, the OS honors the
-         delegation (confirmed on a Win10 box) — even though Win10's Settings
-         app no longer surfaces the option. -->
+         Windows 10 too — confirmed on 19045 (Win10 22H2), where RikkaTerminal
+         lists in Settings > For developers AND Windows Terminal's Startup
+         dropdown (P1 verified on-device). -->
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
 
@@ -75,9 +75,18 @@
         Square44x44Logo="Images\Square44x44Logo.png" />
 
       <Extensions>
-        <!-- ① Console-host provider (IConsoleHandoff). We reuse the vendored
-             Microsoft OpenConsole.exe as the console host, registered under our
-             OWN fresh CLSID (never WT's {2EACA947...}). -->
+        <!-- ① Console-host provider (IConsoleHandoff). CAUTION: unlike the
+             terminal CLSID below (which our own rikka-handoff.exe registers, so
+             it is freely ours), the console CLSID is bound to whatever
+             OpenConsole.exe registers. OpenConsole bakes its console-handoff
+             CLSID per build — WT Stable {2EACA947...} and Preview {06EC847C...}
+             ship different binaries with different CLSIDs — so a REUSED
+             OpenConsole must be matched to ITS baked value (and the vendored
+             ConPTY OpenConsole may not carry the defterm role at all). Cleaner
+             (a P2 decision, and what contour/wezterm lean toward): implement
+             IConsoleHandoff in rikka-handoff.exe and own a fresh CLSID here too.
+             For P1 (enumeration only — never activated until selected) any
+             unique GUID is fine; it is metadata until you pick RikkaTerminal. -->
         <uap3:Extension Category="windows.appExtension">
           <uap3:AppExtension
             Name="com.microsoft.windows.console.host"
@@ -99,8 +108,8 @@
           <uap3:AppExtension
             Name="com.microsoft.windows.terminal.host"
             Id="RikkaTerminalHost"
-            DisplayName="RikkaTerminal"
-            Description="RikkaTerminal"
+            DisplayName="Rikka Terminal"
+            Description="Rikka Terminal"
             PublicFolder="Public">
             <uap3:Properties>
               <Clsid>{C3E8F214-5A7B-4D9E-8C1F-3B6E9A2D4F55}</Clsid> <!-- REPLACE_ME (fresh GUID) -->

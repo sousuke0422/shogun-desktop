@@ -1,0 +1,6 @@
+# Packaging artifacts: the packed .msix and the self-signed cert — including
+# its PRIVATE KEY (.pfx). Never commit these.
+out/
+*.pfx
+*.cer
+*.msix
