@@ -80,6 +80,41 @@ normal folder. The COM/handoff code lives in its own crate
 
 `%%Startup` is never written by the script — installing only adds the choice.
 
+> **Native Windows PowerShell 5.1 only (observed on 19045).** Running the
+> script from pwsh 7 can fail *silently* at the final step: the
+> `Import-Module Appx -UseWindowsPowerShell` bridge never reached the
+> deployment service here (cert + pack succeeded, no AppXDeployment-Server
+> event, package absent). The script now verifies registration and throws;
+> when in doubt run `powershell.exe`, not `pwsh`.
+
+## P3 smoke test — mixed delegation pair (validated 2026-07-12 on 19045)
+
+The two `HKCU\Console\%%Startup` values are read independently, so our
+terminal side can be exercised *without* implementing `IConsoleHandoff`:
+keep `DelegationConsole` = WT Stable's OpenConsole and point only
+`DelegationTerminal` at us. WT's OpenConsole reads the terminal CLSID from
+`DelegationConfig` (not baked), so it CoCreates rikka-handoff.
+
+```text
+reg add "HKCU\Console\%%Startup" /v DelegationTerminal /t REG_SZ /d "{0DA1B045-A599-4133-A9EE-A7A3893E1D62}" /f
+:: DelegationConsole stays {2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69} (WT Stable OpenConsole)
+```
+
+Do NOT use the Settings UI to select RikkaTerminal for this test — it writes
+both values as a pair (our console side is not real yet). Test by launching
+a console app *outside* any terminal (Win+R → `cmd`); launching inside an
+existing terminal window attaches to its ConPTY and no handoff happens.
+Failures land in `%TEMP%\rikka-handoff.log`. Roll back any time:
+
+```text
+reg add "HKCU\Console\%%Startup" /v DelegationTerminal /t REG_SZ /d "{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}" /f
+```
+
+COM plumbing can be pre-verified with no delegation change at all —
+`[Activator]::CreateInstance([Type]::GetTypeFromCLSID('{0DA1B045-A599-4133-A9EE-A7A3893E1D62}'))`
+must start `rikka-handoff.exe` from the external location (idles out after
+60 s; passed 2026-07-12).
+
 ## Confirm on-device
 
 Whether the explicit `com:Extension` (comServer) block is required, or the

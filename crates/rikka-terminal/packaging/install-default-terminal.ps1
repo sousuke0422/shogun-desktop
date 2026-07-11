@@ -130,6 +130,13 @@ if ($PSVersionTable.PSVersion.Major -ge 6) {
 }
 Add-AppxPackage -Path $msix -ExternalLocation $ExternalLocation
 
+# The pwsh7 Appx bridge has failed SILENTLY here (no deployment event, no
+# error, package absent) - trust nothing, verify the registration for real.
+if (-not (Get-AppxPackage -Name 'RikkaTerminal')) {
+    throw ("Package did not register despite no error. Run this script from " +
+           "native Windows PowerShell 5.1 (powershell.exe), not pwsh 7.")
+}
+
 # --- 7. verify --------------------------------------------------------------
 Write-Host ""
 Write-Host "== Installed. =="
