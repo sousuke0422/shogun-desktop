@@ -42,6 +42,7 @@ use rikka_terminal_core::keys::key_to_pty_bytes;
 use rikka_terminal_core::renderer::{measure_cell_metrics, render_grid};
 use rikka_terminal_core::selection::{self, SelectionHost, SelectionState};
 use rikka_terminal_core::{PtyResizer, ReportMods, TerminalSession, xtversion};
+use rikka_terminal_ipc as ipc;
 
 /// Default font: always present on Windows; CJK falls through DirectWrite's
 /// system fallback. Bundled fonts are a P1 item.
@@ -1227,6 +1228,107 @@ fn open_tabs_window_opts(cx: &mut App, initial: Vec<TabEntry>, launch: &cli::Lau
     apply_dark_titlebars();
 }
 
+/// Single-instance role after the socket election.
+enum Role {
+    /// This process owns the socket — it hosts windows and serves forwards.
+    Monarch(ipc::transport::Monarch),
+    /// Couldn't bind and couldn't forward (a rare race) — run a lone window.
+    Standalone,
+}
+
+/// Bind the per-user socket (become monarch), or forward this launch to the
+/// running monarch. Returns `None` when the launch was forwarded (this process
+/// should exit); `Some(role)` when this process should run.
+fn elect(endpoint: &str) -> Option<Role> {
+    for _ in 0..5 {
+        match ipc::transport::Monarch::bind(endpoint) {
+            Ok(monarch) => return Some(Role::Monarch(monarch)),
+            // Someone holds the socket — forward our launch to them and exit.
+            // If they vanished mid-race the connect fails; loop and re-bind.
+            Err(_) if forward_launch(endpoint).is_ok() => return None,
+            Err(_) => continue,
+        }
+    }
+    Some(Role::Standalone)
+}
+
+/// Forward this process's CLI (raw argv + cwd) to the monarch as a `spawn`.
+fn forward_launch(endpoint: &str) -> std::io::Result<()> {
+    let mut conn = ipc::transport::connect(endpoint)?;
+    let cwd = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_owned));
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    conn.send_request(&ipc::Request::Spawn(ipc::SpawnArgs {
+        cwd,
+        argv,
+        ..Default::default()
+    }))?;
+    if conn.recv_response()?.ok {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "monarch rejected the spawn",
+        ))
+    }
+}
+
+/// Monarch side: accept forwarded launches on a background thread, and open a
+/// window for each on the main (gpui) thread via a channel.
+fn spawn_ipc_accept(cx: &mut App, monarch: ipc::transport::Monarch) {
+    let (tx, mut rx) = futures::channel::mpsc::unbounded::<Vec<String>>();
+    std::thread::Builder::new()
+        .name("rikka-ipc".into())
+        .spawn(move || {
+            loop {
+                let Ok(mut conn) = monarch.accept() else { break };
+                match conn.recv_request() {
+                    Ok(ipc::Request::Spawn(s)) => {
+                        let _ = tx.unbounded_send(s.argv);
+                        let _ = conn.send_response(&ipc::Response::ok());
+                    }
+                    Ok(ipc::Request::Ping) => {
+                        let _ = conn.send_response(&ipc::Response::ok());
+                    }
+                    Ok(_) => {
+                        let _ = conn.send_response(&ipc::Response::error("unsupported op"));
+                    }
+                    Err(_) => {} // client hung up; wait for the next connection
+                }
+            }
+        })
+        .ok();
+    let async_cx = cx.to_async();
+    async_cx
+        .spawn(async move |cx| {
+            use futures::StreamExt as _;
+            while let Some(argv) = rx.next().await {
+                let _ = cx.update(|cx| open_forwarded(cx, argv));
+            }
+        })
+        .detach();
+}
+
+/// Re-parse a forwarded CLI and open a window for it. Single-process for now;
+/// process-per-window crash isolation lands in a later increment.
+fn open_forwarded(cx: &mut App, argv: Vec<String>) {
+    let launch = cli::parse(argv).unwrap_or_default();
+    let specs = cli::expand_dir_tabs(launch.tabs.clone());
+    let specs = if specs.is_empty() {
+        vec![default_spec(cx)]
+    } else {
+        specs
+    };
+    let initial: Vec<TabEntry> = specs
+        .iter()
+        .filter_map(|spec| create_tab_spec(cx, spec))
+        .collect();
+    if !initial.is_empty() {
+        open_tabs_window_opts(cx, initial, &launch);
+    }
+}
+
 fn main() {
     // Same field diagnosis as shogun-desktop: panics (any thread) append to
     // %TEMP%/shogun-tsf/panic.log.
@@ -1240,6 +1342,13 @@ fn main() {
             cli::error_box(&msg);
             return;
         }
+    };
+    // Single-instance election: become the monarch, or forward this launch to
+    // the running one and exit (the forwarded launch opens its window there).
+    let endpoint = ipc::transport::endpoint_name();
+    let role = match elect(&endpoint) {
+        Some(role) => role,
+        None => return,
     };
     Application::new().run(move |cx| {
         // The engine's renderer rides gpui-component primitives; initialise
@@ -1265,5 +1374,9 @@ fn main() {
             .filter_map(|spec| create_tab_spec(cx, spec))
             .collect();
         open_tabs_window_opts(cx, initial, &launch);
+        // Monarch: serve forwarded launches — each opens a window here.
+        if let Role::Monarch(monarch) = role {
+            spawn_ipc_accept(cx, monarch);
+        }
     });
 }

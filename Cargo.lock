@@ -5576,6 +5576,7 @@ dependencies = [
  "portable-pty",
  "rikka-terminal-core",
  "rikka-terminal-gpui-ime",
+ "rikka-terminal-ipc",
  "serde",
  "serde_json",
  "toml 1.1.2+spec-1.1.0",
