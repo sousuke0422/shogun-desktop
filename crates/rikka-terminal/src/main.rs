@@ -890,29 +890,18 @@ impl Render for TabsWindow {
                     }))
                     // Tab DnD: drop on a tab = reorder there; drop on the
                     // pane below = detach into a fresh window (see the pane).
-                    // FIELD PROBE (temporary, with the chord probe): 殿
-                    // reports tab drag does nothing — log each stage so one
-                    // attempt shows where the chain breaks.
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |_this, _ev, _win, _cx| {
-                            log::warn!("tab probe: mouse down on tab {ix}");
-                        }),
-                    )
                     .on_drag(
                         TabDrag {
                             ix,
                             title: drag_title,
                         },
                         |drag, _offset, _window, cx| {
-                            log::warn!("tab probe: drag started ix={}", drag.ix);
                             let title = drag.title.clone();
                             cx.new(|_| TabDragGhost { title })
                         },
                     )
                     .drag_over::<TabDrag>(|style, _, _, _| style.bg(gpui::rgba(TAB_HOVER)))
                     .on_drop(cx.listener(move |this, drag: &TabDrag, _window, cx| {
-                        log::warn!("tab probe: dropped {} onto tab {ix}", drag.ix);
                         this.reorder_tab(drag.ix, ix, cx);
                     }))
                     .into_any_element();
@@ -1078,7 +1067,6 @@ impl Render for TabsWindow {
                         .border_color(gpui::rgba(0x8A9CC880))
                 })
                 .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
-                    log::warn!("tab probe: dropped {} onto the pane (detach)", drag.ix);
                     this.detach_at(drag.ix, window, cx);
                 }))
                 .on_action(cx.listener(|this, _: &TerminalCopy, _window, cx| {
@@ -1199,29 +1187,14 @@ impl Render for TabsWindow {
                     if let Some(pid) = other_process_under_cursor()
                         && this.drop_tab_on_window_process(ix, pid, window, cx)
                     {
-                        log::warn!("tab probe: drag-merge into pid {pid} (ix={ix})");
                         return;
                     }
-                    log::warn!("tab probe: released outside the window — tear-off ix={ix}");
                     this.detach_at(ix, window, cx);
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
                 let m = &ks.modifiers;
-                // FIELD PROBE (temporary): Ctrl+Shift+E reached the PTY as
-                // ^E on the 殿 machine — log what gpui actually delivers
-                // for every Ctrl chord so the mismatch shows itself.
-                if m.control {
-                    log::warn!(
-                        "chord probe: key={:?} key_char={:?} shift={} alt={} fn={}",
-                        ks.key,
-                        ks.key_char,
-                        m.shift,
-                        m.alt,
-                        m.function,
-                    );
-                }
                 // ── tab management chords ─────────────────────────────
                 if m.control && m.shift {
                     let handled = match ks.key.as_str() {
