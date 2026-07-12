@@ -128,6 +128,12 @@ pub enum Request {
     Attach(AttachArgs),
     RegisterWindow(RegisterWindow),
     ListWindows,
+    /// Ask the monarch for a window's own socket endpoint — the sender then
+    /// connects there directly and `attach`es (direct tab-move routing; the
+    /// monarch never proxies handles).
+    ResolveWindow {
+        window: u64,
+    },
 }
 
 /// The monarch's reply.
@@ -140,6 +146,9 @@ pub struct Response {
     pub window_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows: Option<Vec<WindowInfo>>,
+    /// `resolve_window` answer: the window's own socket endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 impl Response {
@@ -276,6 +285,30 @@ mod tests {
             let (_, got): (u32, Request) = read_frame(&mut Cursor::new(&buf)).unwrap();
             assert_eq!(got, req);
         }
+    }
+
+    #[test]
+    fn resolve_window_roundtrips_with_endpoint_reply() {
+        let req = Request::ResolveWindow { window: 7 };
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &req).unwrap();
+        let (_, got): (u32, Request) = read_frame(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(got, req);
+        let json = String::from_utf8(buf[4..].to_vec()).unwrap();
+        assert!(json.contains("\"op\":\"resolve_window\""), "{json}");
+
+        let resp = Response {
+            ok: true,
+            endpoint: Some("rikka-terminal.u.win.42.sock".into()),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &resp).unwrap();
+        let (_, got): (u32, Response) = read_frame(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(
+            got.endpoint.as_deref(),
+            Some("rikka-terminal.u.win.42.sock")
+        );
     }
 
     #[test]

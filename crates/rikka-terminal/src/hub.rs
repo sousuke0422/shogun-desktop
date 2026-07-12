@@ -136,6 +136,14 @@ pub fn live_windows(cx: &mut App) -> usize {
     reg.windows.len()
 }
 
+/// Any live window (the first registered still alive), pruning the dead.
+/// Direct tab-move adoption lands here — a window process hosts exactly one.
+pub fn any_window(cx: &mut App) -> Option<WeakEntity<TabsWindow>> {
+    let reg = cx.global_mut::<WindowRegistry>();
+    reg.windows.retain(|(_, w)| w.upgrade().is_some());
+    reg.windows.first().map(|(_, w)| w.clone())
+}
+
 /// Every live window except `except`, pruning the dead.
 pub fn other_windows(
     cx: &mut App,

@@ -1382,6 +1382,22 @@ enum Forwarded {
     /// An adopted OS handoff: wrap the session in a fresh window.
     #[cfg(windows)]
     Attach(Box<TerminalSession>, ipc::StartupInfo),
+    /// A tab-move arriving on this window's OWN socket: adopt the session as
+    /// a tab of the window this process hosts (never a new window).
+    #[cfg(windows)]
+    AdoptTab(Box<TerminalSession>, ipc::StartupInfo),
+}
+
+/// Apply one IPC-thread message on the gpui thread — shared by the monarch's
+/// main-socket pump and every window's own-socket pump.
+fn pump_forwarded(cx: &mut App, msg: Forwarded) {
+    match msg {
+        Forwarded::Spawn(argv) => open_forwarded(cx, argv),
+        #[cfg(windows)]
+        Forwarded::Attach(session, startup) => open_attached(cx, *session, startup),
+        #[cfg(windows)]
+        Forwarded::AdoptTab(session, startup) => adopt_forwarded(cx, *session, startup),
+    }
 }
 
 /// Adopt an `attach` on the IPC thread — the handle pull must finish while
@@ -1394,8 +1410,9 @@ fn handle_attach(
     args: ipc::AttachArgs,
 ) -> Result<()> {
     if args.target != ipc::Target::New {
-        // Cross-window tab moves (`target: window:<id>`) land with inc6.
-        anyhow::bail!("attach: only target \"new\" is supported yet");
+        // Tab moves route directly: resolve_window, then attach on the
+        // window's own socket. The monarch never proxies handles.
+        anyhow::bail!("attach target window:<id>: resolve_window and attach its own socket");
     }
     let pulled = attach::pull_attach(&args)?;
     match pulled.relay_to_window_process() {
@@ -1444,6 +1461,16 @@ impl WindowDirectory {
             })
             .collect()
     }
+
+    /// The window's own socket endpoint, for direct tab-move routing. `None`
+    /// when the id is unknown or the window registered without a socket
+    /// (its bind failed — it cannot receive moves).
+    fn resolve(&self, window_id: u64) -> Option<String> {
+        self.0
+            .iter()
+            .find(|w| w.window_id == window_id && !w.endpoint.is_empty())
+            .map(|w| w.endpoint.clone())
+    }
 }
 
 /// Launch a forwarded spawn as its own OS process (`--window-process` + the
@@ -1459,10 +1486,11 @@ fn spawn_window_process(s: &ipc::SpawnArgs) -> std::io::Result<()> {
     cmd.spawn().map(drop)
 }
 
-/// Window process: tell the monarch we exist, off the UI thread. Fire and
+/// Window process: tell the monarch we exist (and where our own socket
+/// listens, for direct tab-move routing), off the UI thread. Fire and
 /// forget — if the monarch died meanwhile, coordination is paused anyway
 /// and this window just keeps running (the isolation guarantee).
-fn register_with_monarch(endpoint: String) {
+fn register_with_monarch(endpoint: String, window_endpoint: Option<String>) {
     std::thread::Builder::new()
         .name("rikka-register".into())
         .spawn(move || {
@@ -1472,7 +1500,7 @@ fn register_with_monarch(endpoint: String) {
             let _ = conn.send_request(&ipc::Request::RegisterWindow(ipc::RegisterWindow {
                 pid: std::process::id(),
                 window_id: u64::from(std::process::id()),
-                endpoint: String::new(),
+                endpoint: window_endpoint.unwrap_or_default(),
             }));
             let _ = conn.recv_response();
         })
@@ -1482,18 +1510,23 @@ fn register_with_monarch(endpoint: String) {
 /// Monarch side: accept forwarded launches on a background thread. Spawns
 /// and handoffs become their own window processes; the channel to the main
 /// (gpui) thread only carries the in-process fallbacks.
-fn spawn_ipc_accept(cx: &mut App, monarch: ipc::transport::Monarch) {
+fn spawn_ipc_accept(
+    cx: &mut App,
+    monarch: ipc::transport::Monarch,
+    window_endpoint: Option<String>,
+) {
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
     std::thread::Builder::new()
         .name("rikka-ipc".into())
         .spawn(move || {
             // The monarch hosts a window itself, so it is in the directory
-            // too (same id scheme: pid).
+            // too (same id scheme: pid), reachable through its own window
+            // socket like everyone else.
             let mut directory = WindowDirectory::default();
             directory.register(ipc::RegisterWindow {
                 pid: std::process::id(),
                 window_id: u64::from(std::process::id()),
-                endpoint: String::new(),
+                endpoint: window_endpoint.unwrap_or_default(),
             });
             loop {
                 let Ok(mut conn) = monarch.accept() else {
@@ -1527,6 +1560,19 @@ fn spawn_ipc_accept(cx: &mut App, monarch: ipc::transport::Monarch) {
                             ..Default::default()
                         });
                     }
+                    Ok(ipc::Request::ResolveWindow { window }) => {
+                        let resp = match directory.resolve(window) {
+                            Some(endpoint) => ipc::Response {
+                                ok: true,
+                                endpoint: Some(endpoint),
+                                ..Default::default()
+                            },
+                            None => ipc::Response::error(format!(
+                                "window {window} is unknown or unreachable"
+                            )),
+                        };
+                        let _ = conn.send_response(&resp);
+                    }
                     Ok(ipc::Request::Ping) => {
                         let _ = conn.send_response(&ipc::Response::ok());
                     }
@@ -1540,14 +1586,105 @@ fn spawn_ipc_accept(cx: &mut App, monarch: ipc::transport::Monarch) {
         .spawn(async move |cx| {
             use futures::StreamExt as _;
             while let Some(msg) = rx.next().await {
-                let _ = cx.update(|cx| match msg {
-                    Forwarded::Spawn(argv) => open_forwarded(cx, argv),
-                    #[cfg(windows)]
-                    Forwarded::Attach(session, startup) => open_attached(cx, *session, startup),
-                });
+                let _ = cx.update(|cx| pump_forwarded(cx, msg));
             }
         })
         .detach();
+}
+
+/// Serve this window's OWN socket (IPC.md direct tab-move routing): an
+/// `attach` landing here means "adopt as a tab of THIS window" — the sender
+/// already resolved the target through the monarch. Everything else is a
+/// protocol error; window coordination stays with the monarch.
+#[cfg(windows)]
+fn window_accept_loop(
+    listener: ipc::transport::Monarch,
+    tx: futures::channel::mpsc::UnboundedSender<Forwarded>,
+) {
+    loop {
+        let Ok(mut conn) = listener.accept() else {
+            break;
+        };
+        match conn.recv_request() {
+            Ok(ipc::Request::Attach(a)) => {
+                let resp = match adopt_attach(&tx, a) {
+                    Ok(()) => ipc::Response::ok(),
+                    Err(e) => ipc::Response::error(e.to_string()),
+                };
+                let _ = conn.send_response(&resp);
+            }
+            Ok(ipc::Request::Ping) => {
+                let _ = conn.send_response(&ipc::Response::ok());
+            }
+            Ok(_) => {
+                let _ = conn
+                    .send_response(&ipc::Response::error("window socket: attach and ping only"));
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// Adopt a direct-routed tab move on the IPC thread: pull the handles while
+/// the sender still waits on our response, assemble the session, and hand it
+/// to the gpui thread as a tab for this process's window.
+#[cfg(windows)]
+fn adopt_attach(
+    tx: &futures::channel::mpsc::UnboundedSender<Forwarded>,
+    args: ipc::AttachArgs,
+) -> Result<()> {
+    let pulled = attach::pull_attach(&args)?;
+    let startup = pulled.startup.clone();
+    let session = pulled.into_session()?;
+    tx.unbounded_send(Forwarded::AdoptTab(Box::new(session), startup))
+        .map_err(|_| anyhow::anyhow!("window is shutting down"))?;
+    Ok(())
+}
+
+/// Bind this process's own window socket and serve it. Failure is degraded
+/// operation, not fatal: the window still works, it just cannot RECEIVE
+/// direct tab moves (and its registration advertises no endpoint).
+#[cfg(windows)]
+fn spawn_window_accept(cx: &mut App) -> Option<String> {
+    let name = ipc::transport::window_endpoint_name(std::process::id());
+    let listener = match ipc::transport::Monarch::bind(&name) {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("window socket bind failed ({name}): {e}");
+            return None;
+        }
+    };
+    let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
+    std::thread::Builder::new()
+        .name("rikka-win-ipc".into())
+        .spawn(move || window_accept_loop(listener, tx))
+        .ok()?;
+    let async_cx = cx.to_async();
+    async_cx
+        .spawn(async move |cx| {
+            use futures::StreamExt as _;
+            while let Some(msg) = rx.next().await {
+                let _ = cx.update(|cx| pump_forwarded(cx, msg));
+            }
+        })
+        .detach();
+    Some(name)
+}
+
+/// Adopt a direct-routed session as a tab of this process's window. A window
+/// process hosts exactly one window; if none is alive (shutdown race), a
+/// fresh window still beats losing the session. Lookup and adopt run on the
+/// same thread with no await between them, so the entry cannot fall through
+/// the gap.
+#[cfg(windows)]
+fn adopt_forwarded(cx: &mut App, session: TerminalSession, startup: ipc::StartupInfo) {
+    match hub::any_window(cx) {
+        Some(view) => {
+            let entry = hub::new_tab(cx, session);
+            let _ = view.update(cx, |v, cx| v.adopt(entry, cx));
+        }
+        None => open_attached(cx, session, startup),
+    }
 }
 
 /// Window for an adopted handoff session. Always its own new window, never an
@@ -1641,11 +1778,17 @@ fn main() {
                 .collect();
             open_tabs_window_opts(cx, initial, &launch);
         }
+        // Every window-hosting process serves its own socket for direct
+        // tab-move routing (Windows; Unix moves await SCM_RIGHTS).
+        #[cfg(windows)]
+        let window_endpoint = spawn_window_accept(cx);
+        #[cfg(not(windows))]
+        let window_endpoint: Option<String> = None;
         match role {
             // Monarch: serve forwarded launches, handoffs and registrations.
-            Role::Monarch(monarch) => spawn_ipc_accept(cx, monarch),
+            Role::Monarch(monarch) => spawn_ipc_accept(cx, monarch, window_endpoint),
             // Window process: report in so list/route can see us.
-            Role::WindowProcess => register_with_monarch(endpoint),
+            Role::WindowProcess => register_with_monarch(endpoint, window_endpoint),
             Role::Standalone => {}
         }
     });
@@ -1668,5 +1811,68 @@ mod tests {
         dir.register(reg(100, 101)); // re-registration replaces, no duplicate
         let ids: Vec<u64> = dir.list().iter().map(|w| w.id).collect();
         assert_eq!(ids, vec![101, 200]);
+    }
+
+    #[test]
+    fn window_directory_resolves_endpoints() {
+        let mut dir = WindowDirectory::default();
+        dir.register(ipc::RegisterWindow {
+            pid: 1,
+            window_id: 1,
+            endpoint: "ep-one".into(),
+        });
+        dir.register(ipc::RegisterWindow {
+            pid: 2,
+            window_id: 2,
+            endpoint: String::new(),
+        });
+        assert_eq!(dir.resolve(1).as_deref(), Some("ep-one"));
+        assert_eq!(dir.resolve(2), None, "endpointless windows are unreachable");
+        assert_eq!(dir.resolve(9), None, "unknown ids resolve to nothing");
+    }
+
+    /// A window's own socket adopts a direct-routed attach as a tab: the
+    /// handles are pulled while the sender waits on the response, and the
+    /// live session reaches the gpui pump as `AdoptTab` — never a new
+    /// window. This is the receiving half of a cross-process tab move.
+    #[cfg(windows)]
+    #[test]
+    fn window_socket_adopts_direct_attach() {
+        use std::os::windows::io::IntoRawHandle as _;
+        let name = format!("rikka-test-win-{}.sock", std::process::id());
+        let listener = ipc::transport::Monarch::bind(&name).expect("bind window socket");
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
+        let accept = std::thread::spawn(move || window_accept_loop(listener, tx));
+
+        let (out_read, _out_write) = std::io::pipe().unwrap();
+        let (_in_read, in_write) = std::io::pipe().unwrap();
+        let mut conn = ipc::transport::connect(&name).expect("connect window socket");
+        conn.send_request(&ipc::Request::Attach(ipc::AttachArgs {
+            pid: std::process::id(),
+            handles: ipc::Handles {
+                input: in_write.into_raw_handle() as isize as i64,
+                output: out_read.into_raw_handle() as isize as i64,
+                ..Default::default()
+            },
+            startup: ipc::StartupInfo {
+                title: Some("moved".into()),
+                ..Default::default()
+            },
+            target: ipc::Target::Window(u64::from(std::process::id())),
+            ..Default::default()
+        }))
+        .unwrap();
+        let resp = conn.recv_response().unwrap();
+        assert!(resp.ok, "adopt must succeed: {:?}", resp.error);
+
+        match rx.try_recv().expect("one pumped message") {
+            Forwarded::AdoptTab(session, startup) => {
+                assert_eq!(startup.title.as_deref(), Some("moved"));
+                assert_eq!(session.title.lock().as_deref(), Some("moved"));
+            }
+            _ => panic!("expected exactly one AdoptTab"),
+        }
+        drop(conn);
+        drop(accept); // detach: the loop parks in accept() until process exit
     }
 }

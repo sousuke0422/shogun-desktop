@@ -116,17 +116,23 @@ Strings only. `target:"new"` → monarch spawns a new window process.
   `ConptyConnection::Start` → `ConptyReleasePseudoConsole`); only the
   `server`/`client` process handles stay, for bookkeeping.
 
-### `register_window` / `list_windows` — window ↔ monarch
+### `register_window` / `list_windows` / `resolve_window` — window ↔ monarch
 
 ```json
 { "v":1, "op":"register_window", "pid":…, "window_id":…, "endpoint":"…" }
-{ "v":1, "op":"list_windows" }  →  { "ok":true, "windows":[{ "id":…, "title":… }, …] }
+{ "v":1, "op":"list_windows" }    →  { "ok":true, "windows":[{ "id":…, "title":… }, …] }
+{ "v":1, "op":"resolve_window", "window":<id> }  →  { "ok":true, "endpoint":"…" }
 ```
 
-Window processes register with the monarch so it can route `target:"window:<id>"`
-and answer `-w` queries. v1: `window_id` = the process's pid, `endpoint` is
-empty (window processes bind no socket of their own until inc6's direct
-tab-move routing), and there is no liveness pruning yet.
+Every window-hosting process (the monarch included) binds its OWN socket —
+`rikka-terminal.<user>.win.<pid>.sock` — and advertises it through
+`register_window.endpoint`. A tab move routes DIRECTLY: the sender asks the
+monarch to `resolve_window`, connects to the returned endpoint, and sends its
+`attach` there; an attach arriving on a window socket always means "adopt as
+a tab of this window" (the target was resolved before it got there). The
+monarch never proxies handles. An empty `endpoint` (the window's bind
+failed) marks the window unreachable for moves — `resolve_window` errors.
+v1 remains: `window_id` = pid, no liveness pruning.
 
 ## One primitive, three uses (`attach`)
 
@@ -182,7 +188,9 @@ directly, so a locally-spawned tab is *born* transfer-ready:
    — indistinguishable from a defterm handoff.
 
 A tab move (detach or drag-merge) then IS the existing `attach`: quiesce the
-source reader, send the six slots, receiver pulls, sender drops the tab.
+source reader, `resolve_window` the destination, send the six slots on the
+destination's own socket, receiver pulls and adopts as a tab, sender drops
+the tab.
 (Full ConDrv replication — `CreateServerHandle`/`CreateClientHandle` by hand —
 was considered and rejected: the dll's battle-tested creation path plus the
 declared-ABI peek needs no NT arcana.)

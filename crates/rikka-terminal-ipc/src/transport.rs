@@ -21,6 +21,17 @@ pub fn endpoint_name() -> String {
     format!("rikka-terminal.{who}.sock")
 }
 
+/// A window process's own endpoint, for direct tab-move routing: every
+/// window process listens here and advertises the name through
+/// `register_window.endpoint`; senders resolve it via the monarch and attach
+/// directly (the monarch never proxies handles).
+pub fn window_endpoint_name(pid: u32) -> String {
+    let who = std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_default();
+    format!("rikka-terminal.{who}.win.{pid}.sock")
+}
+
 /// A framed connection: `Request`/`Response` over one local-socket stream.
 pub struct Conn(Stream);
 

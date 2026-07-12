@@ -627,12 +627,19 @@ mod tests {
                 .collect()
         };
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        // Per-phase deadlines: parallel test runs spawn several consoles at
+        // once, and a shared budget starves the later phases when conhost
+        // cold starts crowd each other.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !rows_text().iter().any(|r| r.contains("LINE-40-x"))
             && std::time::Instant::now() < deadline
         {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        assert!(
+            rows_text().iter().any(|r| r.contains("LINE-40-x")),
+            "listing never finished (conhost start starved?)"
+        );
 
         // Storm like a window drag. Widths stay >= 70 so the ~62-char
         // prompt+echo row never wraps: wrap-reflow parity with conhost is a
@@ -659,6 +666,7 @@ mod tests {
 
         session.send_bytes(b"mode con\r");
         let mut echo_row = None;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while std::time::Instant::now() < deadline {
             if let Some(row) = rows_text().iter().find(|r| r.contains("mode con")) {
                 echo_row = Some(row.clone());
