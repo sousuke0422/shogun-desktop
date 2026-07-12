@@ -195,17 +195,53 @@ the tab.
 was considered and rejected: the dll's battle-tested creation path plus the
 declared-ABI peek needs no NT arcana.)
 
+## Tab move, sending half (inc6c)
+
+The sender's side of the transfer (`tab_move.rs` + core's
+`quiesce_for_transfer`), keyed Ctrl+Shift+E (eject into an own window
+process, the cold-start relay form) and Ctrl+Shift+X (move into the first
+other window process: `list_windows` → `resolve_window` → `attach` on its
+own socket).
+
+- **Transfer kit**: the handles are duplicated AT BIRTH
+  (`build_handoff_session` stocks `TerminalSession::transfer`) — the live
+  set is unreachable later (the reader owns its `File` as `Box<dyn Read>`),
+  and the receiver's `DUPLICATE_CLOSE_SOURCE` pull consumes what it is
+  given, so it must consume independent duplicates, never the session's own
+  handles. No kit (SSH, legacy portable-pty) = not movable, refused before
+  quiescing.
+- **Quiesce before the handles leave**: the receiver starts reading the
+  moment its session assembles, and two readers on one pipe shred the VT
+  stream. `CancelSynchronousIo` on the reader thread, retried until the
+  loop exits (between reads it misses with `ERROR_NOT_FOUND`). Quiesce also
+  SEALS the resize settler: a straggler resize settling during the sender's
+  teardown (even the pending-flush on drop) would fight the receiver's
+  geometry, and ConPTY never repaints. Irreversible — a move that fails
+  afterwards leaves the tab honestly disconnected.
+- **Ownership across the wire**: relay (eject) transfers by inheritance =
+  copies, so the kit keeps ownership on every path. A window-socket push is
+  consumed by the receiver's pull — once the request is on the wire the
+  sender must never close those values again (kernel handle reuse: closing
+  a consumed value can hit an unrelated handle); the rare failure path
+  leaks a few pipe handles by design.
+- **After `ok`**: the sender closes the tab normally. Its remaining handles
+  are independent duplicates — dropping them cannot break the pipes or EOF
+  the console's signal pipe (the receiver holds live copies of both ends'
+  peers).
+- **v1 limits**: PTY only — no `state`, so the moved tab starts blank until
+  the application writes (ConPTY never repaints). Process granularity —
+  `window_id` = pid, so in-process-detached windows are not individually
+  addressable (use the in-process merge for those).
+
 ## Deferred
 
 - Monarch re-election when the monarch process exits (v2). v1: monarch = first
   process; if it exits, coordination pauses until the next cold start.
-- `state` wire format for tab-move scrollback (v1 may omit → move the PTY, drop
-  scrollback).
+- `state` wire format for tab-move scrollback (v1 moves the PTY, drops
+  scrollback — the moved tab starts blank until the application writes).
 - Elevated handoff window process.
-- Source-reader quiescence for tab moves: the sender must stop its blocking
-  PTY read before the receiver starts (double-reading one pipe corrupts the
-  stream) — `CancelSynchronousIo` on the reader thread or overlapped reads.
-  Required before the first real move ships.
+- Per-WINDOW move addressing (v1 window_id = pid) and a drag-DnD trigger for
+  the cross-process move (v1 is keyboard: Ctrl+Shift+E / Ctrl+Shift+X).
 
 ## Platform gating
 

@@ -23,6 +23,8 @@ mod config;
 mod hub;
 #[cfg(windows)]
 mod pty_local;
+#[cfg(windows)]
+mod tab_move;
 mod tsf;
 mod wt_profiles;
 
@@ -454,6 +456,48 @@ impl TabsWindow {
         self.active = self.active.min(self.tabs.len() - 1);
         self.after_tab_change(cx);
         open_tabs_window(cx, vec![entry]);
+    }
+
+    /// Cross-process detach: the active tab moves to its OWN OS process —
+    /// full crash isolation, where Ctrl+Shift+D's in-process detach shares
+    /// fate with this window. v1 moves the PTY only: the moved tab starts
+    /// blank (ConPTY never repaints) and scrollback stays behind. Single
+    /// tab = a window relocation, all cost no gain — no-op like detach.
+    #[cfg(windows)]
+    fn eject_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.len() < 2 {
+            return;
+        }
+        let Some(entry) = self.tabs.get(self.active) else {
+            return;
+        };
+        match tab_move::send_tab(&entry.0.session, tab_move::Destination::NewProcess) {
+            // The receiver owns the PTY now; close_at's shutdown only stops
+            // the driver task, and our handle drops are independent dups.
+            Ok(()) => self.close_at(self.active, window, cx),
+            // Quiesce is irreversible — the tab stays, honestly disconnected.
+            Err(e) => {
+                log::warn!("cross-process detach failed: {e:#}");
+                cx.notify();
+            }
+        }
+    }
+
+    /// Move the active tab into another window PROCESS (resolve through the
+    /// monarch, attach on that window's own socket). Moving the last tab
+    /// closes this window — that is a window merge, and the point.
+    #[cfg(windows)]
+    fn move_active_to_other_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.tabs.get(self.active) else {
+            return;
+        };
+        match tab_move::move_to_any_other_window(&entry.0.session) {
+            Ok(()) => self.close_at(self.active, window, cx),
+            Err(e) => {
+                log::warn!("tab move failed: {e:#}");
+                cx.notify();
+            }
+        }
     }
 
     /// Pull every other window's tabs into this one, then close them. Each
@@ -964,6 +1008,19 @@ impl Render for TabsWindow {
                         }
                         "d" => {
                             this.detach_active(cx);
+                            true
+                        }
+                        // Cross-process moves (Windows; IPC.md tab moves):
+                        // E(ject) = detach into an own OS process,
+                        // X(fer) = move into another window process.
+                        #[cfg(windows)]
+                        "e" => {
+                            this.eject_active(window, cx);
+                            true
+                        }
+                        #[cfg(windows)]
+                        "x" => {
+                            this.move_active_to_other_window(window, cx);
                             true
                         }
                         // NOTE: gpui-Windows never delivers Ctrl+M (the
@@ -1874,5 +1931,89 @@ mod tests {
         }
         drop(conn);
         drop(accept); // detach: the loop parks in accept() until process exit
+    }
+
+    /// The SENDING half against the receiving half, one process, real
+    /// socket: a LIVE session (reader pumping) is quiesced, its birth-time
+    /// duplicates pushed over the window socket, pulled back
+    /// (`DUPLICATE_CLOSE_SOURCE` against ourselves) and assembled — and
+    /// output written to the PTY *after* the move lands in the receiver's
+    /// grid, still flowing after the sender's remains drop. This is the
+    /// whole cross-process tab move, minus the second process.
+    #[cfg(windows)]
+    #[test]
+    fn live_tab_moves_across_the_window_socket() {
+        use std::io::Write as _;
+        use std::os::windows::io::OwnedHandle;
+
+        use rikka_terminal_core::pty_handoff::{HandoffPty, build_handoff_session};
+
+        let (out_read, mut out_write) = std::io::pipe().unwrap();
+        let (_in_read, in_write) = std::io::pipe().unwrap();
+        let source = build_handoff_session(
+            80,
+            24,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: None,
+                keepalive: Vec::new(),
+            },
+            "test-identity",
+        )
+        .expect("live source session");
+        *source.title.lock() = Some("mover".into());
+
+        let name = format!("rikka-test-move-{}.sock", std::process::id());
+        let listener = ipc::transport::Monarch::bind(&name).expect("bind window socket");
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
+        let accept = std::thread::spawn(move || window_accept_loop(listener, tx));
+
+        tab_move::send_tab(
+            &source,
+            tab_move::Destination::Window {
+                id: 1,
+                endpoint: name,
+            },
+        )
+        .expect("send the live tab");
+
+        let received = match rx.try_recv().expect("one pumped message") {
+            Forwarded::AdoptTab(session, startup) => {
+                assert_eq!(startup.title.as_deref(), Some("mover"));
+                session
+            }
+            _ => panic!("expected exactly one AdoptTab"),
+        };
+
+        let sees = |needle: &str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let grid: String = received
+                    .snapshot
+                    .lock()
+                    .cells
+                    .iter()
+                    .flat_map(|row| row.iter().map(|c| c.c))
+                    .collect();
+                if grid.contains(needle) {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{needle:?} never reached the receiver's grid"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        out_write.write_all(b"AFTER-MOVE").unwrap();
+        sees("AFTER-MOVE");
+
+        // The sender's teardown must not break the moved pipes: its handles
+        // are independent duplicates of what the receiver pulled.
+        drop(source);
+        out_write.write_all(b" STILL-FLOWING").unwrap();
+        sees("STILL-FLOWING");
+        drop(accept);
     }
 }

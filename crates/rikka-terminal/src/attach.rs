@@ -15,8 +15,8 @@
 
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 
-use anyhow::{Context as _, Result, bail};
-use rikka_terminal_core::pty_handoff::{HandoffPty, build_handoff_session};
+use anyhow::{Context as _, Result, bail, ensure};
+use rikka_terminal_core::pty_handoff::{HandoffPty, TransferKit, build_handoff_session};
 use rikka_terminal_core::{TerminalSession, xtversion};
 use rikka_terminal_ipc as ipc;
 use windows::Win32::Foundation::{
@@ -111,6 +111,30 @@ fn take(
 }
 
 impl LocalAttach {
+    /// Wrap a live session's birth-time transfer duplicates (a quiesced tab
+    /// on its way OUT of this process) in the six-slot wire identities: the
+    /// keepalive processes ride the `server`/`client` slots in order, and
+    /// `reference` is never present — the session released it when it went
+    /// live.
+    pub fn from_transfer(kit: TransferKit, startup: ipc::StartupInfo) -> Result<Self> {
+        ensure!(
+            kit.keepalive.len() <= 2,
+            "transfer kit carries more keepalive handles than the wire has slots"
+        );
+        let mut keepalive = kit.keepalive.into_iter();
+        Ok(LocalAttach {
+            input: kit.input,
+            output: kit.output,
+            signal: kit.signal,
+            reference: None,
+            server: keepalive.next(),
+            client: keepalive.next(),
+            hpcon: None,
+            shell: None,
+            startup,
+        })
+    }
+
     /// Assemble the engine session in this process. The startup seeds the
     /// interim size (the real one lands with the window's first frame fit)
     /// and title.

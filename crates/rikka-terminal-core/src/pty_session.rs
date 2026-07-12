@@ -158,7 +158,7 @@ pub fn build_terminal_session(
     let images = Arc::new(kitty_graphics::KittyImageStore::default());
     let xtversion = crate::xtversion::XtversionScanner::new(xtversion_identity);
 
-    {
+    let reader_thread = {
         let term2 = Arc::clone(&term);
         let snap2 = Arc::clone(&snapshot);
         let conn2 = Arc::clone(&connected);
@@ -177,34 +177,41 @@ pub fn build_terminal_session(
         // timeout can flush the buffer, and a thread parked in `read()`
         // would never fire one.
         let (chunk_tx, chunk_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
-        spawn_named("rikka-pty-io", move || {
-            let mut reader = reader;
-            let mut buf = [0u8; 4096];
-            // RIKKA_PTY_DUMP=<path>: tee the raw PTY output for protocol
-            // forensics (what did the app REALLY emit, post-transport).
-            let mut dump = std::env::var_os("RIKKA_PTY_DUMP").and_then(|p| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(p)
-                    .ok()
-            });
-            loop {
-                match reader.read(&mut buf) {
-                    // Dropping the sender signals EOF to the parse thread.
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if let Some(f) = dump.as_mut() {
-                            use std::io::Write as _;
-                            let _ = f.write_all(&buf[..n]);
-                        }
-                        if chunk_tx.send(buf[..n].to_vec()).is_err() {
-                            break;
+        // The JoinHandle is kept on the session: a cross-process tab move
+        // must stop this thread (CancelSynchronousIo aborts the blocked
+        // read → `Err` → break) before the receiver starts reading the same
+        // pipe. See `TerminalSession::quiesce_for_transfer`.
+        let reader_thread = std::thread::Builder::new()
+            .name("rikka-pty-io".into())
+            .spawn(move || {
+                let mut reader = reader;
+                let mut buf = [0u8; 4096];
+                // RIKKA_PTY_DUMP=<path>: tee the raw PTY output for protocol
+                // forensics (what did the app REALLY emit, post-transport).
+                let mut dump = std::env::var_os("RIKKA_PTY_DUMP").and_then(|p| {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(p)
+                        .ok()
+                });
+                loop {
+                    match reader.read(&mut buf) {
+                        // Dropping the sender signals EOF to the parse thread.
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if let Some(f) = dump.as_mut() {
+                                use std::io::Write as _;
+                                let _ = f.write_all(&buf[..n]);
+                            }
+                            if chunk_tx.send(buf[..n].to_vec()).is_err() {
+                                break;
+                            }
                         }
                     }
                 }
-            }
-        });
+            })
+            .ok();
         spawn_named("rikka-parse", move || {
             use std::sync::mpsc::RecvTimeoutError;
             let mut parser = Processor::<StdSyncHandler>::new();
@@ -370,7 +377,8 @@ pub fn build_terminal_session(
                 }
             }
         });
-    }
+        reader_thread
+    };
 
     // Debounced resize settler (leading + trailing edge): the first size of
     // a burst applies immediately (single resizes stay snappy), the rest
@@ -381,6 +389,7 @@ pub fn build_terminal_session(
     let cols_shared = Arc::new(AtomicU16::new(cols));
     let rows_shared = Arc::new(AtomicU16::new(rows));
     let conpty_resize_semantics = Arc::new(AtomicBool::new(false));
+    let pty_sealed = Arc::new(AtomicBool::new(false));
     let pty_resize = {
         let (tx, rx) = std::sync::mpsc::channel::<(u16, u16, f32, f32)>();
         let term = Arc::clone(&term);
@@ -391,12 +400,19 @@ pub fn build_terminal_session(
         let rows = Arc::clone(&rows_shared);
         let cell_size_px = Arc::clone(&cell_size_px);
         let conpty = Arc::clone(&conpty_resize_semantics);
+        let sealed = Arc::clone(&pty_sealed);
         let resizer = Arc::clone(&resizer);
         std::thread::Builder::new()
             .name("rikka-pty-resize".into())
             .spawn(move || {
                 use alacritty_terminal::term::test::TermSize;
                 let apply = |(c, r, cw, ch): (u16, u16, f32, f32)| {
+                    // Sealed for a tab move: the receiver owns the PTY now —
+                    // a straggler resize (grid OR signal pipe) settling
+                    // during our teardown would fight its geometry.
+                    if sealed.load(Ordering::Relaxed) {
+                        return;
+                    }
                     {
                         let mut t = term.lock();
                         t.resize_anchored(
@@ -462,6 +478,10 @@ pub fn build_terminal_session(
         resizer,
         pty_resize,
         conpty_resize_semantics,
+        reader_thread: FairMutex::new(reader_thread),
+        pty_sealed,
+        #[cfg(windows)]
+        transfer: FairMutex::new(None),
     })
 }
 

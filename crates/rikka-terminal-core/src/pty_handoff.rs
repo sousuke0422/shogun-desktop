@@ -48,6 +48,37 @@ pub struct HandoffPty {
     pub keepalive: Vec<OwnedHandle>,
 }
 
+/// Birth-time duplicates of a session's ConPTY handle set, stocked on
+/// `TerminalSession::transfer` so a later cross-process tab move has clean
+/// handles to send. Duplicated at assembly because the live set is
+/// unreachable afterwards (the reader thread owns its `File` as
+/// `Box<dyn Read>`), and because the receiver's `DUPLICATE_CLOSE_SOURCE`
+/// pull consumes what it is given — consuming an independent duplicate
+/// leaves the session's own handles valid for the sender's teardown.
+pub struct TransferKit {
+    pub input: OwnedHandle,
+    pub output: OwnedHandle,
+    pub signal: Option<OwnedHandle>,
+    /// Same order as `HandoffPty::keepalive` (conhost/server first, then
+    /// client) — the wire's `server`/`client` slots are filled from it.
+    pub keepalive: Vec<OwnedHandle>,
+}
+
+impl TransferKit {
+    fn stock(pty: &HandoffPty) -> std::io::Result<TransferKit> {
+        Ok(TransferKit {
+            input: pty.input.try_clone()?,
+            output: pty.output.try_clone()?,
+            signal: pty.signal.as_ref().map(|h| h.try_clone()).transpose()?,
+            keepalive: pty
+                .keepalive
+                .iter()
+                .map(|h| h.try_clone())
+                .collect::<std::io::Result<_>>()?,
+        })
+    }
+}
+
 /// winconpty's `PTY_SIGNAL_RESIZE_WINDOW` message: three little-endian u16s —
 /// the signal id (8), then the new column and row counts. ConPTY's signal
 /// pipe carries no pixel sizes.
@@ -87,6 +118,10 @@ pub fn build_handoff_session(
     pty: HandoffPty,
     xtversion_identity: &str,
 ) -> Result<TerminalSession> {
+    // Stock the transfer duplicates before the handles disappear into File
+    // boxes and worker threads — this is the only moment the full set is
+    // still in one hand.
+    let transfer = TransferKit::stock(&pty)?;
     let reader: Box<dyn Read + Send> = Box::new(File::from(pty.output));
     let writer: Box<dyn Write + Send> = Box::new(File::from(pty.input));
     let resizer: Arc<dyn PtyResizer> = Arc::new(SignalResizer {
@@ -106,7 +141,115 @@ pub fn build_handoff_session(
     session
         .conpty_resize_semantics
         .store(true, std::sync::atomic::Ordering::Relaxed);
+    *session.transfer.lock() = Some(transfer);
     Ok(session)
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use std::io::{Read as _, Write as _};
+    use std::os::windows::io::OwnedHandle;
+
+    use super::*;
+
+    /// The sending half of a tab move, distilled: quiesce provably stops OUR
+    /// reader — bytes written afterwards never reach this grid — while the
+    /// pipe, including data already buffered in it, stays intact for the
+    /// receiver, read here through the birth-time transfer duplicate.
+    #[test]
+    fn quiesce_stops_the_reader_and_the_kit_inherits_the_pipe() {
+        let (out_read, mut out_write) = std::io::pipe().expect("output pipe");
+        let (_in_read, in_write) = std::io::pipe().expect("input pipe");
+        let session = build_handoff_session(
+            80,
+            24,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: None,
+                keepalive: Vec::new(),
+            },
+            "test-identity",
+        )
+        .expect("session over pipes");
+
+        // Prove the reader is alive first, so "MOVED never lands" below
+        // means quiesce — not a dead pipeline.
+        out_write.write_all(b"hi").unwrap();
+        let row0 = || -> String {
+            session.snapshot.lock().cells[0]
+                .iter()
+                .map(|c| c.c)
+                .collect()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !row0().starts_with("hi") {
+            assert!(std::time::Instant::now() < deadline, "output never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        session.quiesce_for_transfer().expect("quiesce");
+
+        out_write.write_all(b"MOVED").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            row0().starts_with("hi") && !row0().contains("MOVED"),
+            "reader must be dead after quiesce, got {:?}",
+            row0()
+        );
+
+        // The receiver's view: the transfer duplicate reads the bytes our
+        // stopped reader left in the pipe.
+        let kit = session
+            .transfer
+            .lock()
+            .take()
+            .expect("kit stocked at birth");
+        let mut peer = File::from(kit.output);
+        let mut buf = [0u8; 5];
+        peer.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"MOVED");
+    }
+
+    /// After quiesce the settler must go silent: no resize — not even the
+    /// pending-flush on session drop — may reach the signal pipe, or it
+    /// would fight the receiver's geometry (ConPTY never repaints).
+    #[test]
+    fn quiesce_seals_resizes_off_the_signal_pipe() {
+        let (out_read, _out_write) = std::io::pipe().expect("output pipe");
+        let (_in_read, in_write) = std::io::pipe().expect("input pipe");
+        let (mut sig_read, sig_write) = std::io::pipe().expect("signal pipe");
+        let session = build_handoff_session(
+            80,
+            24,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: Some(OwnedHandle::from(sig_write)),
+                keepalive: Vec::new(),
+            },
+            "test-identity",
+        )
+        .expect("session over pipes");
+
+        // A live settler first (leading edge applies immediately)…
+        session.resize(100, 30, (8.0, 16.0));
+        let mut first = [0u8; 6];
+        sig_read.read_exact(&mut first).unwrap();
+        assert_eq!(first, resize_signal_packet(100, 30));
+
+        // …then seal, resize again, and drain to EOF: nothing may follow.
+        session.quiesce_for_transfer().expect("quiesce");
+        session.resize(120, 40, (8.0, 16.0));
+        drop(session.transfer.lock().take()); // the kit's signal dup too
+        drop(session);
+        let mut rest = Vec::new();
+        sig_read.read_to_end(&mut rest).unwrap();
+        assert!(
+            rest.is_empty(),
+            "sealed session leaked a resize onto the signal pipe: {rest:?}"
+        );
+    }
 }
 
 #[cfg(test)]

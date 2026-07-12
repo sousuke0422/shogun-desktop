@@ -175,11 +175,63 @@ pub struct TerminalSession {
     /// by ConPTY session builders; SSH / Unix PTYs keep Alacritty's native
     /// bottom-anchored behavior. Shared with the resize settler thread.
     pub conpty_resize_semantics: Arc<AtomicBool>,
+    /// The blocking PTY reader thread ("rikka-pty-io"), held so a
+    /// cross-process tab move can stop it (see
+    /// [`Self::quiesce_for_transfer`]). `None` = no reader was spawned, or
+    /// it was already quiesced/joined.
+    pub reader_thread: FairMutex<Option<std::thread::JoinHandle<()>>>,
+    /// Set by [`Self::quiesce_for_transfer`]: the settler thread skips every
+    /// further apply, so no resize (grid or signal-pipe) can land after the
+    /// receiver of a tab move took over — a straggler settling during the
+    /// sender's teardown would fight the receiver's geometry, and ConPTY
+    /// never repaints, so it would be permanent. Shared with the settler.
+    pub pty_sealed: Arc<AtomicBool>,
+    /// Windows: birth-time duplicates of the ConPTY handle set, stocked by
+    /// [`pty_handoff::build_handoff_session`] for a later cross-process tab
+    /// move. `None` = not transferable (SSH, legacy portable-pty) or already
+    /// taken. Independent duplicates, never the live handles: the receiver's
+    /// `DUPLICATE_CLOSE_SOURCE` pull consumes THESE, while the File objects
+    /// the reader/writer threads hold stay valid for the teardown.
+    #[cfg(windows)]
+    pub transfer: FairMutex<Option<pty_handoff::TransferKit>>,
 }
 
 impl TerminalSession {
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
+    }
+
+    /// Quiesce this session for a cross-process tab move: stop the blocking
+    /// PTY reader (two readers on one pipe shred the VT stream, so ours must
+    /// be provably dead BEFORE the receiver assembles its session and starts
+    /// reading) and seal outbound PTY effects (a resize settling after the
+    /// receiver adopted would fight its geometry). Irreversible — on a failed
+    /// move the tab reads as disconnected, honestly.
+    ///
+    /// `CancelSynchronousIo` only aborts a syscall the thread is blocked in
+    /// RIGHT NOW; between reads it misses (`ERROR_NOT_FOUND`), so keep poking
+    /// until the loop observes a cancelled read and exits.
+    #[cfg(windows)]
+    pub fn quiesce_for_transfer(&self) -> anyhow::Result<()> {
+        use std::os::windows::io::AsRawHandle as _;
+        self.pty_sealed.store(true, Ordering::Relaxed);
+        let Some(handle) = self.reader_thread.lock().take() else {
+            return Ok(()); // no reader spawned, or already quiesced
+        };
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn CancelSynchronousIo(thread: *mut std::ffi::c_void) -> i32;
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !handle.is_finished() {
+            unsafe { CancelSynchronousIo(handle.as_raw_handle()) };
+            if std::time::Instant::now() > deadline {
+                anyhow::bail!("PTY reader did not quiesce within 5s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let _ = handle.join();
+        Ok(())
     }
 
     pub fn send_bytes(&self, bytes: &[u8]) {
