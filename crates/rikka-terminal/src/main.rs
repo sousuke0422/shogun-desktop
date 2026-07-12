@@ -21,6 +21,8 @@ mod attach;
 mod cli;
 mod config;
 mod hub;
+#[cfg(windows)]
+mod pty_local;
 mod tsf;
 mod wt_profiles;
 
@@ -136,6 +138,12 @@ impl PtyResizer for LocalResizer {
 }
 
 /// Spawn `program args…` on a local PTY and wire it into an engine session.
+///
+/// Windows first tries the handoff-shaped direct ConPTY drive (pty_local) —
+/// the session then owns the same handle set an OS handoff delivers, which
+/// is what cross-window tab moves ride. portable-pty stays as the fallback
+/// (and the `RIKKA_LEGACY_PTY` escape hatch) so a missing/mismatched
+/// sideload pair degrades to the old path instead of a dead tab.
 fn spawn_local_shell(
     program: &str,
     args: &[String],
@@ -143,6 +151,15 @@ fn spawn_local_shell(
     cols: u16,
     rows: u16,
 ) -> Result<TerminalSession> {
+    #[cfg(windows)]
+    if std::env::var_os("RIKKA_LEGACY_PTY").is_none() {
+        match pty_local::spawn_local(program, args, cwd, cols, rows) {
+            Ok(session) => return Ok(session),
+            Err(e) => {
+                log::warn!("handoff-shaped local spawn failed, using portable-pty: {e:#}");
+            }
+        }
+    }
     let pty = native_pty_system();
     let pair = pty.openpty(PtySize {
         rows,

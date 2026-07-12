@@ -1,0 +1,483 @@
+//! Local tabs born handoff-shaped (IPC.md "Local tabs on the handoff shape"):
+//! instead of hiding ConPTY inside portable-pty, drive the vendored winconpty
+//! (conpty.dll) directly, so a locally-spawned session owns the same handle
+//! set an OS default-terminal handoff delivers. That is what makes a local
+//! tab movable across window processes with the existing six-slot `attach`.
+//!
+//! The recipe, verified against microsoft/terminal (src/winconpty/*.cpp and
+//! ConptyConnection.cpp):
+//! 1. two anonymous pipe pairs — conpty duplicates the ends we hand it, so
+//!    ours stay non-inheritable and the peers close right after create;
+//! 2. `ConptyCreatePseudoConsole` from the dll beside the exe (the pair the
+//!    sixel sideload already ships; OpenConsole.exe resolves beside the dll);
+//! 3. client spawn with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`, handle
+//!    inheritance OFF — kernelbase carries the console reference through the
+//!    attribute, reading it straight out of the HPCON struct;
+//! 4. lift `hSignal`/`hConPtyProcess` out of the HPCON — its layout is
+//!    declared "part of an ABI shared with the rest of the operating system"
+//!    in winconpty.h, which is the same guarantee kernelbase relies on —
+//!    then release the reference (upstream parity: `ConptyConnection::Start`)
+//!    and close the husk. Our duplicates keep the pipes alive; dropping the
+//!    session closes them, conhost sees signal EOF, and the console dies —
+//!    the same kill switch the old portable-pty master drop provided.
+
+#![cfg(windows)]
+
+use std::ffi::c_void;
+use std::os::windows::ffi::OsStrExt as _;
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::path::Path;
+use std::sync::OnceLock;
+
+use anyhow::{Context as _, Result, anyhow, bail, ensure};
+use rikka_terminal_core::pty_handoff::{HandoffPty, build_handoff_session};
+use rikka_terminal_core::{TerminalSession, xtversion};
+use windows::Win32::Foundation::{
+    DUPLICATE_SAME_ACCESS, DuplicateHandle, FreeLibrary, HANDLE, HMODULE,
+};
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::System::Threading::{
+    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
+    EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, InitializeProcThreadAttributeList,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute,
+};
+use windows::core::{HRESULT, PCWSTR, PWSTR};
+
+/// winconpty's `HPCON`: an opaque pointer to [`PseudoConsoleAbi`].
+type Hpcon = *mut c_void;
+
+/// `COORD` without pulling in the Win32_System_Console feature.
+#[repr(C)]
+struct Coord {
+    x: i16,
+    y: i16,
+}
+
+/// winconpty.h `PseudoConsole` — quoting its header: "This structure is part
+/// of an ABI shared with the rest of the operating system" (kernelbase reads
+/// `reference` when it processes `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`).
+/// That declared stability is what licenses lifting handles back out.
+#[repr(C)]
+struct PseudoConsoleAbi {
+    signal: HANDLE,
+    reference: HANDLE,
+    conhost: HANDLE,
+}
+
+type CreateFn = unsafe extern "system" fn(Coord, HANDLE, HANDLE, u32, *mut Hpcon) -> HRESULT;
+type ReleaseFn = unsafe extern "system" fn(Hpcon) -> HRESULT;
+type CloseFn = unsafe extern "system" fn(Hpcon);
+
+/// The three winconpty entry points we drive. Loaded once, never unloaded.
+pub struct ConptyDll {
+    create: CreateFn,
+    release: ReleaseFn,
+    close: CloseFn,
+}
+
+impl ConptyDll {
+    /// Load `conpty.dll` from `dir`. OpenConsole.exe must sit beside it —
+    /// winconpty resolves its console host relative to its own module path.
+    pub fn load(dir: &Path) -> Result<ConptyDll> {
+        let path = dir.join("conpty.dll");
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }
+            .with_context(|| format!("LoadLibraryW({})", path.display()))?;
+        match Self::bind(module) {
+            Ok(dll) => Ok(dll), // module stays loaded for the process lifetime
+            Err(e) => {
+                unsafe { FreeLibrary(module) }.ok();
+                Err(e)
+            }
+        }
+    }
+
+    fn bind(module: HMODULE) -> Result<ConptyDll> {
+        let sym = |name: &'static str| -> Result<unsafe extern "system" fn() -> isize> {
+            let mut bytes = name.as_bytes().to_vec();
+            bytes.push(0);
+            unsafe { GetProcAddress(module, windows::core::PCSTR(bytes.as_ptr())) }
+                .ok_or_else(|| anyhow!("conpty.dll lacks {name}"))
+        };
+        // SAFETY: the winconpty exports have had these exact signatures since
+        // the dll first shipped; the vendored copy is version-pinned.
+        unsafe {
+            Ok(ConptyDll {
+                create: std::mem::transmute::<unsafe extern "system" fn() -> isize, CreateFn>(sym(
+                    "ConptyCreatePseudoConsole",
+                )?),
+                release: std::mem::transmute::<unsafe extern "system" fn() -> isize, ReleaseFn>(
+                    sym("ConptyReleasePseudoConsole")?,
+                ),
+                close: std::mem::transmute::<unsafe extern "system" fn() -> isize, CloseFn>(sym(
+                    "ConptyClosePseudoConsole",
+                )?),
+            })
+        }
+    }
+
+    /// The dll beside our exe — where build.rs (and the installer) put the
+    /// sideloaded pair.
+    fn beside_exe() -> Result<&'static ConptyDll> {
+        static DLL: OnceLock<Result<ConptyDll, String>> = OnceLock::new();
+        DLL.get_or_init(|| {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let dir = exe.parent().ok_or("exe has no parent dir")?;
+            ConptyDll::load(dir).map_err(|e| format!("{e:#}"))
+        })
+        .as_ref()
+        .map_err(|e| anyhow!("{e}"))
+    }
+}
+
+/// Ensures `ConptyClosePseudoConsole` runs on every path. On success it runs
+/// after the lift + release, closing only the husk's own copies.
+struct Husk<'a>(&'a ConptyDll, Hpcon);
+
+impl Drop for Husk<'_> {
+    fn drop(&mut self) {
+        unsafe { (self.0.close)(self.1) };
+    }
+}
+
+/// Spawn `program args…` on a directly-driven ConPTY and assemble the engine
+/// session over the lifted handles. The result is indistinguishable from an
+/// adopted default-terminal handoff.
+pub fn spawn_local(
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    cols: u16,
+    rows: u16,
+) -> Result<TerminalSession> {
+    spawn_with(
+        ConptyDll::beside_exe()?,
+        program,
+        args,
+        cwd,
+        cols,
+        rows,
+        &xtversion::engine_identity(),
+    )
+}
+
+fn spawn_with(
+    dll: &ConptyDll,
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    cols: u16,
+    rows: u16,
+    identity: &str,
+) -> Result<TerminalSession> {
+    ensure!(cols >= 1 && rows >= 1, "conpty rejects zero dimensions");
+
+    // Input: we write, conhost reads. Output: conhost writes, we read.
+    // ConptyCreatePseudoConsole duplicates the ends we pass (inheritable,
+    // for its conhost spawn), so the peers can close right after.
+    let (their_input, our_input) = std::io::pipe().context("input pipe")?;
+    let (our_output, their_output) = std::io::pipe().context("output pipe")?;
+
+    let mut hpcon: Hpcon = std::ptr::null_mut();
+    unsafe {
+        (dll.create)(
+            Coord {
+                x: cols as i16,
+                y: rows as i16,
+            },
+            HANDLE(their_input.as_raw_handle()),
+            HANDLE(their_output.as_raw_handle()),
+            0,
+            &mut hpcon,
+        )
+    }
+    .ok()
+    .context("ConptyCreatePseudoConsole")?;
+    ensure!(!hpcon.is_null(), "ConptyCreatePseudoConsole returned null");
+    let husk = Husk(dll, hpcon);
+    drop((their_input, their_output));
+
+    // The client rides PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE; the reference
+    // inside the HPCON must still be alive here (kernelbase duplicates it
+    // into the child), so the spawn happens before the release below.
+    let client = launch_client(hpcon, program, args, cwd)?;
+
+    let abi = unsafe { &*(hpcon as *const PseudoConsoleAbi) };
+    let signal = dup(abi.signal).context("lift signal out of HPCON")?;
+    let conhost = dup(abi.conhost).context("lift conhost process out of HPCON")?;
+
+    // Upstream parity (ConptyConnection::Start): release the reference the
+    // moment the connection is set up, so conhost exits once its last client
+    // does; then close the husk — only its own copies die, our lifts live.
+    unsafe { (dll.release)(hpcon) }
+        .ok()
+        .context("ConptyReleasePseudoConsole")?;
+    drop(husk);
+
+    build_handoff_session(
+        cols,
+        rows,
+        HandoffPty {
+            input: our_input.into(),
+            output: our_output.into(),
+            signal: Some(signal),
+            keepalive: vec![conhost, client],
+        },
+        identity,
+    )
+}
+
+/// CreateProcessW with the pseudoconsole attribute — the mirror of
+/// microsoft/terminal's `ConptyConnection::_LaunchAttachedClient`: handle
+/// inheritance OFF, `STARTF_USESTDHANDLES` with no handles (so the child
+/// gets the console's std handles, not stray copies of ours), the HPCON
+/// value passed directly as the attribute payload.
+fn launch_client(
+    hpcon: Hpcon,
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+) -> Result<OwnedHandle> {
+    let mut cmdline: Vec<u16> = {
+        let mut s = String::new();
+        append_quoted(program, &mut s);
+        for arg in args {
+            s.push(' ');
+            append_quoted(arg, &mut s);
+        }
+        s.encode_utf16().chain([0]).collect()
+    };
+    let cwd_wide: Option<Vec<u16>> =
+        cwd.map(|d| std::ffi::OsStr::new(d).encode_wide().chain([0]).collect());
+    let env = env_block_with(&[
+        ("TERM_PROGRAM", xtversion::TERM_PROGRAM),
+        ("TERM_PROGRAM_VERSION", xtversion::TERM_PROGRAM_VERSION),
+    ]);
+
+    let mut size: usize = 0;
+    // First call fails by design — it reports the required size.
+    let _ = unsafe { InitializeProcThreadAttributeList(None, 1, None, &mut size) };
+    let mut buf = vec![0u8; size];
+    let list = LPPROC_THREAD_ATTRIBUTE_LIST(buf.as_mut_ptr() as *mut c_void);
+    unsafe { InitializeProcThreadAttributeList(Some(list), 1, None, &mut size) }
+        .context("InitializeProcThreadAttributeList")?;
+    let spawned = (|| -> Result<PROCESS_INFORMATION> {
+        unsafe {
+            UpdateProcThreadAttribute(
+                list,
+                0,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+                // Quirk of this attribute (and upstream usage): the HPCON
+                // value itself is the payload pointer.
+                Some(hpcon),
+                std::mem::size_of::<Hpcon>(),
+                None,
+                None,
+            )
+        }
+        .context("UpdateProcThreadAttribute(PSEUDOCONSOLE)")?;
+
+        let mut si = STARTUPINFOEXW::default();
+        si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.lpAttributeList = list;
+        let mut pi = PROCESS_INFORMATION::default();
+        unsafe {
+            CreateProcessW(
+                PCWSTR::null(),
+                Some(PWSTR(cmdline.as_mut_ptr())),
+                None,
+                None,
+                false,
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                Some(env.as_ptr() as *const c_void),
+                cwd_wide
+                    .as_ref()
+                    .map_or(PCWSTR::null(), |w| PCWSTR(w.as_ptr())),
+                &si.StartupInfo,
+                &mut pi,
+            )
+        }
+        .with_context(|| format!("CreateProcessW({program})"))?;
+        Ok(pi)
+    })();
+    unsafe { DeleteProcThreadAttributeList(list) };
+    let pi = spawned?;
+    if !pi.hThread.is_invalid() {
+        drop(unsafe { OwnedHandle::from_raw_handle(pi.hThread.0) });
+    }
+    Ok(unsafe { OwnedHandle::from_raw_handle(pi.hProcess.0) })
+}
+
+/// Same-process handle duplication into an owned wrapper.
+fn dup(h: HANDLE) -> Result<OwnedHandle> {
+    if h.is_invalid() || h.0.is_null() {
+        bail!("HPCON member handle is absent");
+    }
+    let mut out = HANDLE::default();
+    unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            h,
+            GetCurrentProcess(),
+            &mut out,
+            0,
+            false,
+            DUPLICATE_SAME_ACCESS,
+        )
+    }
+    .context("DuplicateHandle")?;
+    Ok(unsafe { OwnedHandle::from_raw_handle(out.0) })
+}
+
+/// Append one argument under CommandLineToArgvW's rules: bare when no
+/// whitespace or quote; otherwise quoted, with N backslashes before a quote
+/// becoming 2N+1 and trailing backslashes doubled.
+fn append_quoted(arg: &str, out: &mut String) {
+    if !arg.is_empty() && !arg.contains([' ', '\t', '"']) {
+        out.push_str(arg);
+        return;
+    }
+    out.push('"');
+    let mut backslashes = 0usize;
+    for c in arg.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.extend(std::iter::repeat_n('\\', backslashes));
+                out.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes * 2));
+    out.push('"');
+}
+
+/// The parent environment with `overrides` upserted (case-insensitive names,
+/// Windows semantics), serialized as the CreateProcessW Unicode block:
+/// `name=value\0`… terminated by an extra `\0`, sorted by uppercased name as
+/// the docs require.
+fn env_block_with(overrides: &[(&str, &str)]) -> Vec<u16> {
+    let mut vars: Vec<(String, String)> = std::env::vars().collect();
+    for (name, value) in overrides {
+        match vars.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            Some((_, v)) => *v = value.to_string(),
+            None => vars.push((name.to_string(), value.to_string())),
+        }
+    }
+    vars.sort_by_key(|(n, _)| n.to_uppercase());
+    let mut block: Vec<u16> = Vec::new();
+    for (name, value) in &vars {
+        block.extend(name.encode_utf16());
+        block.extend("=".encode_utf16());
+        block.extend(value.encode_utf16());
+        block.push(0);
+    }
+    block.push(0);
+    block
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quoted(arg: &str) -> String {
+        let mut s = String::new();
+        append_quoted(arg, &mut s);
+        s
+    }
+
+    #[test]
+    fn quoting_matches_argv_rules() {
+        assert_eq!(quoted("plain"), "plain");
+        assert_eq!(quoted(r"C:\dir\file"), r"C:\dir\file");
+        assert_eq!(quoted("two words"), r#""two words""#);
+        assert_eq!(quoted(""), r#""""#);
+        assert_eq!(quoted(r#"say "hi""#), r#""say \"hi\"""#);
+        // Bare backslashes need no quoting at all…
+        assert_eq!(quoted(r"end\"), r"end\");
+        // …but double before the closing quote once quoting kicks in,
+        assert_eq!(quoted(r"tail \"), r#""tail \\""#);
+        // and 2N+1 before an embedded quote.
+        assert_eq!(quoted(r#"a\"b"#), r#""a\\\"b""#);
+        assert_eq!(quoted(r"mid\dle space"), r#""mid\dle space""#);
+    }
+
+    #[test]
+    fn env_block_upserts_sorts_and_terminates() {
+        let block = env_block_with(&[("RIKKA_ZZ_TEST", "on"), ("TERM_PROGRAM", "x")]);
+        assert_eq!(block.last(), Some(&0));
+        let s = String::from_utf16(&block[..block.len() - 1]).unwrap();
+        let entries: Vec<&str> = s.split('\0').filter(|e| !e.is_empty()).collect();
+        assert!(entries.contains(&"RIKKA_ZZ_TEST=on"));
+        let terms: Vec<&str> = entries
+            .iter()
+            .copied()
+            .filter(|e| e.to_uppercase().starts_with("TERM_PROGRAM="))
+            .collect();
+        assert_eq!(terms, ["TERM_PROGRAM=x"], "override must not duplicate");
+        let names: Vec<String> = entries
+            .iter()
+            .map(|e| e.split('=').next().unwrap().to_uppercase())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "block must be name-sorted");
+    }
+
+    /// Full drive of the vendored pair: create → attribute spawn → lift →
+    /// release → close husk → engine session. The marker proves output and
+    /// the env block; the disconnect proves the released reference lets
+    /// conhost exit with its client — the whole point of being born
+    /// handoff-shaped.
+    #[test]
+    fn local_spawn_is_born_handoff_shaped() {
+        let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
+        let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
+        let session = spawn_with(
+            &dll,
+            "cmd.exe",
+            &["/c".into(), "echo LIVE:%TERM_PROGRAM%".into()],
+            None,
+            80,
+            24,
+            "test-identity",
+        )
+        .expect("handoff-shaped local spawn");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut seen = false;
+        while std::time::Instant::now() < deadline {
+            let grid: String = session
+                .snapshot
+                .lock()
+                .cells
+                .iter()
+                .flat_map(|row| row.iter().map(|c| c.c))
+                .collect();
+            if grid.contains("LIVE:rikka-terminal") {
+                seen = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(seen, "marker with TERM_PROGRAM must reach the grid");
+
+        session.resize(100, 30, (8.0, 16.0));
+
+        while session.is_connected() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            !session.is_connected(),
+            "client exit must break the pipes (reference released)"
+        );
+    }
+}
