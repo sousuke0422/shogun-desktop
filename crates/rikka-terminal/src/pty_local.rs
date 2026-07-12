@@ -611,7 +611,6 @@ mod tests {
     /// reflow drifted the row accounting and the echo overwrote stale
     /// rows one line off ("BB\Users\aki\…" mid-row was the signature).
     #[test]
-    #[ignore = "one-row residue remains: conhost places a grow-rejoined row one row above ours (its reflow rewinds from the bottom) — the last piece of full reflow parity, tracked for the next increment"]
     fn width_shrink_grow_keeps_conhost_agreement() {
         let _serial = conhost_serial();
         let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));

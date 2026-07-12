@@ -19,6 +19,168 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.resize_anchored(reflow, lines, columns, false);
     }
 
+    /// conhost's `TextBuffer::Reflow` (microsoft/terminal textBuffer.cpp),
+    /// ported for ConPTY parity — used whenever a ConPTY session's WIDTH
+    /// changes. ConPTY emits nothing on a resize and computes every later
+    /// absolute cursor position against conhost's own reflow, which differs
+    /// from Alacritty's in exactly these measured rules (rikka addition):
+    ///
+    /// 1. only the viewport takes part, top-down, and only up to
+    ///    `max(last row with text, cursor row)` — rows below do not exist
+    ///    for the reflow (conhost's `oldHeight` cutoff);
+    /// 2. a row contributes its content up to its last non-empty cell —
+    ///    trailing blanks never wrap (conhost's `MeasureRight`);
+    /// 3. on the cursor's row the contribution extends through the cursor
+    ///    column (REFLOW_JANK_CURSOR_WRAP: blanks before the cursor count
+    ///    as content, so text typed on a fresh line unwraps onto its
+    ///    logical predecessor on a later grow);
+    /// 4. a target row filled to the new width wraps (WRAPLINE); a source
+    ///    row without WRAPLINE ends its logical line;
+    /// 5. the cursor follows its logical position through the copy, and
+    ///    content past it may be dropped rather than let the cursor row
+    ///    scroll away (conhost's `newYLimit` guard).
+    ///
+    /// Scrollback is ours alone (ConPTY's conhost has none): history rows
+    /// are only width-fitted — they cannot affect conhost's coordinates —
+    /// and viewport overflow scrolls INTO history, mirroring conhost's
+    /// circular-buffer advance discarding its top rows.
+    pub fn resize_conhost<D>(&mut self, lines: usize, columns: usize)
+    where
+        T: ResetDiscriminant<D> + Clone,
+        D: PartialEq,
+    {
+        let old_cols = self.columns;
+        self.columns = columns;
+
+        // Storage is NEWEST-first (index 0 = the viewport's bottom row).
+        let mut all = self.raw.take_all();
+        let mut viewport: Vec<Row<T>> = all.drain(..self.lines).collect();
+        viewport.reverse(); // top row first, for the top-down copy below
+        let mut history = all; // newest-first, oldest last
+
+        // History: width-fit only (truncate/pad, no reflow).
+        if columns != old_cols {
+            for row in &mut history {
+                if columns > old_cols {
+                    row.grow(columns);
+                } else {
+                    row.shrink(columns);
+                }
+            }
+        }
+
+        let cursor_y = self.cursor.point.line.0.max(0) as usize;
+        let cursor_x = self.cursor.point.column.0;
+
+        // Rule 1: the participation cutoff.
+        let last_text = viewport.iter().rposition(|r| !r.is_clear());
+        let old_height = max(last_text.map_or(0, |t| t + 1), cursor_y + 1).min(self.lines);
+
+        let mut out: Vec<Row<T>> = Vec::new();
+        let mut cur: Row<T> = Row::new(columns);
+        let mut new_x = 0usize;
+        // (index into `out` at cursor-copy time, column); the row may still
+        // be `cur` — its index is out.len() until pushed.
+        let mut new_cursor: Option<(usize, usize)> = None;
+
+        for (y, row) in viewport.iter().enumerate().take(old_height) {
+            // Rules 2 + 3: the contribution limit.
+            let mut limit = (0..old_cols)
+                .rev()
+                .find(|&x| !row[Column(x)].is_empty())
+                .map_or(0, |x| x + 1);
+            if y == cursor_y {
+                limit = max(limit, min(cursor_x + 1, old_cols));
+            }
+
+            let mut old_x = 0usize;
+            loop {
+                if new_x >= columns {
+                    // Rule 4: forced wrap. A wide char split by the new
+                    // boundary moves whole to the next row, leaving a
+                    // spacer (same contract as the native reflow paths).
+                    let carry = if cur[Column(columns - 1)].flags().contains(Flags::WIDE_CHAR) {
+                        let mut spacer = T::default();
+                        spacer.flags_mut().insert(Flags::LEADING_WIDE_CHAR_SPACER);
+                        Some(mem::replace(&mut cur[Column(columns - 1)], spacer))
+                    } else {
+                        None
+                    };
+                    cur[Column(columns - 1)].flags_mut().insert(Flags::WRAPLINE);
+                    out.push(mem::replace(&mut cur, Row::new(columns)));
+                    new_x = 0;
+                    if let Some(wide) = carry {
+                        cur[Column(0)] = wide;
+                        new_x = 1;
+                    }
+                }
+                if old_x >= limit {
+                    break;
+                }
+                let n = min(limit - old_x, columns - new_x);
+                for k in 0..n {
+                    cur[Column(new_x + k)] = row[Column(old_x + k)].clone();
+                }
+                // Rule 5: cursor tracking.
+                if y == cursor_y && cursor_x >= old_x && cursor_x < old_x + n {
+                    new_cursor = Some((out.len(), new_x + (cursor_x - old_x)));
+                }
+                old_x += n;
+                new_x += n;
+            }
+
+            // Rule 4: an explicit newline ends the logical line. WRAPLINE
+            // lives on the source row's LAST cell (its old width).
+            let wrapped = row
+                .last()
+                .is_some_and(|c| c.flags().contains(Flags::WRAPLINE));
+            if !wrapped {
+                out.push(mem::replace(&mut cur, Row::new(columns)));
+                new_x = 0;
+            }
+        }
+        if new_x != 0 || new_cursor.is_some_and(|(row, _)| row == out.len()) {
+            out.push(cur);
+        }
+
+        let (mut cursor_row, cursor_col) = new_cursor.unwrap_or((0, 0));
+
+        // Overflow scrolls into history — but never past the cursor's row
+        // (rule 5): content beyond it is dropped instead, like conhost
+        // stopping its copy before overwriting the cursor.
+        let mut overflow = out.len().saturating_sub(lines);
+        if overflow > cursor_row {
+            out.truncate(lines + cursor_row);
+            overflow = cursor_row;
+        }
+        if overflow > 0 {
+            // Rows scrolled out at the top join the history's NEWEST end.
+            let mut pushed: Vec<Row<T>> = out.drain(..overflow).collect();
+            pushed.reverse(); // newest-first, like the storage
+            pushed.extend(history);
+            history = pushed;
+            cursor_row -= overflow;
+        }
+        while out.len() < lines {
+            out.push(Row::new(columns));
+        }
+
+        self.cursor.point.line = Line(cursor_row as i32);
+        self.cursor.point.column = Column(min(cursor_col, columns - 1));
+        self.cursor.input_needs_wrap = false;
+        self.saved_cursor.point.line = Line(min(self.saved_cursor.point.line.0, lines as i32 - 1));
+        self.saved_cursor.point.column = Column(min(self.saved_cursor.point.column.0, columns - 1));
+
+        // Reassemble newest-first: viewport bottom..top, then the history.
+        out.reverse();
+        out.extend(history);
+        out.truncate(self.max_scroll_limit + lines);
+        self.raw.replace_inner(out);
+        self.raw.set_visible_lines(lines);
+        self.lines = lines;
+        self.display_offset = min(self.display_offset, self.history_size());
+    }
+
     /// [`Self::resize`] with a choice of growth anchoring: `top_anchored`
     /// growth never pulls rows back from history — blank lines appear at the
     /// bottom and the cursor stays put. This is conhost's behavior; ConPTY

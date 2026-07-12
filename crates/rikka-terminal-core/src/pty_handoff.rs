@@ -32,7 +32,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use parking_lot::FairMutex;
 
-use crate::{PtyResizer, TerminalSession, pty_session::build_terminal_session};
+use crate::{PtyResizer, TerminalSession};
 
 /// The handles a default-terminal handoff (or a tab move) delivers, already
 /// owned by this process. `keepalive` is closed when the session drops.
@@ -416,13 +416,13 @@ mod transfer_tests {
 
     use super::*;
 
-    /// ConPTY sessions must NOT reflow on a width shrink: conhost
-    /// truncates rows in place (blank rows and row count untouched),
-    /// stepping an overshooting cursor to the next row at column − width.
-    /// A later grow rejoins only rows the APPLICATION wrapped while
-    /// writing — truncated rows lost their tail (and wrap flag) for good.
+    /// ConPTY width changes must reflow exactly like conhost's
+    /// `TextBuffer::Reflow`: content wraps on a shrink (blank rows
+    /// preserved, cursor following logically — REFLOW_JANK counts the
+    /// blank cell in front of the cursor as content) and the round trip
+    /// back rejoins everything: the grow restores the original layout.
     #[test]
-    fn conpty_width_shrink_truncates_instead_of_wrapping() {
+    fn conpty_width_reflow_matches_conhost() {
         let (out_read, mut out_write) = std::io::pipe().expect("output pipe");
         let (_in_read, in_write) = std::io::pipe().expect("input pipe");
         let session = build_handoff_session(
@@ -479,13 +479,17 @@ mod transfer_tests {
                     .to_string()
             };
             assert_eq!(text(0), "AAA", "short rows stay put");
-            assert_eq!(text(1), "", "blank rows stay put");
-            assert_eq!(text(2), "P".repeat(45), "long rows truncate, not wrap");
-            assert_eq!(text(3), "", "no wrapped remainder row");
+            assert_eq!(text(1), "", "blank rows are preserved");
+            assert_eq!(text(2), "P".repeat(45), "long rows wrap at the new width");
+            assert_eq!(
+                text(3),
+                "P".repeat(11),
+                "the remainder lands on the next row"
+            );
             assert_eq!(
                 snap.cursor,
                 (3, 11),
-                "cursor steps to the next row at column − width (56 − 45)"
+                "cursor follows its logical position (row 3, 56 − 45)"
             );
         }
 
@@ -502,12 +506,23 @@ mod transfer_tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let snap = session.snapshot.lock();
-        let row2: String = snap.cells[2].iter().map(|c| c.c).collect();
+        let text = |r: usize| -> String {
+            snap.cells[r]
+                .iter()
+                .map(|c| c.c)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        assert_eq!(text(0), "AAA");
+        assert_eq!(text(1), "", "blank rows survive the round trip");
         assert_eq!(
-            row2.trim_end(),
-            "P".repeat(45),
-            "truncation is permanent — a grow pads, it does not restore"
+            text(2),
+            "P".repeat(56),
+            "the grow rejoins the wrapped pair — the round trip is lossless"
         );
+        assert_eq!(text(3), "", "the remainder row folded back");
+        assert_eq!(snap.cursor, (2, 56), "cursor returns to its origin");
     }
 
     /// The sending half of a tab move, distilled: quiesce provably stops OUR

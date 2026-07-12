@@ -202,6 +202,15 @@ impl<T> Storage<T> {
         self.zero = 0;
     }
 
+    /// Update the visible-line count after a wholesale [`Self::replace_inner`]
+    /// that changed the viewport height (rikka addition — the classic reflow
+    /// paths never resize lines and columns in one step, so they had no need
+    /// for this; `compute_index` asserts against it).
+    #[inline]
+    pub fn set_visible_lines(&mut self, lines: usize) {
+        self.visible_lines = lines;
+    }
+
     /// Remove all rows from storage.
     #[inline]
     pub fn take_all(&mut self) -> Vec<Row<T>> {

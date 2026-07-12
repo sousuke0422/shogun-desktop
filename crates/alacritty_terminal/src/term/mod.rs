@@ -710,26 +710,23 @@ impl<T> Term<T> {
         self.vi_mode_cursor.point.line += delta;
 
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
-        // conhost's truncating shrink steps an overshooting cursor to the
-        // next row at (column - width) instead of clamping (the grid's own
-        // no-reflow path clamps) — capture the overshoot before the resize
-        // loses it.
-        let cursor_overshoot = (conpty && num_cols < old_cols && !is_alt
-            && self.grid.cursor.point.column.0 >= num_cols)
-            .then(|| self.grid.cursor.point.column.0 - num_cols);
-        // conhost's asymmetry: shrinks truncate (no reflow), grows rejoin
-        // application-wrapped rows (reflow) — see the function docs.
-        let reflow = !(conpty && num_cols < old_cols);
-        self.grid.resize_anchored(reflow && !is_alt, num_lines, num_cols, top_anchored_growth);
-        self.inactive_grid.resize_anchored(reflow && is_alt, num_lines, num_cols, top_anchored_growth);
-        if let Some(col) = cursor_overshoot {
-            self.grid.cursor.point.column = Column(cmp::min(col, num_cols - 1));
-            if (self.grid.cursor.point.line.0 as usize) + 1 < num_lines {
-                self.grid.cursor.point.line += 1;
-            } else {
-                // Bottom row: conhost scrolls one line to make room.
-                self.grid.scroll_up(&(Line(0)..Line(num_lines as i32)), 1);
-            }
+        if conpty && num_cols != old_cols && !is_alt {
+            // Full conhost reflow parity for the primary screen — see
+            // `Grid::resize_conhost`. The inactive (alt) grid has no
+            // scrollback and no layout contract with conhost's altbuffer
+            // (fullscreen apps repaint on resize anyway): plain no-reflow
+            // fitting suffices.
+            self.grid.resize_conhost(num_lines, num_cols);
+            self.inactive_grid
+                .resize_anchored(false, num_lines, num_cols, top_anchored_growth);
+        } else {
+            // Height-only ConPTY changes ride the anchored paths; an
+            // ACTIVE alt screen keeps no-reflow fitting for both grids.
+            let reflow = !conpty;
+            self.grid
+                .resize_anchored(reflow && !is_alt, num_lines, num_cols, top_anchored_growth);
+            self.inactive_grid
+                .resize_anchored(reflow && is_alt, num_lines, num_cols, top_anchored_growth);
         }
 
         // Invalidate selection and tabs only when necessary.
