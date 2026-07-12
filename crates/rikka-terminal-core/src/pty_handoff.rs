@@ -85,16 +85,21 @@ impl TransferKit {
 /// settler lane guarantees it), so reproducing it verbatim keeps every
 /// later absolute cursor position conhost emits landing where it expects.
 ///
-/// Covered: every visible cell (chars + zerowidth combiners + full SGR,
-/// colors resolved against the live palette; default fg/bg stay symbolic so
-/// the receiver's default-color handling is preserved), cursor position /
-/// visibility / DECSCUSR shape, and the wire-visible mode bits (alt screen,
-/// app cursor/keypad, wrap, bracketed paste, focus reporting, the mouse
-/// suite, kitty keyboard flags). Deliberately dropped: scrollback (v1
-/// contract), WRAPLINE continuity (rows are painted via absolute CUP; the
-/// visible result is identical, only selection line-joins differ until the
-/// next repaint), and DECSTBM (ConPTY's renderer emits absolute positions,
-/// never scroll regions).
+/// Covered: the scrollback (printed as flowing text so it lands in the
+/// receiver's history, wrapped logical lines staying joined; a 4 MiB budget
+/// drops the OLDEST rows first), every visible cell (chars + zerowidth
+/// combiners + full SGR, colors resolved against the live palette; default
+/// fg/bg stay symbolic so the receiver's default-color handling is
+/// preserved), cursor position / visibility / DECSCUSR shape, and the
+/// wire-visible mode bits (alt screen, app cursor/keypad, wrap, bracketed
+/// paste, focus reporting, the mouse suite, kitty keyboard flags).
+/// Deliberately dropped: the VISIBLE rows' WRAPLINE continuity (they are
+/// painted via absolute CUP; the visible result is identical, only
+/// selection line-joins differ until the next repaint), DECSTBM (ConPTY's
+/// renderer emits absolute positions, never scroll regions), and — while
+/// the alt screen is active — the primary screen it hides (the inactive
+/// grid is not reachable; leaving vim mid-move costs the primary's
+/// history).
 ///
 /// Call AFTER `quiesce_for_transfer`: the reader is dead, so the Term can
 /// no longer change under the serialization.
@@ -192,6 +197,66 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
     };
 
     let grid = term.grid();
+
+    // ── Scrollback, oldest first, BEFORE the visible screen: each history
+    // row is printed as flowing text, so it scrolls straight into the
+    // receiver's history. A row whose last cell carries WRAPLINE omits its
+    // newline — the next row joins it, reproducing wrapped logical lines.
+    // The alt screen has no history (history_size() = 0), so this is
+    // naturally skipped there. A byte budget keeps the payload under the
+    // IPC frame cap; the OLDEST rows fall off first, like any scrollback.
+    // Each row opens with its own SGR reset so dropping whole rows at the
+    // front can never tear an escape run.
+    let history = grid.history_size();
+    if history > 0 {
+        use std::collections::VecDeque;
+        const HISTORY_BUDGET: usize = 4 * 1024 * 1024;
+        let mut rows_vt: VecDeque<String> = VecDeque::new();
+        let mut total = 0usize;
+        for i in (1..=history).rev() {
+            let line = Line(-(i as i32));
+            let mut row = String::new();
+            let mut last: Option<String> = None;
+            for col in 0..term.columns() {
+                let cell = &grid[line][Column(col)];
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                let sgr = sgr_of(cell);
+                if last.as_ref() != Some(&sgr) {
+                    let _ = write!(row, "\x1b[0{sgr}m");
+                    last = Some(sgr);
+                }
+                row.push(cell.c);
+                if let Some(extra) = cell.zerowidth() {
+                    row.extend(extra);
+                }
+            }
+            let wrapped = grid[line][Column(term.columns() - 1)]
+                .flags
+                .contains(Flags::WRAPLINE);
+            if !wrapped {
+                row.push_str("\r\n");
+            }
+            total += row.len();
+            rows_vt.push_back(row);
+            while total > HISTORY_BUDGET {
+                if let Some(dropped) = rows_vt.pop_front() {
+                    total -= dropped.len();
+                }
+            }
+        }
+        for row in rows_vt {
+            out.push_str(&row);
+        }
+        // Push the tail of the flow out of the viewport: the visible screen
+        // is painted OVER the viewport next, and any history row still
+        // inside it would be overwritten instead of scrolled into history.
+        // Padding newlines scroll out exactly the rows printed above —
+        // trailing blank lines themselves never reach the history.
+        out.push_str(&"\r\n".repeat(term.screen_lines().saturating_sub(1)));
+    }
+
     let mut last_sgr: Option<String> = None;
     for row in 0..term.screen_lines() {
         let _ = write!(out, "\x1b[{};1H", row + 1);
@@ -430,6 +495,63 @@ mod transfer_tests {
             b.term.lock().mode().contains(TermMode::BRACKETED_PASTE),
             "mode bits must survive the move"
         );
+    }
+
+    /// Scrollback rides the move: rows that scrolled out of the sender's
+    /// viewport reappear in the receiver's HISTORY (same count — wrapped
+    /// physical rows included, since WRAPLINE rows omit their newline in
+    /// the replay), with the oldest row intact.
+    #[test]
+    fn replay_carries_scrollback_history() {
+        use alacritty_terminal::grid::Dimensions as _;
+        use alacritty_terminal::index::{Column, Line};
+
+        // 20 numbered lines + one 60-char wrapping line through a 40x5
+        // viewport: plenty lands in history, including a wrapped pair.
+        let mut script = String::new();
+        script.push_str(&"W".repeat(60));
+        script.push_str("\r\n");
+        for i in 1..=20 {
+            script.push_str(&format!("H{i}\r\n"));
+        }
+        let a = crate::pty_session::build_test_session_with_output(40, 5, script.into_bytes());
+        let wait_eof = |s: &TerminalSession| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while s.is_connected() {
+                assert!(std::time::Instant::now() < deadline, "no EOF");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        wait_eof(&a);
+
+        let replay = replay_bytes(&a);
+        let b = crate::pty_session::build_test_session_with_output(40, 5, replay);
+        wait_eof(&b);
+
+        let history = |s: &TerminalSession| s.term.lock().grid().history_size();
+        assert!(history(&a) > 10, "test setup must overflow the viewport");
+        assert_eq!(
+            history(&a),
+            history(&b),
+            "every history row must survive the move"
+        );
+        let row_text = |s: &TerminalSession, line: i32| -> String {
+            let t = s.term.lock();
+            (0..t.columns())
+                .map(|c| t.grid()[Line(line)][Column(c)].c)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        let oldest = -(history(&a) as i32);
+        assert_eq!(row_text(&a, oldest), "W".repeat(40), "oldest row intact");
+        for line in oldest..0 {
+            assert_eq!(
+                row_text(&a, line),
+                row_text(&b, line),
+                "history row {line} must match"
+            );
+        }
     }
 
     /// After quiesce the settler must go silent: no resize — not even the

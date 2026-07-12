@@ -228,28 +228,32 @@ own socket).
   are independent duplicates — dropping them cannot break the pipes or EOF
   the console's signal pipe (the receiver holds live copies of both ends'
   peers).
-- **Screen carry (`state`)**: the sender serializes its LIVE screen after
-  quiescing (core `replay_bytes`: cells + SGR resolved against the live
-  palette, cursor position/shape/visibility, alt-screen / wrap / bracketed
-  paste / focus / mouse / kitty-keyboard mode bits) and the receiver feeds
-  it to its fresh parser BEFORE any pipe byte (a reader preface). The
-  sender's grid matched conhost's buffer, so the copy keeps conhost's later
-  absolute cursor positions landing right. Wire: `state = { "vt_b64": … }`;
-  the relay launch carries the same bytes via `--attach-state <tempfile>`
-  (bulk bytes cannot ride handle inheritance). Absent/corrupt state
-  degrades to a blank start, never an error.
-- **v1 limits**: scrollback stays behind (only the visible screen moves);
-  WRAPLINE continuity is not reproduced (rows are painted via absolute
-  CUP — selection line-joins differ until the next repaint). Process
-  granularity — `window_id` = pid, so in-process-detached windows are not
-  individually addressable (use the in-process merge for those).
+- **Screen carry (`state`)**: the sender serializes scrollback + live
+  screen after quiescing (core `replay_bytes`). History rows are printed
+  as flowing text so they scroll straight into the receiver's history
+  (WRAPLINE rows omit their newline — wrapped logical lines stay joined;
+  a 4 MiB budget drops the OLDEST rows first; padding newlines then push
+  the tail of the flow out of the viewport, since the visible screen is
+  painted OVER it next). The visible screen follows via absolute CUP with
+  full SGR (colors resolved against the live palette), then cursor
+  position/shape/visibility and the wire-visible mode bits (alt screen,
+  app cursor/keypad, wrap, bracketed paste, focus, mouse suite, kitty
+  keyboard). The sender's grid matched conhost's buffer, so the copy keeps
+  conhost's later absolute cursor positions landing right. Wire:
+  `state = { "vt_b64": … }`; the relay launch carries the same bytes via
+  `--attach-state <tempfile>` (bulk bytes cannot ride handle inheritance).
+  Absent/corrupt state degrades to a blank start, never an error.
+- **v1 limits**: the VISIBLE rows lose WRAPLINE continuity (absolute-CUP
+  painting — selection line-joins differ until the next repaint); while
+  the alt screen is active the hidden primary screen/history stays behind
+  (the inactive grid is unreachable). Process granularity — `window_id` =
+  pid, so in-process-detached windows are not individually addressable
+  (use the in-process merge for those).
 
 ## Deferred
 
 - Monarch re-election when the monarch process exits (v2). v1: monarch = first
   process; if it exits, coordination pauses until the next cold start.
-- Scrollback in the tab-move `state` (the visible screen already moves;
-  history stays behind).
 - Elevated handoff window process.
 - Per-WINDOW move addressing (v1 window_id = pid) and a drag-DnD trigger for
   the cross-process move (v1 is keyboard: Ctrl+Shift+E / Ctrl+Shift+X).
