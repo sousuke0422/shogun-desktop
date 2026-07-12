@@ -104,6 +104,17 @@ Strings only. `target:"new"` → monarch spawns a new window process.
   ship without `state` (move the PTY, drop scrollback) and add it later.
 - `target:"new"` (default for OS handoff) → new window process. `window:<id>` →
   drag-merge into an existing window as a tab.
+- **Slot semantics:** `server` = conhost's *process* handle and `client` = the
+  client's process handle — exactly what upstream feeds
+  `ConptyPackPseudoConsole(server, ref, signal)`. `hpcon`/`shell` are
+  vestigial: once local tabs are born handoff-shaped (below), every move rides
+  the six real slots.
+- **Reference lifetime (winconpty.h):** as long as `reference` exists, conhost
+  keeps serving even after its last client disconnected — a receiver that
+  holds it turns "shell exited" into a tab that never sees EOF. The receiver
+  drops it as soon as the session is assembled (upstream parity:
+  `ConptyConnection::Start` → `ConptyReleasePseudoConsole`); only the
+  `server`/`client` process handles stay, for bookkeeping.
 
 ### `register_window` / `list_windows` — window ↔ monarch
 
@@ -153,13 +164,40 @@ The request rides *in the launch*, not over the socket — no wait-for-server ra
 - `elevated:true` (Windows) → monarch spawns an *elevated* window process (P3).
   v1 carries the flag only.
 
+## Local tabs on the handoff shape (inc6 groundwork)
+
+Local spawn stops hiding ConPTY inside portable-pty and drives winconpty
+directly, so a locally-spawned tab is *born* transfer-ready:
+
+1. Two pipe pairs (we keep in-write / out-read; conhost gets the peers) →
+   `ConptyCreatePseudoConsole` from the vendored conpty.dll — the same dll the
+   sixel sideload already ships next to the exe.
+2. Client spawn via `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`. kernelbase reads
+   the HPCON struct — `{hSignal, hPtyReference, hConPtyProcess}`, "part of an
+   ABI shared with the rest of the operating system" (winconpty.h) — and that
+   same declared ABI is what lets us lift the handles back out.
+3. Lift `signal` + conhost process out of the HPCON (duplicate), release the
+   reference (`ConptyReleasePseudoConsole`), close the husk. The session is a
+   plain `HandoffPty { input, output, signal, keepalive: [conhost, client] }`
+   — indistinguishable from a defterm handoff.
+
+A tab move (detach or drag-merge) then IS the existing `attach`: quiesce the
+source reader, send the six slots, receiver pulls, sender drops the tab.
+(Full ConDrv replication — `CreateServerHandle`/`CreateClientHandle` by hand —
+was considered and rejected: the dll's battle-tested creation path plus the
+declared-ABI peek needs no NT arcana.)
+
 ## Deferred
 
 - Monarch re-election when the monarch process exits (v2). v1: monarch = first
   process; if it exits, coordination pauses until the next cold start.
 - `state` wire format for tab-move scrollback (v1 may omit → move the PTY, drop
   scrollback).
-- Elevated handoff window process (P3).
+- Elevated handoff window process.
+- Source-reader quiescence for tab moves: the sender must stop its blocking
+  PTY read before the receiver starts (double-reading one pipe corrupts the
+  stream) — `CancelSynchronousIo` on the reader thread or overlapped reads.
+  Required before the first real move ships.
 
 ## Platform gating
 
