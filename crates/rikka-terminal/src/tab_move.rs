@@ -38,6 +38,14 @@ pub enum Destination {
     Window { id: u64, endpoint: String },
 }
 
+/// Whether the session can leave this process at all — born handoff-shaped
+/// with its transfer kit still in stock. `false` = legacy portable-pty (or
+/// an already-moved session); callers fall back to the in-process split,
+/// which never risks the session.
+pub fn is_transferable(session: &TerminalSession) -> bool {
+    session.transfer.lock().is_some()
+}
+
 /// Move a live session out of this process. On `Ok` the caller closes the
 /// tab: the session's remaining handles are independent duplicates of what
 /// the new owner holds, so dropping them cannot break the pipes or kill the

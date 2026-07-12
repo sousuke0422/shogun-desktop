@@ -264,6 +264,37 @@ fn create_tab_spec(cx: &mut App, spec: &cli::TabSpec) -> Option<TabEntry> {
 
 // ── the tabbed window ────────────────────────────────────────────────────────
 
+/// Drag payload of a tab being moved: its strip index (`title` rides along
+/// for the ghost). Dropping on another tab reorders; dropping on the pane
+/// detaches into a fresh window.
+#[derive(Clone)]
+struct TabDrag {
+    ix: usize,
+    title: String,
+}
+
+/// The floating preview under the pointer while a tab is dragged.
+struct TabDragGhost {
+    title: String,
+}
+
+impl Render for TabDragGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .h(px(TAB_H))
+            .px(px(12.))
+            .flex()
+            .items_center()
+            .rounded(px(8.))
+            .bg(pane_fill())
+            .border_1()
+            .border_color(gpui::rgba(DIVIDER))
+            .text_size(px(12.))
+            .text_color(rgb(TEXT_PRIMARY))
+            .child(self.title.clone())
+    }
+}
+
 pub struct TabsWindow {
     tabs: Vec<TabEntry>,
     active: usize,
@@ -449,38 +480,71 @@ impl TabsWindow {
     /// Detach the active tab into a fresh window (no-op with a single tab —
     /// that would just be a window move).
     fn detach_active(&mut self, cx: &mut Context<Self>) {
-        if self.tabs.len() < 2 {
+        self.split_off_in_process(self.active, cx);
+    }
+
+    /// The in-process half of a detach: move the tab's Arc into a fresh
+    /// window of THIS process (crash fate shared, scrollback kept intact).
+    fn split_off_in_process(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.tabs.len() < 2 || ix >= self.tabs.len() {
             return;
         }
-        let entry = self.tabs.remove(self.active);
+        let entry = self.tabs.remove(ix);
+        if ix < self.active {
+            self.active -= 1;
+        }
         self.active = self.active.min(self.tabs.len() - 1);
         self.after_tab_change(cx);
         open_tabs_window(cx, vec![entry]);
     }
 
-    /// Cross-process detach: the active tab moves to its OWN OS process —
-    /// full crash isolation, where Ctrl+Shift+D's in-process detach shares
-    /// fate with this window. v1 moves the PTY only: the moved tab starts
-    /// blank (ConPTY never repaints) and scrollback stays behind. Single
-    /// tab = a window relocation, all cost no gain — no-op like detach.
-    #[cfg(windows)]
-    fn eject_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs.len() < 2 {
+    /// Detach the tab at `ix` into a fresh window, preferring full crash
+    /// isolation (its own OS process) when the session can leave this one;
+    /// a non-transferable session (legacy PTY) splits in-process instead,
+    /// which never risks it. Single tab = a window move, all cost no gain —
+    /// no-op. Drag-to-pane and Ctrl+Shift+E both land here.
+    fn detach_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.len() < 2 || ix >= self.tabs.len() {
             return;
         }
-        let Some(entry) = self.tabs.get(self.active) else {
-            return;
-        };
-        match tab_move::send_tab(&entry.0.session, tab_move::Destination::NewProcess) {
-            // The receiver owns the PTY now; close_at's shutdown only stops
-            // the driver task, and our handle drops are independent dups.
-            Ok(()) => self.close_at(self.active, window, cx),
-            // Quiesce is irreversible — the tab stays, honestly disconnected.
-            Err(e) => {
-                log::warn!("cross-process detach failed: {e:#}");
-                cx.notify();
+        #[cfg(windows)]
+        {
+            let entry = &self.tabs[ix];
+            if tab_move::is_transferable(&entry.0.session) {
+                match tab_move::send_tab(&entry.0.session, tab_move::Destination::NewProcess) {
+                    Ok(()) => self.close_at(ix, window, cx),
+                    // Quiesce is irreversible — the tab stays, honestly
+                    // disconnected; splitting it off would just relocate
+                    // the corpse.
+                    Err(e) => {
+                        log::warn!("cross-process detach failed: {e:#}");
+                        cx.notify();
+                    }
+                }
+                return;
             }
         }
+        let _ = window;
+        self.split_off_in_process(ix, cx);
+    }
+
+    /// Reorder: the dragged tab leaves `from` and lands at the strip
+    /// position of the drop target. The moved tab stays the user's focus.
+    fn reorder_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        let entry = self.tabs.remove(from);
+        self.tabs.insert(to, entry);
+        self.active = to;
+        self.after_tab_change(cx);
+    }
+
+    /// Cross-process detach of the active tab (Ctrl+Shift+E) — see
+    /// [`Self::detach_at`].
+    #[cfg(windows)]
+    fn eject_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.detach_at(self.active, window, cx);
     }
 
     /// Move the active tab into another window PROCESS (resolve through the
@@ -686,6 +750,7 @@ impl Render for TabsWindow {
                     .clone()
                     .unwrap_or_else(|| format!("シェル {}", ix + 1));
                 let title: String = title.chars().take(20).collect();
+                let drag_title = title.clone();
                 let active = ix == active_ix;
                 // Separator to the left of this tab — hidden next to the
                 // selected tab, whose silhouette does the separating.
@@ -751,6 +816,22 @@ impl Render for TabsWindow {
                     )
                     .on_click(cx.listener(move |this, _: &ClickEvent, _win, cx| {
                         this.switch_to(ix, cx);
+                    }))
+                    // Tab DnD: drop on a tab = reorder there; drop on the
+                    // pane below = detach into a fresh window (see the pane).
+                    .on_drag(
+                        TabDrag {
+                            ix,
+                            title: drag_title,
+                        },
+                        |drag, _offset, _window, cx| {
+                            let title = drag.title.clone();
+                            cx.new(|_| TabDragGhost { title })
+                        },
+                    )
+                    .drag_over::<TabDrag>(|style, _, _, _| style.bg(gpui::rgba(TAB_HOVER)))
+                    .on_drop(cx.listener(move |this, drag: &TabDrag, _window, cx| {
+                        this.reorder_tab(drag.ix, ix, cx);
                     }))
                     .into_any_element();
                 sep.into_iter().chain(std::iter::once(tab))
@@ -904,6 +985,19 @@ impl Render for TabsWindow {
                 // consumed this click" — which would swallow the caption
                 // buttons' and drag area's non-client handling up in the strip.
                 .track_focus(&self.terminal_focus.clone())
+                // Dropping a tab on the pane detaches it into a fresh window
+                // (its own OS process when the session is transferable) —
+                // the "tear a tab off" gesture without OS-level DnD. The
+                // dashed outline advertises it while a tab hovers.
+                .drag_over::<TabDrag>(|style, _, _, _| {
+                    style
+                        .border_2()
+                        .border_dashed()
+                        .border_color(gpui::rgba(0x8A9CC880))
+                })
+                .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
+                    this.detach_at(drag.ix, window, cx);
+                }))
                 .on_action(cx.listener(|this, _: &TerminalCopy, _window, cx| {
                     selection::copy_to_clipboard(&this.selection, this.active_session(), cx);
                 }))
