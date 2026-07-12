@@ -206,7 +206,17 @@ fn spawn_shell_system(
         master: FairMutex::new(SendMaster(pair.master)),
     });
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer_box));
-    build_terminal_session(cols, rows, reader, writer, resizer, &xtversion_identity())
+    let session =
+        build_terminal_session(cols, rows, reader, writer, resizer, &xtversion_identity())?;
+    // portable-pty on Windows is ConPTY underneath: conhost reflows its
+    // mirror of this grid with top-anchored growth and repaints nothing on
+    // resize — reflow the same way or drift permanently. The Native (russh)
+    // paths skip this: no local conhost, the remote application repaints.
+    #[cfg(windows)]
+    session
+        .conpty_resize_semantics
+        .store(true, Ordering::Relaxed);
+    Ok(session)
 }
 
 pub fn spawn(
@@ -324,5 +334,12 @@ fn spawn_system(
     });
 
     let writer: Arc<FairMutex<Box<dyn Write + Send>>> = Arc::new(FairMutex::new(writer_box));
-    build_terminal_session(cols, rows, reader, writer, resizer, &xtversion_identity())
+    let session =
+        build_terminal_session(cols, rows, reader, writer, resizer, &xtversion_identity())?;
+    // Same ConPTY reflow contract as spawn_shell_system above.
+    #[cfg(windows)]
+    session
+        .conpty_resize_semantics
+        .store(true, Ordering::Relaxed);
+    Ok(session)
 }
