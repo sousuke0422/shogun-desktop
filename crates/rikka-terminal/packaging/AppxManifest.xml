@@ -75,18 +75,17 @@
         Square44x44Logo="Images\Square44x44Logo.png" />
 
       <Extensions>
-        <!-- ① Console-host provider (IConsoleHandoff). CAUTION: unlike the
-             terminal CLSID below (which our own rikka-handoff.exe registers, so
-             it is freely ours), the console CLSID is bound to whatever
-             OpenConsole.exe registers. OpenConsole bakes its console-handoff
-             CLSID per build — WT Stable {2EACA947...} and Preview {06EC847C...}
-             ship different binaries with different CLSIDs — so a REUSED
-             OpenConsole must be matched to ITS baked value (and the vendored
-             ConPTY OpenConsole may not carry the defterm role at all). Cleaner
-             (a P2 decision, and what contour/wezterm lean toward): implement
-             IConsoleHandoff in rikka-handoff.exe and own a fresh CLSID here too.
-             For P1 (enumeration only — never activated until selected) any
-             unique GUID is fine; it is metadata until you pick RikkaTerminal. -->
+        <!-- ① Console-host provider (IConsoleHandoff). The console CLSID is
+             bound to whatever OpenConsole.exe registers at -Embedding time,
+             and OpenConsole bakes that CLSID per branding (WT Stable
+             {2EACA947...}, Preview {06EC847C...}, Dev {1F9F2BF5...}).
+             VERIFIED 2026-07-12: our vendored ConPTY OpenConsole is a
+             Stable-branding build WITH the defterm role compiled in — so it
+             would answer as {2EACA947...} and collide with an installed WT.
+             Resolution: the install script patches the DEPLOYED copy's two
+             .rdata GUID constants to the fresh CLSID below (vendored asset
+             stays pristine), making this pair fully live for Settings-UI
+             selection. -->
         <uap3:Extension Category="windows.appExtension">
           <uap3:AppExtension
             Name="com.microsoft.windows.console.host"

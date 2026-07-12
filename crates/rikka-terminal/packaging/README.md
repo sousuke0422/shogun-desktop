@@ -14,14 +14,14 @@ over COM. Two roles, each a CLSID:
 | Console host | `IConsoleHandoff` | vendored `OpenConsole.exe`, or our own impl — CLSID caveat below |
 | Terminal | `ITerminalHandoff3` (`EstablishPtyHandoff`) | `rikka-handoff.exe` (the shim) |
 
-> **Console-CLSID caveat (a P2 decision).** The *terminal* CLSID is freely ours
-> — rikka-handoff.exe registers it. The *console* CLSID is not: OpenConsole
-> bakes its console-handoff CLSID per build (WT Stable `{2EACA947}` vs Preview
-> `{06EC847C}` differ), so reusing OpenConsole means matching ITS baked value
-> (collision-prone, and the ConPTY build may lack the defterm role). Existing
-> third parties (contour/wezterm) lean toward implementing `IConsoleHandoff`
-> themselves instead — own a fresh console CLSID in rikka-handoff.exe too. For
-> P1 (enumeration only) any unique GUID works.
+> **Console-CLSID caveat (resolved 2026-07-12).** The *terminal* CLSID is
+> freely ours — rikka-handoff.exe registers it. The *console* CLSID is not:
+> OpenConsole bakes its console-handoff CLSID per branding (WT Stable
+> `{2EACA947}`, Preview `{06EC847C}`, Dev `{1F9F2BF5}`). Our vendored ConPTY
+> OpenConsole turned out to be a Stable-branding build WITH the defterm role
+> compiled in, so instead of implementing `IConsoleHandoff` ourselves we
+> re-brand the deployed copy's baked GUID to our own fresh CLSID at install
+> time — see "Console side / full Settings-UI selection" below.
 
 The dropdown is enumerated from two well-known `windows.appExtension` entries in
 the package manifest — `com.microsoft.windows.console.host` and
@@ -100,11 +100,10 @@ reg add "HKCU\Console\%%Startup" /v DelegationTerminal /t REG_SZ /d "{0DA1B045-A
 :: DelegationConsole stays {2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69} (WT Stable OpenConsole)
 ```
 
-Do NOT use the Settings UI to select RikkaTerminal for this test — it writes
-both values as a pair (our console side is not real yet). Test by launching
-a console app *outside* any terminal (Win+R → `cmd`); launching inside an
-existing terminal window attaches to its ConPTY and no handoff happens.
-Failures land in `%TEMP%\rikka-handoff.log`. Roll back any time:
+Test by launching a console app *outside* any terminal (Win+R → `cmd`);
+launching inside an existing terminal window attaches to its ConPTY and no
+handoff happens. Failures land in `%TEMP%\rikka-handoff.log`. Roll back any
+time:
 
 ```text
 reg add "HKCU\Console\%%Startup" /v DelegationTerminal /t REG_SZ /d "{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}" /f
@@ -114,6 +113,25 @@ COM plumbing can be pre-verified with no delegation change at all —
 `[Activator]::CreateInstance([Type]::GetTypeFromCLSID('{0DA1B045-A599-4133-A9EE-A7A3893E1D62}'))`
 must start `rikka-handoff.exe` from the external location (idles out after
 60 s; passed 2026-07-12).
+
+## Console side / full Settings-UI selection (validated 2026-07-12)
+
+Selecting RikkaTerminal in the Settings UI writes BOTH pair values from our
+package, so the console CLSID needs a live COM server behind it too. Binary
+inspection settled the old "does the vendored ConPTY OpenConsole carry the
+defterm role?" question: it does — it is a *Stable-branding* build with the
+`-Embedding` handoff server, `%%Startup` delegation lookup and
+ITerminalHandoff3 compiled in. But that also means it *bakes WT Stable's*
+console CLSID `{2EACA947-…}`, which would collide with an installed Windows
+Terminal if we declared it. The install script therefore re-brands the
+DEPLOYED copy: the two `.rdata` GUID constants are patched to our
+`{77F531BA-46BD-4E80-B0DF-8E45E1F7183B}` (the vendored asset stays
+pristine; MIT permits it; ConPTY serving never reads that constant). After
+patching, `CoCreateInstance` probes pass for BOTH pair CLSIDs, so going
+live is simply: **Settings > For developers > Default terminal application
+(or WT Settings > Startup) → RikkaTerminal**. Roll back by selecting
+Windows Terminal there again — the Settings app is not a console app, so
+it keeps working even if a handoff regression breaks console launches.
 
 ## Confirm on-device
 

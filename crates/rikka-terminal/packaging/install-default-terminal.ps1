@@ -82,6 +82,40 @@ foreach ($f in $need) {
 }
 Write-Host "External location populated: $ExternalLocation"
 
+# --- 1b. re-brand the DEPLOYED OpenConsole's baked console-handoff CLSID -----
+# The vendored OpenConsole is a Stable-branding build: as a -Embedding COM
+# server it registers WT Stable's console CLSID {2EACA947-...}. Declaring that
+# CLSID in our manifest would collide with an installed Windows Terminal, so
+# the deployed copy (never the pristine vendored asset) gets its two .rdata
+# GUID constants patched to OUR console CLSID. This is what makes selecting
+# RikkaTerminal in the Settings UI work end to end (the UI writes BOTH pair
+# values from our package). MIT-licensed binary; patch is 2x16 bytes.
+Add-Type -TypeDefinition @'
+public static class RikkaGuidPatch {
+    public static int Patch(byte[] data, byte[] oldB, byte[] newB) {
+        int n = 0;
+        for (int i = 0; i <= data.Length - 16; i++) {
+            bool hit = true;
+            for (int j = 0; j < 16; j++) { if (data[i + j] != oldB[j]) { hit = false; break; } }
+            if (hit) { System.Array.Copy(newB, 0, data, i, 16); n++; i += 15; }
+        }
+        return n;
+    }
+}
+'@
+$ocPath  = Join-Path $ExternalLocation 'OpenConsole.exe'
+$ocBytes = [IO.File]::ReadAllBytes($ocPath)
+# Guid.ToByteArray() yields the in-memory layout (Data1-3 LE + Data4 raw).
+$ocOld = ([Guid]'2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69').ToByteArray()
+$ocNew = ([Guid]'77F531BA-46BD-4E80-B0DF-8E45E1F7183B').ToByteArray()
+$ocHits = [RikkaGuidPatch]::Patch($ocBytes, $ocOld, $ocNew)
+if ($ocHits -lt 1) {
+    throw ("OpenConsole CLSID patch found no occurrences - vendored binary " +
+           "changed branding? Re-verify its baked GUIDs before installing.")
+}
+[IO.File]::WriteAllBytes($ocPath, $ocBytes)
+Write-Host "OpenConsole console-handoff CLSID re-branded ($ocHits sites)."
+
 # --- 2. self-signed code-signing cert (created once, reused after) ----------
 $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -eq $Publisher } | Select-Object -First 1
 if (-not $cert) {
