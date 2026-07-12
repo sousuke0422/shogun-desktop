@@ -416,6 +416,100 @@ mod transfer_tests {
 
     use super::*;
 
+    /// ConPTY sessions must NOT reflow on a width shrink: conhost
+    /// truncates rows in place (blank rows and row count untouched),
+    /// stepping an overshooting cursor to the next row at column − width.
+    /// A later grow rejoins only rows the APPLICATION wrapped while
+    /// writing — truncated rows lost their tail (and wrap flag) for good.
+    #[test]
+    fn conpty_width_shrink_truncates_instead_of_wrapping() {
+        let (out_read, mut out_write) = std::io::pipe().expect("output pipe");
+        let (_in_read, in_write) = std::io::pipe().expect("input pipe");
+        let session = build_handoff_session(
+            80,
+            24,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: None,
+                keepalive: Vec::new(),
+            },
+            "test-identity",
+        )
+        .expect("session over pipes");
+
+        // A short row, a BLANK row, then a 56-char row with the cursor
+        // parked at its end — the shell-prompt shape that exposed both the
+        // wrap drift and any blank-row mis-accounting.
+        let mut feed = b"AAA\r\n\r\n".to_vec();
+        feed.extend(std::iter::repeat_n(b'P', 56));
+        out_write.write_all(&feed).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let snap = session.snapshot.lock();
+                if snap.cells[2][55].c == 'P' {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "output never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        session.resize(45, 24, (8.0, 16.0));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let snap = session.snapshot.lock();
+                if snap.cells[0].len() == 45 {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "shrink never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        {
+            let snap = session.snapshot.lock();
+            let text = |r: usize| -> String {
+                snap.cells[r]
+                    .iter()
+                    .map(|c| c.c)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            };
+            assert_eq!(text(0), "AAA", "short rows stay put");
+            assert_eq!(text(1), "", "blank rows stay put");
+            assert_eq!(text(2), "P".repeat(45), "long rows truncate, not wrap");
+            assert_eq!(text(3), "", "no wrapped remainder row");
+            assert_eq!(
+                snap.cursor,
+                (3, 11),
+                "cursor steps to the next row at column − width (56 − 45)"
+            );
+        }
+
+        session.resize(80, 24, (8.0, 16.0));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let snap = session.snapshot.lock();
+                if snap.cells[0].len() == 80 {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "grow never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let snap = session.snapshot.lock();
+        let row2: String = snap.cells[2].iter().map(|c| c.c).collect();
+        assert_eq!(
+            row2.trim_end(),
+            "P".repeat(45),
+            "truncation is permanent — a grow pads, it does not restore"
+        );
+    }
+
     /// The sending half of a tab move, distilled: quiesce provably stops OUR
     /// reader — bytes written afterwards never reach this grid — while the
     /// pipe, including data already buffered in it, stays intact for the

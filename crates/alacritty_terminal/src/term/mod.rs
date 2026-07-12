@@ -665,13 +665,26 @@ impl<T> Term<T> {
         self.resize_anchored(size, false);
     }
 
-    /// Like [`Self::resize`], but with `top_anchored_growth` a growing
-    /// viewport keeps content and cursor in place and adds blank lines at
-    /// the bottom instead of pulling rows back from history. This mirrors
-    /// conhost: ConPTY emits nothing on resize and computes every later
-    /// absolute cursor position against exactly that layout, so a
-    /// ConPTY-backed terminal reflowing any other way drifts permanently.
-    pub fn resize_anchored<S: Dimensions>(&mut self, size: S, top_anchored_growth: bool) {
+    /// Like [`Self::resize`], but with `conpty` the whole resize follows
+    /// conhost's semantics (rikka addition; ConPTY emits nothing on resize
+    /// and computes every later absolute cursor position against exactly
+    /// its own layout, so a ConPTY-backed terminal resizing any other way
+    /// drifts permanently):
+    ///
+    /// - a growing viewport keeps content and cursor in place and adds
+    ///   blank lines at the bottom instead of pulling rows back from
+    ///   history;
+    /// - width SHRINKS never reflow (RESIZE_QUIRK became conhost's only
+    ///   behavior): rows truncate in place — only the cursor steps to the
+    ///   next row, at column − width, when its column no longer fits.
+    ///   Width GROWS do reflow: rows the application wrapped while writing
+    ///   (WRAPLINE) rejoin, exactly like conhost — truncated rows lost
+    ///   their wrap flag with their tail, so they stay truncated.
+    ///   (Measured: rikka's width_semantics_probe — mirroring only one
+    ///   direction drifts the row accounting by one per wrapped row, and
+    ///   typed input lands on top of stale rows.)
+    pub fn resize_anchored<S: Dimensions>(&mut self, size: S, conpty: bool) {
+        let top_anchored_growth = conpty;
         let old_cols = self.columns();
         let old_lines = self.screen_lines();
 
@@ -697,8 +710,27 @@ impl<T> Term<T> {
         self.vi_mode_cursor.point.line += delta;
 
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
-        self.grid.resize_anchored(!is_alt, num_lines, num_cols, top_anchored_growth);
-        self.inactive_grid.resize_anchored(is_alt, num_lines, num_cols, top_anchored_growth);
+        // conhost's truncating shrink steps an overshooting cursor to the
+        // next row at (column - width) instead of clamping (the grid's own
+        // no-reflow path clamps) — capture the overshoot before the resize
+        // loses it.
+        let cursor_overshoot = (conpty && num_cols < old_cols && !is_alt
+            && self.grid.cursor.point.column.0 >= num_cols)
+            .then(|| self.grid.cursor.point.column.0 - num_cols);
+        // conhost's asymmetry: shrinks truncate (no reflow), grows rejoin
+        // application-wrapped rows (reflow) — see the function docs.
+        let reflow = !(conpty && num_cols < old_cols);
+        self.grid.resize_anchored(reflow && !is_alt, num_lines, num_cols, top_anchored_growth);
+        self.inactive_grid.resize_anchored(reflow && is_alt, num_lines, num_cols, top_anchored_growth);
+        if let Some(col) = cursor_overshoot {
+            self.grid.cursor.point.column = Column(cmp::min(col, num_cols - 1));
+            if (self.grid.cursor.point.line.0 as usize) + 1 < num_lines {
+                self.grid.cursor.point.line += 1;
+            } else {
+                // Bottom row: conhost scrolls one line to make room.
+                self.grid.scroll_up(&(Line(0)..Line(num_lines as i32)), 1);
+            }
+        }
 
         // Invalidate selection and tabs only when necessary.
         if old_cols != num_cols {

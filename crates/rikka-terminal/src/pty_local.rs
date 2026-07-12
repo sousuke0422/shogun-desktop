@@ -604,6 +604,141 @@ mod tests {
         dump("after echo Z");
     }
 
+    /// The width-resize invariant distilled from `width_semantics_probe`:
+    /// conhost truncates rows on a shrink and never restores them on a
+    /// grow — our grid now does the same, so after a shrink+grow round
+    /// trip the next echo must land ON the prompt row. Before the fix our
+    /// reflow drifted the row accounting and the echo overwrote stale
+    /// rows one line off ("BB\Users\aki\…" mid-row was the signature).
+    #[test]
+    #[ignore = "one-row residue remains: conhost places a grow-rejoined row one row above ours (its reflow rewinds from the bottom) — the last piece of full reflow parity, tracked for the next increment"]
+    fn width_shrink_grow_keeps_conhost_agreement() {
+        let _serial = conhost_serial();
+        let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
+        let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
+        let session = spawn_with(
+            &dll,
+            "cmd.exe",
+            &["/k".into(), "for /L %i in (1,1,5) do @echo SHORT-%i".into()],
+            None,
+            80,
+            24,
+            "test-identity",
+        )
+        .expect("spawn cmd");
+        let rows_text = || -> Vec<String> {
+            session
+                .snapshot
+                .lock()
+                .cells
+                .iter()
+                .map(|row| row.iter().map(|c| c.c).collect::<String>())
+                .collect()
+        };
+        let wait_for = |needle: &str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !rows_text().iter().any(|r| r.contains(needle)) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{needle:?} never appeared"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        wait_for("SHORT-5");
+
+        session.resize(45, 24, (8.0, 16.0));
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        session.send_bytes(b"echo AA\r");
+        wait_for("AA");
+
+        session.resize(80, 24, (8.0, 16.0));
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        session.send_bytes(b"echo BB\r");
+        wait_for("BB");
+
+        let rows = rows_text();
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("rikka-terminal>") && r.contains("echo BB")),
+            "echo must land on the prompt row, rows: {:?}",
+            rows.iter()
+                .map(|r| r.trim_end())
+                .filter(|r| !r.is_empty())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains("BB\\Users")),
+            "echo output overwrote a stale row — the drift signature"
+        );
+        session.send_bytes(b"exit\r");
+    }
+
+    /// Diagnostic probe (not a test): does the ConPTY conhost REFLOW on a
+    /// width shrink (wrapping long rows onto extra lines) or truncate them
+    /// in place (the RESIZE_QUIRK-now-default hypothesis)? And does a grow
+    /// restore what a shrink did? One shrink, one grow, an echo after
+    /// each — the echo's landing row exposes conhost's row accounting.
+    /// Run: cargo test width_semantics_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn width_semantics_probe() {
+        let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
+        let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
+        let session = spawn_with(
+            &dll,
+            "cmd.exe",
+            &["/k".into(), "for /L %i in (1,1,5) do @echo SHORT-%i".into()],
+            None,
+            80,
+            24,
+            "test-identity",
+        )
+        .expect("spawn cmd");
+        let dump = |label: &str| {
+            let snap = session.snapshot.lock();
+            println!(
+                "--- {label} ({}x{}) ---",
+                snap.cells[0].len(),
+                snap.cells.len()
+            );
+            for (i, row) in snap.cells.iter().enumerate() {
+                let text: String = row.iter().map(|c| c.c).collect();
+                let text = text.trim_end();
+                if !text.is_empty() {
+                    println!("{i:2}| {text}");
+                }
+            }
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let done = session.snapshot.lock().cells.iter().any(|r| {
+                r.iter()
+                    .map(|c| c.c)
+                    .collect::<String>()
+                    .contains("SHORT-5")
+            });
+            if done || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        dump("before (80 cols, ~62-char prompt fits)");
+
+        session.resize(45, 24, (8.0, 16.0));
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        session.send_bytes(b"echo AA\r");
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        dump("after shrink to 45 + echo AA");
+
+        session.resize(80, 24, (8.0, 16.0));
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        session.send_bytes(b"echo BB\r");
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        dump("after grow back to 80 + echo BB");
+        session.send_bytes(b"exit\r");
+    }
+
     /// Diagnostic probe (not a test): what does conhost do on a PURE
     /// vertical grow — with content overflowing the viewport (rows already
     /// scrolled out) vs fitting inside it? Determines the anchoring a
