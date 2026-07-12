@@ -336,11 +336,17 @@ impl TerminalSession {
     /// graphics clients size images with them).
     pub fn resize(&self, cols: u16, rows: u16, cell_px: (f32, f32)) {
         use alacritty_terminal::term::test::TermSize;
-        // 1. Resize the in-process term emulator.
+        // 1. Resize the in-process term emulator and republish the snapshot
+        //    right away — the reader thread only refreshes it on PTY output,
+        //    so a quiet screen would keep rendering the old geometry (the
+        //    prompt clipped out of view) until the next byte arrives.
         {
             let mut t = self.term.lock();
             t.resize(TermSize::new(cols as usize, rows as usize));
+            *self.snapshot.lock() = take_snapshot(&t);
         }
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.notify.notify_one();
         // 2. Persist the new size so callers can detect when the session is
         //    already at the right dimensions without re-sending the resize.
         self.cols.store(cols, Ordering::Relaxed);

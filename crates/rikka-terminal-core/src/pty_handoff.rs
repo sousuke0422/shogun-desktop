@@ -104,6 +104,60 @@ pub fn build_handoff_session(
 }
 
 #[cfg(test)]
+mod resize_snapshot_tests {
+    use std::io::Write as _;
+    use std::os::windows::io::OwnedHandle;
+
+    use super::*;
+
+    /// Resize must republish the snapshot itself: the reader thread only
+    /// refreshes it on PTY output, so a quiet screen would otherwise keep
+    /// the old geometry — the prompt sits clipped out of view until the
+    /// next byte arrives (the "hidden until Enter" bug).
+    #[test]
+    fn resize_republishes_the_snapshot_without_output() {
+        let (out_read, mut out_write) = std::io::pipe().expect("output pipe");
+        let (_in_read, in_write) = std::io::pipe().expect("input pipe");
+        let session = build_handoff_session(
+            80,
+            24,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: None,
+                keepalive: Vec::new(),
+            },
+            "test-identity",
+        )
+        .expect("session over pipes");
+
+        // Land one output burst, then go quiet (the write end stays open, so
+        // the reader blocks — any later snapshot change is resize's doing).
+        out_write.write_all(b"hi").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let row0: String = session.snapshot.lock().cells[0]
+                .iter()
+                .map(|c| c.c)
+                .collect();
+            if row0.starts_with("hi") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "output never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        session.resize(100, 30, (8.0, 16.0));
+        let snap = session.snapshot.lock();
+        assert_eq!(
+            (snap.cells[0].len(), snap.cells.len()),
+            (100, 30),
+            "snapshot must carry the new geometry immediately, with no output"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
