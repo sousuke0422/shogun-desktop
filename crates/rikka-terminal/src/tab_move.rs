@@ -165,8 +165,10 @@ fn other_windows() -> Result<Vec<ipc::WindowInfo>> {
 }
 
 /// Resolve a window id to its own socket endpoint through the monarch
-/// (IPC.md `resolve_window` — the monarch never proxies handles).
-fn resolve_window(window: u64) -> Result<String> {
+/// (IPC.md `resolve_window` — the monarch never proxies handles). Doubles
+/// as the "is that a rikka window?" probe for the drag-merge gesture: an
+/// unknown pid simply fails to resolve.
+pub(crate) fn resolve_window(window: u64) -> Result<String> {
     let mut conn = ipc::transport::connect(&ipc::transport::endpoint_name())?;
     conn.send_request(&ipc::Request::ResolveWindow { window })?;
     let resp = conn.recv_response()?;

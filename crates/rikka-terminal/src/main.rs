@@ -264,6 +264,28 @@ fn create_tab_spec(cx: &mut App, spec: &cli::TabSpec) -> Option<TabEntry> {
 
 // ── the tabbed window ────────────────────────────────────────────────────────
 
+/// The OTHER process owning the top-level window under the mouse cursor —
+/// the drag-merge target probe, called on a release outside our window.
+/// `None`: nothing there, or it is ours. Whether that pid is actually a
+/// rikka window is settled by `resolve_window` (unknown pids fail).
+#[cfg(windows)]
+fn other_process_under_cursor() -> Option<u32> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GA_ROOT, GetAncestor, GetCursorPos, GetWindowThreadProcessId, WindowFromPoint,
+    };
+    let mut pt = POINT::default();
+    unsafe { GetCursorPos(&mut pt) }.ok()?;
+    let hwnd = unsafe { WindowFromPoint(pt) };
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(root, Some(&mut pid)) };
+    (pid != 0 && pid != std::process::id()).then_some(pid)
+}
+
 /// Drag payload of a tab being moved: its strip index (`title` rides along
 /// for the ghost). Dropping on another tab reorders; dropping on the pane
 /// detaches into a fresh window.
@@ -315,6 +337,11 @@ pub struct TabsWindow {
     /// Horizontal scroll of the tab viewport (Firefox-style overflow: when
     /// tabs would push the caption buttons, they scroll here instead).
     strip_scroll: ScrollHandle,
+    /// The tab index riding an active drag — the tear-off handler needs it
+    /// on a mouse up OUTSIDE the window, where the hitbox-based drop
+    /// system cannot see anything. Cleared by every in-window resolution
+    /// (the drop handlers and the root mouse-up).
+    dragging_tab: Option<usize>,
 }
 
 impl ImeHost for TabsWindow {
@@ -402,6 +429,7 @@ impl TabsWindow {
             applied_title: None,
             profile_menu: false,
             strip_scroll: ScrollHandle::default(),
+            dragging_tab: None,
         };
         for entry in initial {
             this.adopt(entry, cx);
@@ -504,6 +532,7 @@ impl TabsWindow {
     /// which never risks it. Single tab = a window move, all cost no gain —
     /// no-op. Drag-to-pane and Ctrl+Shift+E both land here.
     fn detach_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.dragging_tab = None;
         if self.tabs.len() < 2 || ix >= self.tabs.len() {
             return;
         }
@@ -531,6 +560,7 @@ impl TabsWindow {
     /// Reorder: the dragged tab leaves `from` and lands at the strip
     /// position of the drop target. The moved tab stays the user's focus.
     fn reorder_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        self.dragging_tab = None;
         if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
             return;
         }
@@ -545,6 +575,47 @@ impl TabsWindow {
     #[cfg(windows)]
     fn eject_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.detach_at(self.active, window, cx);
+    }
+
+    /// A tab released over ANOTHER rikka window (the drag-merge gesture):
+    /// move it there via that window's own socket. Works from a single-tab
+    /// window too — that is a window merge, and moving the last tab closes
+    /// this one. Returns false when `pid` is not a reachable rikka window
+    /// (the caller falls back to the tear-off); a non-transferable session
+    /// (legacy PTY — an in-process Arc cannot cross processes) cancels.
+    #[cfg(windows)]
+    fn drop_tab_on_window_process(
+        &mut self,
+        ix: usize,
+        pid: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(entry) = self.tabs.get(ix) else {
+            return true;
+        };
+        if !tab_move::is_transferable(&entry.0.session) {
+            log::warn!("drag-merge: session is not transferable (legacy PTY) — cancelled");
+            return true;
+        }
+        let Ok(endpoint) = tab_move::resolve_window(u64::from(pid)) else {
+            return false; // not a (reachable) rikka window
+        };
+        match tab_move::send_tab(
+            &entry.0.session,
+            tab_move::Destination::Window {
+                id: u64::from(pid),
+                endpoint,
+            },
+        ) {
+            Ok(()) => self.close_at(ix, window, cx),
+            // connect-first ordering means the tab usually survives this.
+            Err(e) => {
+                log::warn!("drag-merge failed: {e:#}");
+                cx.notify();
+            }
+        }
+        true
     }
 
     /// Move the active tab into another window PROCESS (resolve through the
@@ -819,18 +890,29 @@ impl Render for TabsWindow {
                     }))
                     // Tab DnD: drop on a tab = reorder there; drop on the
                     // pane below = detach into a fresh window (see the pane).
+                    // FIELD PROBE (temporary, with the chord probe): 殿
+                    // reports tab drag does nothing — log each stage so one
+                    // attempt shows where the chain breaks.
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |_this, _ev, _win, _cx| {
+                            log::warn!("tab probe: mouse down on tab {ix}");
+                        }),
+                    )
                     .on_drag(
                         TabDrag {
                             ix,
                             title: drag_title,
                         },
                         |drag, _offset, _window, cx| {
+                            log::warn!("tab probe: drag started ix={}", drag.ix);
                             let title = drag.title.clone();
                             cx.new(|_| TabDragGhost { title })
                         },
                     )
                     .drag_over::<TabDrag>(|style, _, _, _| style.bg(gpui::rgba(TAB_HOVER)))
                     .on_drop(cx.listener(move |this, drag: &TabDrag, _window, cx| {
+                        log::warn!("tab probe: dropped {} onto tab {ix}", drag.ix);
                         this.reorder_tab(drag.ix, ix, cx);
                     }))
                     .into_any_element();
@@ -996,6 +1078,7 @@ impl Render for TabsWindow {
                         .border_color(gpui::rgba(0x8A9CC880))
                 })
                 .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
+                    log::warn!("tab probe: dropped {} onto the pane (detach)", drag.ix);
                     this.detach_at(drag.ix, window, cx);
                 }))
                 .on_action(cx.listener(|this, _: &TerminalCopy, _window, cx| {
@@ -1086,6 +1169,43 @@ impl Render for TabsWindow {
             .flex()
             .flex_col()
             .bg(pane_fill())
+            // ── tab tear-off ─────────────────────────────────────────────
+            // Track which tab rides the active drag; on a mouse up OUTSIDE
+            // the window (SetCapture routes it here) no drop target can
+            // fire — that release IS the browser-style tear-off gesture,
+            // so detach the tab into its own window. An in-window release
+            // that no drop target consumed just cancels.
+            .on_drag_move::<TabDrag>(cx.listener(
+                |this, ev: &gpui::DragMoveEvent<TabDrag>, _w, cx| {
+                    this.dragging_tab = Some(ev.drag(cx).ix);
+                },
+            ))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _ev, _w, _cx| {
+                    this.dragging_tab = None;
+                }),
+            )
+            .on_mouse_up_out(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _ev: &gpui::MouseUpEvent, window, cx| {
+                    let Some(ix) = this.dragging_tab.take() else {
+                        return;
+                    };
+                    // Released over another rikka window = drag-merge (the
+                    // tab moves there, even from a single-tab window);
+                    // anywhere else = tear-off into a fresh window.
+                    #[cfg(windows)]
+                    if let Some(pid) = other_process_under_cursor()
+                        && this.drop_tab_on_window_process(ix, pid, window, cx)
+                    {
+                        log::warn!("tab probe: drag-merge into pid {pid} (ix={ix})");
+                        return;
+                    }
+                    log::warn!("tab probe: released outside the window — tear-off ix={ix}");
+                    this.detach_at(ix, window, cx);
+                }),
+            )
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
                 let m = &ks.modifiers;
