@@ -432,6 +432,49 @@ mod tests {
         assert_eq!(names, sorted, "block must be name-sorted");
     }
 
+    /// Resizes must actually land in the console, not just in our grid:
+    /// drive an interactive cmd, resize over the lifted signal pipe, and let
+    /// `mode con` report the console's own idea of its dimensions. The
+    /// signal and input pipes are separate lanes with no cross-ordering
+    /// guarantee, so the probe re-runs until the console catches up.
+    #[test]
+    fn resize_reaches_the_console() {
+        let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
+        let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
+        let session =
+            spawn_with(&dll, "cmd.exe", &[], None, 80, 24, "test-identity").expect("spawn cmd");
+        let grid = || -> String {
+            session
+                .snapshot
+                .lock()
+                .cells
+                .iter()
+                .flat_map(|row| row.iter().map(|c| c.c))
+                .collect()
+        };
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while grid().trim().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!grid().trim().is_empty(), "cmd must show a prompt");
+
+        session.resize(97, 43, (8.0, 16.0));
+        let mut reported = false;
+        while std::time::Instant::now() < deadline {
+            session.send_bytes(b"mode con\r");
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            let g = grid();
+            // `mode con` prints the counts as bare numbers in any locale.
+            if g.contains("97") && g.contains("43") {
+                reported = true;
+                break;
+            }
+        }
+        assert!(reported, "console must report 97x43 after the resize");
+        session.send_bytes(b"exit\r");
+    }
+
     /// Full drive of the vendored pair: create → attribute spawn → lift →
     /// release → close husk → engine session. The marker proves output and
     /// the env block; the disconnect proves the released reference lets

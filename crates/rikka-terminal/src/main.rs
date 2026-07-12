@@ -575,8 +575,13 @@ impl Render for TabsWindow {
             if (new_cols, new_rows) != (self.cols, self.rows) {
                 self.cols = new_cols;
                 self.rows = new_rows;
-                if let Some(s) = self.active_session() {
-                    s.resize(new_cols, new_rows, (cw, ch));
+                // Every tab, not just the active one: the guard above is
+                // window state, so a background tab that misses this moment
+                // would never be re-fit — by the time it's activated the
+                // dims already "match" and it stays at its stale PTY size
+                // (wrong wrap column) until the next window resize.
+                for entry in &self.tabs {
+                    entry.0.session.resize(new_cols, new_rows, (cw, ch));
                 }
             }
         }
