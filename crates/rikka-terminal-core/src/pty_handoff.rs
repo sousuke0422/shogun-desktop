@@ -9,10 +9,15 @@
 //! - `output`: our read end of the console's VT output pipe,
 //! - `signal`: the ConPTY signal pipe; resizes are written to it using
 //!   winconpty's wire format (see [`resize_signal_packet`]),
-//! - `keepalive`: the reference/server/client process+file handles from the
-//!   handoff. ConPTY treats the reference handle's closure as "the terminal
-//!   is gone", so they must live exactly as long as the session — they ride
-//!   in the resizer, whose `Arc` drops with the [`TerminalSession`].
+//! - `keepalive`: the server/client *process* handles from the handoff, held
+//!   for later bookkeeping (exit codes, client names); process handles keep
+//!   nothing alive. They ride in the resizer, whose `Arc` drops with the
+//!   [`TerminalSession`]. The ConDrv *reference* handle must NOT ride here:
+//!   as long as it exists conhost keeps serving even after its last client
+//!   left (winconpty.h), so an exited shell would never break our output
+//!   pipe and the tab would linger forever. Upstream drops it the moment the
+//!   connection starts (`ConptyConnection::Start` →
+//!   `ConptyReleasePseudoConsole`); callers here do the same.
 //!
 //! Who created the handles is the caller's business (the monarch pulls them
 //! from the handoff shim with `DuplicateHandle`); by the time they reach this
@@ -38,7 +43,8 @@ pub struct HandoffPty {
     pub output: OwnedHandle,
     /// ConPTY signal pipe (write end). `None` = resize requests are dropped.
     pub signal: Option<OwnedHandle>,
-    /// Reference/server/client handles held for the session's lifetime.
+    /// Server/client process handles held for the session's lifetime —
+    /// never the ConDrv reference handle (see module docs).
     pub keepalive: Vec<OwnedHandle>,
 }
 

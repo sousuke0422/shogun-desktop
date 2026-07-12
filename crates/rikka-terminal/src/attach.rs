@@ -115,38 +115,41 @@ impl LocalAttach {
     /// interim size (the real one lands with the window's first frame fit)
     /// and title.
     pub fn into_session(self) -> Result<TerminalSession> {
-        let cols = if self.startup.cols >= 2 {
-            self.startup.cols
-        } else {
-            80
-        };
-        let rows = if self.startup.rows >= 2 {
-            self.startup.rows
-        } else {
-            24
-        };
-        let keepalive: Vec<OwnedHandle> = [
-            self.reference,
-            self.server,
-            self.client,
-            self.hpcon,
-            self.shell,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let LocalAttach {
+            input,
+            output,
+            signal,
+            reference,
+            server,
+            client,
+            hpcon,
+            shell,
+            startup,
+        } = self;
+        let cols = if startup.cols >= 2 { startup.cols } else { 80 };
+        let rows = if startup.rows >= 2 { startup.rows } else { 24 };
+        let keepalive: Vec<OwnedHandle> = [server, client, hpcon, shell]
+            .into_iter()
+            .flatten()
+            .collect();
         let session = build_handoff_session(
             cols,
             rows,
             HandoffPty {
-                input: self.input,
-                output: self.output,
-                signal: self.signal,
+                input,
+                output,
+                signal,
                 keepalive,
             },
             &xtversion::engine_identity(),
         )?;
-        if let Some(title) = &self.startup.title {
+        // The \Reference handle keeps conhost serving even after its last
+        // client left (winconpty.h) — held for the session's lifetime, an
+        // exited shell never breaks our output pipe and the tab lingers
+        // forever. Upstream releases it the moment the connection starts;
+        // same here, now that the session is live.
+        drop(reference);
+        if let Some(title) = &startup.title {
             *session.title.lock() = Some(title.clone());
         }
         Ok(session)
@@ -259,5 +262,42 @@ mod tests {
     fn local_attach_without_pipes_is_refused() {
         let args = ipc::AttachArgs::default();
         assert!(local_attach(&args).is_err());
+    }
+
+    /// The ConDrv reference handle must be closed once the session is live —
+    /// holding it would keep conhost serving after the shell exits, so the
+    /// tab would never see EOF. Proven here by EOF on the peer end of a pipe
+    /// standing in for the reference, while the session is still running.
+    #[test]
+    fn reference_is_dropped_once_the_session_is_live() {
+        let (out_read, _out_write) = std::io::pipe().expect("output pipe");
+        let (_in_read, in_write) = std::io::pipe().expect("input pipe");
+        let (mut ref_read, ref_write) = std::io::pipe().expect("reference stand-in");
+        let args = ipc::AttachArgs {
+            pid: std::process::id(),
+            handles: ipc::Handles {
+                input: in_write.into_raw_handle() as isize as i64,
+                output: out_read.into_raw_handle() as isize as i64,
+                reference: ref_write.into_raw_handle() as isize as i64,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let session = local_attach(&args)
+            .and_then(LocalAttach::into_session)
+            .expect("session over inherited values");
+
+        // Read on a helper thread so a regression fails the timeout instead
+        // of hanging the test on a pipe whose write end is still open.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1];
+            tx.send(ref_read.read(&mut buf).expect("peer read")).ok();
+        });
+        let n = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("reference still held: peer saw no EOF");
+        assert_eq!(n, 0, "expected EOF on the reference peer");
+        drop(session);
     }
 }
