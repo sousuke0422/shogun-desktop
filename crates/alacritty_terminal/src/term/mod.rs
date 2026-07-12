@@ -646,6 +646,15 @@ impl<T> Term<T> {
         &self.grid
     }
 
+    /// The grid NOT currently displayed — the primary screen (with its
+    /// scrollback) while the alternate screen is active, and vice versa.
+    /// A cross-window tab move serializes it so leaving the alt screen
+    /// after the move still shows the primary content and history
+    /// (rikka addition; `swap_alt` keeps its cursor current).
+    pub fn inactive_grid(&self) -> &Grid<Cell> {
+        &self.inactive_grid
+    }
+
     /// Mutable access to the raw grid data structure.
     pub fn grid_mut(&mut self) -> &mut Grid<Cell> {
         &mut self.grid

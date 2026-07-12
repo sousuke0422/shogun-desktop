@@ -93,13 +93,14 @@ impl TransferKit {
 /// preserved), cursor position / visibility / DECSCUSR shape, and the
 /// wire-visible mode bits (alt screen, app cursor/keypad, wrap, bracketed
 /// paste, focus reporting, the mouse suite, kitty keyboard flags).
+/// While the alt screen is active, BOTH screens travel: the hidden
+/// primary (with its scrollback) replays first, ?1049h saves its parked
+/// cursor, then the alt content paints on top — leaving the alt screen
+/// after the move shows exactly what the sender's ?1049l would have.
 /// Deliberately dropped: the VISIBLE rows' WRAPLINE continuity (they are
 /// painted via absolute CUP; the visible result is identical, only
-/// selection line-joins differ until the next repaint), DECSTBM (ConPTY's
-/// renderer emits absolute positions, never scroll regions), and — while
-/// the alt screen is active — the primary screen it hides (the inactive
-/// grid is not reachable; leaving vim mid-move costs the primary's
-/// history).
+/// selection line-joins differ until the next repaint) and DECSTBM
+/// (ConPTY's renderer emits absolute positions, never scroll regions).
 ///
 /// Call AFTER `quiesce_for_transfer`: the reader is dead, so the Term can
 /// no longer change under the serialization.
@@ -116,11 +117,8 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
     let mode = *term.mode();
     let mut out = String::new();
 
-    // Modes first — ?1049 clears the alt screen it enters, so it must
-    // precede the content.
-    if mode.contains(TermMode::ALT_SCREEN) {
-        out.push_str("\x1b[?1049h");
-    }
+    // Modes first (?1049 is NOT here: entering the alt screen happens
+    // between the two screen replays below, so the primary paints first).
     if mode.contains(TermMode::APP_CURSOR) {
         out.push_str("\x1b[?1h");
     }
@@ -223,19 +221,25 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
         }
     };
 
-    let grid = term.grid();
+    type CellGrid = alacritty_terminal::grid::Grid<alacritty_terminal::term::cell::Cell>;
 
-    // ── Scrollback, oldest first, BEFORE the visible screen: each history
+    // ── Scrollback, oldest first, BEFORE a visible screen: each history
     // row is printed as flowing text, so it scrolls straight into the
     // receiver's history. A row whose last cell carries WRAPLINE omits its
     // newline — the next row joins it, reproducing wrapped logical lines.
-    // The alt screen has no history (history_size() = 0), so this is
-    // naturally skipped there. A byte budget keeps the payload under the
-    // IPC frame cap; the OLDEST rows fall off first, like any scrollback.
-    // Each row opens with its own SGR reset so dropping whole rows at the
-    // front can never tear an escape run.
-    let history = grid.history_size();
-    if history > 0 {
+    // A byte budget keeps the payload under the IPC frame cap; the OLDEST
+    // rows fall off first, like any scrollback. Each row opens with its
+    // own SGR reset so dropping whole rows at the front can never tear an
+    // escape run. Trailing padding newlines push the tail of the flow out
+    // of the viewport — the visible screen is painted OVER the viewport
+    // next, and a history row still inside it would be overwritten instead
+    // of scrolled into history (exactly the printed rows scroll out; the
+    // padding itself never reaches history).
+    let flow_history = |out: &mut String, grid: &CellGrid| {
+        let history = grid.history_size();
+        if history == 0 {
+            return;
+        }
         use std::collections::VecDeque;
         const HISTORY_BUDGET: usize = 4 * 1024 * 1024;
         let mut rows_vt: VecDeque<String> = VecDeque::new();
@@ -264,25 +268,38 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
         for row in rows_vt {
             out.push_str(&row);
         }
-        // Push the tail of the flow out of the viewport: the visible screen
-        // is painted OVER the viewport next, and any history row still
-        // inside it would be overwritten instead of scrolled into history.
-        // Padding newlines scroll out exactly the rows printed above —
-        // trailing blank lines themselves never reach the history.
         out.push_str(&"\r\n".repeat(term.screen_lines().saturating_sub(1)));
+    };
+    // A visible screen, absolute CUP per row.
+    let paint_screen = |out: &mut String, grid: &CellGrid| {
+        let mut last_sgr: Option<String> = None;
+        for row in 0..term.screen_lines() {
+            let _ = write!(out, "\x1b[{};1H", row + 1);
+            for col in 0..term.columns() {
+                emit_cell(out, &mut last_sgr, &grid[Line(row as i32)][Column(col)]);
+            }
+        }
+    };
+
+    // While the alt screen is active, the PRIMARY screen (with its
+    // scrollback) lives in the inactive grid: replay it FIRST, park its
+    // cursor (?1049h saves it), then enter the alt screen and paint the
+    // alt content on top — leaving the alt screen after the move restores
+    // exactly what the sender's ?1049l would have shown.
+    if mode.contains(TermMode::ALT_SCREEN) {
+        let primary = term.inactive_grid();
+        flow_history(&mut out, primary);
+        paint_screen(&mut out, primary);
+        let p = primary.cursor.point;
+        let _ = write!(out, "\x1b[0m\x1b[{};{}H", p.line.0 + 1, p.column.0 + 1);
+        out.push_str("\x1b[?1049h");
     }
 
-    let mut last_sgr: Option<String> = None;
-    for row in 0..term.screen_lines() {
-        let _ = write!(out, "\x1b[{};1H", row + 1);
-        for col in 0..term.columns() {
-            emit_cell(
-                &mut out,
-                &mut last_sgr,
-                &grid[Line(row as i32)][Column(col)],
-            );
-        }
-    }
+    let grid = term.grid();
+    // (While the alt screen is active it has no history of its own —
+    // flow_history returns immediately there.)
+    flow_history(&mut out, grid);
+    paint_screen(&mut out, grid);
 
     // Cursor: position, DECSCUSR shape, visibility — after the paint, since
     // painting moved it.
@@ -539,6 +556,72 @@ mod transfer_tests {
             replay.contains("TRAPPED"),
             "bytes in flight at quiesce were lost by the move"
         );
+    }
+
+    /// While the alt screen is active BOTH screens must travel: the
+    /// receiver shows the alt content, and leaving the alt screen
+    /// (?1049l — what a fullscreen app emits on exit) reveals the primary
+    /// screen, its cursor and its scrollback, exactly as on the sender.
+    #[test]
+    fn replay_carries_the_primary_hidden_under_the_alt_screen() {
+        use alacritty_terminal::grid::Dimensions as _;
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::term::TermMode;
+
+        // Primary: 12 numbered rows through a 40x5 viewport (history!),
+        // then enter the alt screen and paint fullscreen-app content.
+        let mut script = String::new();
+        for i in 1..=12 {
+            script.push_str(&format!("P{i}\r\n"));
+        }
+        script.push_str("\x1b[?1049h\x1b[2J\x1b[1;1HALT-CONTENT");
+        let a = crate::pty_session::build_test_session_with_output(40, 5, script.into_bytes());
+        let wait_eof = |s: &TerminalSession| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while s.is_connected() {
+                assert!(std::time::Instant::now() < deadline, "no EOF");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        wait_eof(&a);
+        assert!(a.term.lock().mode().contains(TermMode::ALT_SCREEN));
+
+        let replay = replay_bytes(&a);
+
+        // The receiver as adopted: alt screen active, alt content visible.
+        let b = crate::pty_session::build_test_session_with_output(40, 5, replay.clone());
+        wait_eof(&b);
+        assert!(b.term.lock().mode().contains(TermMode::ALT_SCREEN));
+        let row0: String = b.snapshot.lock().cells[0].iter().map(|c| c.c).collect();
+        assert!(row0.starts_with("ALT-CONTENT"), "got {row0:?}");
+
+        // The receiver after the app exits: ?1049l must reveal the moved
+        // primary — compare against the sender's hidden (inactive) grid.
+        let mut with_exit = replay;
+        with_exit.extend_from_slice(b"\x1b[?1049l");
+        let c = crate::pty_session::build_test_session_with_output(40, 5, with_exit);
+        wait_eof(&c);
+        let ta = a.term.lock();
+        let tc = c.term.lock();
+        let (pa, pc) = (ta.inactive_grid(), tc.grid());
+        assert!(
+            pa.history_size() > 0,
+            "test setup must overflow the viewport"
+        );
+        assert_eq!(pa.history_size(), pc.history_size(), "primary history");
+        assert_eq!(pa.cursor.point, pc.cursor.point, "primary cursor");
+        let text = |g: &alacritty_terminal::grid::Grid<alacritty_terminal::term::cell::Cell>,
+                    line: i32|
+         -> String {
+            (0..ta.columns())
+                .map(|col| g[Line(line)][Column(col)].c)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        for line in -(pa.history_size() as i32)..(ta.screen_lines() as i32) {
+            assert_eq!(text(pa, line), text(pc, line), "primary row {line}");
+        }
     }
 
     /// Scrollback rides the move: rows that scrolled out of the sender's

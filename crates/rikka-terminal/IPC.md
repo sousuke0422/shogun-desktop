@@ -252,12 +252,15 @@ own socket).
   `state = { "vt_b64": … }`; the relay launch carries the same bytes via
   `--attach-state <tempfile>` (bulk bytes cannot ride handle inheritance).
   Absent/corrupt state degrades to a blank start, never an error.
+- **Alt screen**: BOTH screens travel — the hidden primary (with its
+  scrollback) replays first, ?1049h saves its parked cursor, then the alt
+  content paints on top; leaving the alt screen after the move shows
+  exactly what the sender's ?1049l would have (vendored alacritty gained
+  an `inactive_grid()` accessor for this).
 - **v1 limits**: the VISIBLE rows lose WRAPLINE continuity (absolute-CUP
-  painting — selection line-joins differ until the next repaint); while
-  the alt screen is active the hidden primary screen/history stays behind
-  (the inactive grid is unreachable). Process granularity — `window_id` =
-  pid, so in-process-detached windows are not individually addressable
-  (use the in-process merge for those).
+  painting — selection line-joins differ until the next repaint). Process
+  granularity — `window_id` = pid, so in-process-detached windows are not
+  individually addressable (use the in-process merge for those).
 
 ## Deferred
 
