@@ -65,6 +65,11 @@ pub struct AttachSpec {
     pub handles: [i64; 6],
     /// Startup title from the handoff's TERMINAL_STARTUP_INFO.
     pub title: Option<String>,
+    /// `--attach-state`: a temp file holding the sender's screen replay
+    /// (raw VT bytes) for a cross-process tab detach — read once and
+    /// deleted by the child. Handles ride inheritance; bulk bytes cannot,
+    /// hence the file.
+    pub state_path: Option<String>,
 }
 
 /// Parsed launch request.
@@ -115,6 +120,7 @@ fn parse_attach(s: &str) -> Result<AttachSpec, String> {
     Ok(AttachSpec {
         handles,
         title: None,
+        state_path: None,
     })
 }
 
@@ -122,6 +128,7 @@ fn parse_attach(s: &str) -> Result<AttachSpec, String> {
 pub fn parse(args: Vec<String>) -> Result<Launch, String> {
     let mut launch = Launch::default();
     let mut attach_title: Option<String> = None;
+    let mut attach_state: Option<String> = None;
 
     // Split into `;`-delimited command groups (wt separates commands with a
     // standalone `;` token; `\;` escapes a literal semicolon positional).
@@ -196,6 +203,10 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
                     "--attach-title" => {
                         it.next();
                         attach_title = Some(value_of(&mut it, "--attach-title")?);
+                    }
+                    "--attach-state" => {
+                        it.next();
+                        attach_state = Some(value_of(&mut it, "--attach-state")?);
                     }
                     // Internal (the monarch): window-process mode — see
                     // Launch::window_process.
@@ -281,10 +292,15 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
         launch.tabs.push(spec);
     }
 
-    match (&mut launch.attach, attach_title) {
-        (Some(a), title) => a.title = title,
-        (None, Some(_)) => return Err("--attach-title は --attach と共に使います".into()),
-        (None, None) => {}
+    match (&mut launch.attach, attach_title, attach_state) {
+        (Some(a), title, state) => {
+            a.title = title;
+            a.state_path = state;
+        }
+        (None, None, None) => {}
+        (None, _, _) => {
+            return Err("--attach-title/--attach-state は --attach と共に使います".into());
+        }
     }
     Ok(launch)
 }

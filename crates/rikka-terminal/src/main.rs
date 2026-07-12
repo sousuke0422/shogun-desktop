@@ -1347,6 +1347,17 @@ fn elect(endpoint: &str, launch: &cli::Launch) -> Option<Role> {
 /// through CreateProcess), so the pid is ours and a monarch pulls from us.
 fn attach_request(a: &cli::AttachSpec, launch: &cli::Launch) -> ipc::AttachArgs {
     let [input, output, signal, reference, server, client] = a.handles;
+    // A tab-move relay parent left the screen replay in a temp file (bulk
+    // bytes cannot ride handle inheritance) — consume it exactly once.
+    let state = a
+        .state_path
+        .as_ref()
+        .and_then(|p| {
+            let bytes = std::fs::read(p);
+            let _ = std::fs::remove_file(p);
+            bytes.ok()
+        })
+        .map(|vt| ipc::state_from_vt(&vt));
     ipc::AttachArgs {
         pid: std::process::id(),
         handles: ipc::Handles {
@@ -1365,7 +1376,7 @@ fn attach_request(a: &cli::AttachSpec, launch: &cli::Launch) -> ipc::AttachArgs 
             cols: launch.size_cells.map_or(0, |s| s.0),
             rows: launch.size_cells.map_or(0, |s| s.1),
         },
-        state: None,
+        state,
         elevated: false,
         target: ipc::Target::New,
     }
@@ -1964,6 +1975,27 @@ mod tests {
         .expect("live source session");
         *source.title.lock() = Some("mover".into());
 
+        // Screen content the move must carry: parsed into the SENDER's grid
+        // (and gone from the pipe) before the transfer starts.
+        out_write.write_all(b"BEFORE-MOVE").unwrap();
+        {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let row0: String = source.snapshot.lock().cells[0]
+                    .iter()
+                    .map(|c| c.c)
+                    .collect();
+                if row0.starts_with("BEFORE-MOVE") {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "content never reached the sender's grid"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+
         let name = format!("rikka-test-move-{}.sock", std::process::id());
         let listener = ipc::transport::Monarch::bind(&name).expect("bind window socket");
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
@@ -2006,6 +2038,10 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         };
+        // The sender's screen arrived with the move (the state replay ran
+        // as the receiver's parser preface)…
+        sees("BEFORE-MOVE");
+        // …and the live pipe keeps flowing after it.
         out_write.write_all(b"AFTER-MOVE").unwrap();
         sees("AFTER-MOVE");
 

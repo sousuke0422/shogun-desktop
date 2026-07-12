@@ -79,6 +79,168 @@ impl TransferKit {
     }
 }
 
+/// Serialize a quiesced session's LIVE screen as a VT byte stream — the
+/// `state` payload of a tab move, replayed into the receiver's fresh parser
+/// as a reader preface. The sender's grid matched conhost's buffer (the
+/// settler lane guarantees it), so reproducing it verbatim keeps every
+/// later absolute cursor position conhost emits landing where it expects.
+///
+/// Covered: every visible cell (chars + zerowidth combiners + full SGR,
+/// colors resolved against the live palette; default fg/bg stay symbolic so
+/// the receiver's default-color handling is preserved), cursor position /
+/// visibility / DECSCUSR shape, and the wire-visible mode bits (alt screen,
+/// app cursor/keypad, wrap, bracketed paste, focus reporting, the mouse
+/// suite, kitty keyboard flags). Deliberately dropped: scrollback (v1
+/// contract), WRAPLINE continuity (rows are painted via absolute CUP; the
+/// visible result is identical, only selection line-joins differ until the
+/// next repaint), and DECSTBM (ConPTY's renderer emits absolute positions,
+/// never scroll regions).
+///
+/// Call AFTER `quiesce_for_transfer`: the reader is dead, so the Term can
+/// no longer change under the serialization.
+pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
+    use std::fmt::Write as _;
+
+    use alacritty_terminal::grid::Dimensions as _;
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::TermMode;
+    use alacritty_terminal::term::cell::Flags;
+    use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
+
+    let term = session.term.lock();
+    let mode = *term.mode();
+    let mut out = String::new();
+
+    // Modes first — ?1049 clears the alt screen it enters, so it must
+    // precede the content.
+    if mode.contains(TermMode::ALT_SCREEN) {
+        out.push_str("\x1b[?1049h");
+    }
+    if mode.contains(TermMode::APP_CURSOR) {
+        out.push_str("\x1b[?1h");
+    }
+    if mode.contains(TermMode::APP_KEYPAD) {
+        out.push_str("\x1b=");
+    }
+    if !mode.contains(TermMode::LINE_WRAP) {
+        out.push_str("\x1b[?7l");
+    }
+    for (bit, seq) in [
+        (TermMode::BRACKETED_PASTE, "\x1b[?2004h"),
+        (TermMode::FOCUS_IN_OUT, "\x1b[?1004h"),
+        (TermMode::MOUSE_REPORT_CLICK, "\x1b[?1000h"),
+        (TermMode::MOUSE_DRAG, "\x1b[?1002h"),
+        (TermMode::MOUSE_MOTION, "\x1b[?1003h"),
+        (TermMode::UTF8_MOUSE, "\x1b[?1005h"),
+        (TermMode::SGR_MOUSE, "\x1b[?1006h"),
+        (TermMode::ALTERNATE_SCROLL, "\x1b[?1007h"),
+    ] {
+        if mode.contains(bit) {
+            out.push_str(seq);
+        }
+    }
+    let kitty = (mode.contains(TermMode::DISAMBIGUATE_ESC_CODES) as u8)
+        | ((mode.contains(TermMode::REPORT_EVENT_TYPES) as u8) << 1)
+        | ((mode.contains(TermMode::REPORT_ALTERNATE_KEYS) as u8) << 2)
+        | ((mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC) as u8) << 3)
+        | ((mode.contains(TermMode::REPORT_ASSOCIATED_TEXT) as u8) << 4);
+    if kitty != 0 {
+        let _ = write!(out, "\x1b[={kitty};1u");
+    }
+
+    // One SGR parameter list per cell run. Colors resolve through the live
+    // palette (OSC 4 redefinitions included); Foreground/Background stay
+    // symbolic so `default bg is unpainted`-style renderer behavior holds.
+    let color_params = |s: &mut String, color: Color, is_fg: bool| {
+        let base = if is_fg { 38 } else { 48 };
+        let resolved = match color {
+            Color::Named(NamedColor::Foreground) if is_fg => return,
+            Color::Named(NamedColor::Background) if !is_fg => return,
+            Color::Spec(rgb) => Some(rgb),
+            Color::Named(n) => crate::query_color_rgb(term.colors(), n as usize),
+            Color::Indexed(i) => crate::query_color_rgb(term.colors(), i as usize),
+        };
+        if let Some(rgb) = resolved {
+            let _ = write!(s, ";{base};2;{};{};{}", rgb.r, rgb.g, rgb.b);
+        }
+    };
+    let sgr_of = |cell: &alacritty_terminal::term::cell::Cell| -> String {
+        let mut s = String::new();
+        let f = cell.flags;
+        for (flag, code) in [
+            (Flags::BOLD, "1"),
+            (Flags::DIM, "2"),
+            (Flags::ITALIC, "3"),
+            (Flags::UNDERLINE, "4"),
+            (Flags::DOUBLE_UNDERLINE, "4:2"),
+            (Flags::UNDERCURL, "4:3"),
+            (Flags::DOTTED_UNDERLINE, "4:4"),
+            (Flags::DASHED_UNDERLINE, "4:5"),
+            (Flags::BLINK, "5"),
+            (Flags::INVERSE, "7"),
+            (Flags::HIDDEN, "8"),
+            (Flags::STRIKEOUT, "9"),
+        ] {
+            if f.contains(flag) {
+                s.push(';');
+                s.push_str(code);
+            }
+        }
+        color_params(&mut s, cell.fg, true);
+        color_params(&mut s, cell.bg, false);
+        s
+    };
+
+    let grid = term.grid();
+    let mut last_sgr: Option<String> = None;
+    for row in 0..term.screen_lines() {
+        let _ = write!(out, "\x1b[{};1H", row + 1);
+        for col in 0..term.columns() {
+            let cell = &grid[Line(row as i32)][Column(col)];
+            // The wide char itself advances the parser two columns; its
+            // spacer must not emit anything or the row would overflow.
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+            let sgr = sgr_of(cell);
+            if last_sgr.as_ref() != Some(&sgr) {
+                let _ = write!(out, "\x1b[0{sgr}m");
+                last_sgr = Some(sgr);
+            }
+            out.push(cell.c);
+            if let Some(extra) = cell.zerowidth() {
+                out.extend(extra);
+            }
+        }
+    }
+
+    // Cursor: position, DECSCUSR shape, visibility — after the paint, since
+    // painting moved it.
+    let point = grid.cursor.point;
+    let _ = write!(
+        out,
+        "\x1b[0m\x1b[{};{}H",
+        point.line.0 + 1,
+        point.column.0 + 1
+    );
+    let style = term.cursor_style();
+    let decscusr = match (style.shape, style.blinking) {
+        (CursorShape::Block, true) => 1,
+        (CursorShape::Block, false) => 2,
+        (CursorShape::Underline, true) => 3,
+        (CursorShape::Underline, false) => 4,
+        (CursorShape::Beam, true) => 5,
+        (CursorShape::Beam, false) => 6,
+        // Hidden rides ?25l below; HollowBlock is a focus artifact.
+        _ => 2,
+    };
+    let _ = write!(out, "\x1b[{decscusr} q");
+    if !mode.contains(TermMode::SHOW_CURSOR) {
+        out.push_str("\x1b[?25l");
+    }
+    out.into_bytes()
+}
+
 /// winconpty's `PTY_SIGNAL_RESIZE_WINDOW` message: three little-endian u16s —
 /// the signal id (8), then the new column and row counts. ConPTY's signal
 /// pipe carries no pixel sizes.
@@ -118,11 +280,28 @@ pub fn build_handoff_session(
     pty: HandoffPty,
     xtversion_identity: &str,
 ) -> Result<TerminalSession> {
+    build_handoff_session_with_preface(cols, rows, pty, Vec::new(), xtversion_identity)
+}
+
+/// [`build_handoff_session`] with `preface` bytes fed to the parser BEFORE
+/// anything from the pipe — a tab move's [`replay_bytes`] lands here, so the
+/// receiver's grid starts as a copy of the sender's instead of blank.
+pub fn build_handoff_session_with_preface(
+    cols: u16,
+    rows: u16,
+    pty: HandoffPty,
+    preface: Vec<u8>,
+    xtversion_identity: &str,
+) -> Result<TerminalSession> {
     // Stock the transfer duplicates before the handles disappear into File
     // boxes and worker threads — this is the only moment the full set is
     // still in one hand.
     let transfer = TransferKit::stock(&pty)?;
-    let reader: Box<dyn Read + Send> = Box::new(File::from(pty.output));
+    let reader: Box<dyn Read + Send> = if preface.is_empty() {
+        Box::new(File::from(pty.output))
+    } else {
+        Box::new(std::io::Cursor::new(preface).chain(File::from(pty.output)))
+    };
     let writer: Box<dyn Write + Send> = Box::new(File::from(pty.input));
     let resizer: Arc<dyn PtyResizer> = Arc::new(SignalResizer {
         signal: pty.signal.map(|h| FairMutex::new(File::from(h))),
@@ -209,6 +388,48 @@ mod transfer_tests {
         let mut buf = [0u8; 5];
         peer.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"MOVED");
+    }
+
+    /// A moved tab must ARRIVE wearing the sender's screen: serialize a
+    /// session showing colors, a wide char, a mode bit and a parked cursor,
+    /// replay the bytes into a fresh session (the receiver's preface path),
+    /// and require the two snapshots to agree cell by cell.
+    #[test]
+    fn replay_reproduces_screen_cursor_and_modes() {
+        use alacritty_terminal::term::TermMode;
+
+        let script = "\x1b[?2004h\x1b[1;31mRED\x1b[0m plain 字\r\nsecond\x1b[5;7H".to_string();
+        let a = crate::pty_session::build_test_session_with_output(40, 10, script.into_bytes());
+        let wait_eof = |s: &TerminalSession| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while s.is_connected() {
+                assert!(std::time::Instant::now() < deadline, "no EOF");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        wait_eof(&a);
+
+        let replay = replay_bytes(&a);
+        let b = crate::pty_session::build_test_session_with_output(40, 10, replay);
+        wait_eof(&b);
+
+        let sa = a.snapshot.lock().clone();
+        let sb = b.snapshot.lock().clone();
+        assert_eq!(sa.cursor, sb.cursor, "cursor must land where it was");
+        assert_eq!(sa.cursor_shape, sb.cursor_shape);
+        for (r, (ra, rb)) in sa.cells.iter().zip(&sb.cells).enumerate() {
+            for (c, (ca, cb)) in ra.iter().zip(rb).enumerate() {
+                assert_eq!(ca.c, cb.c, "char at {r},{c}");
+                assert_eq!(ca.fg, cb.fg, "fg at {r},{c}");
+                assert_eq!(ca.bg, cb.bg, "bg at {r},{c}");
+                assert_eq!(ca.style, cb.style, "style at {r},{c}");
+                assert_eq!(ca.display_width, cb.display_width, "width at {r},{c}");
+            }
+        }
+        assert!(
+            b.term.lock().mode().contains(TermMode::BRACKETED_PASTE),
+            "mode bits must survive the move"
+        );
     }
 
     /// After quiesce the settler must go silent: no resize — not even the

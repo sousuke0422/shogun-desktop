@@ -16,7 +16,7 @@
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use rikka_terminal_core::pty_handoff::{HandoffPty, TransferKit, build_handoff_session};
+use rikka_terminal_core::pty_handoff::{HandoffPty, TransferKit};
 use rikka_terminal_core::{TerminalSession, xtversion};
 use rikka_terminal_ipc as ipc;
 use windows::Win32::Foundation::{
@@ -37,6 +37,10 @@ pub struct LocalAttach {
     hpcon: Option<OwnedHandle>,
     shell: Option<OwnedHandle>,
     pub startup: ipc::StartupInfo,
+    /// A tab move's screen replay (core `replay_bytes`), fed to the
+    /// assembled session's parser before any pipe byte — the moved tab
+    /// arrives wearing the sender's screen instead of blank.
+    state_vt: Option<Vec<u8>>,
 }
 
 /// Duplicate one raw handle value out of `source` into this process.
@@ -107,6 +111,7 @@ fn take(
         hpcon: acquire(args.handles.hpcon)?,
         shell: acquire(args.handles.shell)?,
         startup: args.startup.clone(),
+        state_vt: ipc::vt_from_state(&args.state),
     })
 }
 
@@ -116,7 +121,11 @@ impl LocalAttach {
     /// keepalive processes ride the `server`/`client` slots in order, and
     /// `reference` is never present — the session released it when it went
     /// live.
-    pub fn from_transfer(kit: TransferKit, startup: ipc::StartupInfo) -> Result<Self> {
+    pub fn from_transfer(
+        kit: TransferKit,
+        startup: ipc::StartupInfo,
+        state_vt: Option<Vec<u8>>,
+    ) -> Result<Self> {
         ensure!(
             kit.keepalive.len() <= 2,
             "transfer kit carries more keepalive handles than the wire has slots"
@@ -132,6 +141,7 @@ impl LocalAttach {
             hpcon: None,
             shell: None,
             startup,
+            state_vt,
         })
     }
 
@@ -149,6 +159,7 @@ impl LocalAttach {
             hpcon,
             shell,
             startup,
+            state_vt,
         } = self;
         let cols = if startup.cols >= 2 { startup.cols } else { 80 };
         let rows = if startup.rows >= 2 { startup.rows } else { 24 };
@@ -156,7 +167,7 @@ impl LocalAttach {
             .into_iter()
             .flatten()
             .collect();
-        let session = build_handoff_session(
+        let session = rikka_terminal_core::pty_handoff::build_handoff_session_with_preface(
             cols,
             rows,
             HandoffPty {
@@ -165,6 +176,7 @@ impl LocalAttach {
                 signal,
                 keepalive,
             },
+            state_vt.unwrap_or_default(),
             &xtversion::engine_identity(),
         )?;
         // The \Reference handle keeps conhost serving even after its last
@@ -224,6 +236,20 @@ impl LocalAttach {
         if self.startup.cols >= 2 && self.startup.rows >= 2 {
             cmd.arg("--size")
                 .arg(format!("{},{}", self.startup.cols, self.startup.rows));
+        }
+        // The screen replay is bulk bytes — handles ride inheritance, this
+        // rides a temp file the child reads once and deletes. A stale file
+        // (child died first) is a few KB in %TEMP%, harmless.
+        if let Some(vt) = &self.state_vt {
+            let path = std::env::temp_dir().join(format!(
+                "rikka-move-{}-{:x}.vt",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos())
+            ));
+            std::fs::write(&path, vt).context("write tab-move state file")?;
+            cmd.arg("--attach-state").arg(&path);
         }
         // Rust's std spawns with bInheritHandles=TRUE — the transfer.
         cmd.spawn().context("spawn window process for attach")?;

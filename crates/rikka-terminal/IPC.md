@@ -228,17 +228,28 @@ own socket).
   are independent duplicates — dropping them cannot break the pipes or EOF
   the console's signal pipe (the receiver holds live copies of both ends'
   peers).
-- **v1 limits**: PTY only — no `state`, so the moved tab starts blank until
-  the application writes (ConPTY never repaints). Process granularity —
-  `window_id` = pid, so in-process-detached windows are not individually
-  addressable (use the in-process merge for those).
+- **Screen carry (`state`)**: the sender serializes its LIVE screen after
+  quiescing (core `replay_bytes`: cells + SGR resolved against the live
+  palette, cursor position/shape/visibility, alt-screen / wrap / bracketed
+  paste / focus / mouse / kitty-keyboard mode bits) and the receiver feeds
+  it to its fresh parser BEFORE any pipe byte (a reader preface). The
+  sender's grid matched conhost's buffer, so the copy keeps conhost's later
+  absolute cursor positions landing right. Wire: `state = { "vt_b64": … }`;
+  the relay launch carries the same bytes via `--attach-state <tempfile>`
+  (bulk bytes cannot ride handle inheritance). Absent/corrupt state
+  degrades to a blank start, never an error.
+- **v1 limits**: scrollback stays behind (only the visible screen moves);
+  WRAPLINE continuity is not reproduced (rows are painted via absolute
+  CUP — selection line-joins differ until the next repaint). Process
+  granularity — `window_id` = pid, so in-process-detached windows are not
+  individually addressable (use the in-process merge for those).
 
 ## Deferred
 
 - Monarch re-election when the monarch process exits (v2). v1: monarch = first
   process; if it exits, coordination pauses until the next cold start.
-- `state` wire format for tab-move scrollback (v1 moves the PTY, drops
-  scrollback — the moved tab starts blank until the application writes).
+- Scrollback in the tab-move `state` (the visible screen already moves;
+  history stays behind).
 - Elevated handoff window process.
 - Per-WINDOW move addressing (v1 window_id = pid) and a drag-DnD trigger for
   the cross-process move (v1 is keyboard: Ctrl+Shift+E / Ctrl+Shift+X).

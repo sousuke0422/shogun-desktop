@@ -745,7 +745,9 @@ mod tests {
         )
         .expect("handoff-shaped local spawn");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        // Per-phase deadlines (not one shared budget): parallel test runs
+        // spawn several consoles at once and cold starts crowd each other.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut seen = false;
         while std::time::Instant::now() < deadline {
             let grid: String = session
@@ -765,6 +767,7 @@ mod tests {
 
         session.resize(100, 30, (8.0, 16.0));
 
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while session.is_connected() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }

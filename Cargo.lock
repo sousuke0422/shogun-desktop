@@ -5617,6 +5617,7 @@ dependencies = [
 name = "rikka-terminal-ipc"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "interprocess",
  "serde",
  "serde_json",

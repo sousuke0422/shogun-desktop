@@ -104,6 +104,24 @@ pub struct AttachArgs {
     pub target: Target,
 }
 
+/// Wrap a tab-move screen replay (VT bytes, see core's `replay_bytes`) as
+/// the `attach.state` value: `{ "vt_b64": … }`.
+pub fn state_from_vt(vt: &[u8]) -> serde_json::Value {
+    use base64::Engine as _;
+    serde_json::json!({
+        "vt_b64": base64::engine::general_purpose::STANDARD.encode(vt)
+    })
+}
+
+/// The replayable VT bytes out of an `attach.state`, when it carries any.
+/// `None` for an absent state, an unknown shape, or corrupt base64 — the
+/// receiver then simply starts blank, which is the v1 behavior.
+pub fn vt_from_state(state: &Option<serde_json::Value>) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let b64 = state.as_ref()?.get("vt_b64")?.as_str()?;
+    base64::engine::general_purpose::STANDARD.decode(b64).ok()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct RegisterWindow {
     pub pid: u32,
@@ -308,6 +326,34 @@ mod tests {
         assert_eq!(
             got.endpoint.as_deref(),
             Some("rikka-terminal.u.win.42.sock")
+        );
+    }
+
+    #[test]
+    fn state_vt_roundtrips_through_a_frame() {
+        let vt = b"\x1b[?1049h\x1b[1;31mRED \xe5\xad\x97".to_vec();
+        let req = Request::Attach(AttachArgs {
+            pid: 1,
+            handles: Handles {
+                input: 3,
+                output: 4,
+                ..Default::default()
+            },
+            state: Some(state_from_vt(&vt)),
+            ..Default::default()
+        });
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &req).unwrap();
+        let (_, got): (u32, Request) = read_frame(&mut Cursor::new(&buf)).unwrap();
+        let Request::Attach(a) = got else {
+            panic!("attach expected")
+        };
+        assert_eq!(vt_from_state(&a.state), Some(vt));
+        assert_eq!(vt_from_state(&None), None, "absent state stays blank");
+        assert_eq!(
+            vt_from_state(&Some(serde_json::json!({ "vt_b64": "!!!" }))),
+            None,
+            "corrupt base64 degrades to blank, never errors"
         );
     }
 

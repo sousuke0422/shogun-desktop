@@ -58,13 +58,17 @@ pub fn send_tab(session: &TerminalSession, dest: Destination) -> Result<()> {
         rows: session.rows.load(Ordering::Relaxed),
     };
     session.quiesce_for_transfer()?;
+    // Serialize AFTER quiesce — the reader is dead, the Term is finally
+    // still. The receiver replays this as its parser preface, so the tab
+    // arrives wearing the sender's screen instead of blank.
+    let vt = rikka_terminal_core::pty_handoff::replay_bytes(session);
     match dest {
         // Inheritance COPIES the handles into the child, so the kit keeps
         // ownership of ours throughout — plain drop semantics on every path.
-        Destination::NewProcess => LocalAttach::from_transfer(kit, startup)?
+        Destination::NewProcess => LocalAttach::from_transfer(kit, startup, Some(vt))?
             .relay_to_window_process()
             .context("relay the detached tab to its window process"),
-        Destination::Window { id, endpoint } => push_to_window(kit, startup, id, &endpoint),
+        Destination::Window { id, endpoint } => push_to_window(kit, startup, vt, id, &endpoint),
     }
 }
 
@@ -77,6 +81,7 @@ pub fn send_tab(session: &TerminalSession, dest: Destination) -> Result<()> {
 fn push_to_window(
     kit: TransferKit,
     startup: ipc::StartupInfo,
+    state_vt: Vec<u8>,
     id: u64,
     endpoint: &str,
 ) -> Result<()> {
@@ -102,7 +107,7 @@ fn push_to_window(
             ..Default::default()
         },
         startup,
-        state: None,
+        state: Some(ipc::state_from_vt(&state_vt)),
         elevated: false,
         // Informational: an attach on a window socket always adopts there.
         target: ipc::Target::Window(id),
