@@ -432,6 +432,182 @@ mod tests {
         assert_eq!(names, sorted, "block must be name-sorted");
     }
 
+    /// Diagnostic probe (not a test): what does the vendored conpty emit on
+    /// a resize? Determines whether resize desync self-heals (conhost
+    /// repaints) or accumulates (quirk-era silence). Run with
+    /// `cargo test conpty_resize_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn conpty_resize_probe() {
+        use std::io::{Read as _, Write as _};
+
+        use rikka_terminal_core::pty_handoff::resize_signal_packet;
+        let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
+        let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
+
+        let (their_input, mut our_input) = std::io::pipe().unwrap();
+        let (our_output, their_output) = std::io::pipe().unwrap();
+        let mut hpcon: Hpcon = std::ptr::null_mut();
+        unsafe {
+            (dll.create)(
+                Coord { x: 80, y: 24 },
+                HANDLE(their_input.as_raw_handle()),
+                HANDLE(their_output.as_raw_handle()),
+                0,
+                &mut hpcon,
+            )
+        }
+        .ok()
+        .unwrap();
+        drop((their_input, their_output));
+        let client = launch_client(
+            hpcon,
+            "cmd.exe",
+            &[
+                "/k".into(),
+                "for /L %i in (1,1,40) do @echo LINE-%i-x".into(),
+            ],
+            None,
+        )
+        .unwrap();
+        let abi = unsafe { &*(hpcon as *const PseudoConsoleAbi) };
+        let mut signal: std::fs::File = dup(abi.signal).unwrap().into();
+        unsafe { (dll.release)(hpcon) }.ok().unwrap();
+        unsafe { (dll.close)(hpcon) };
+
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let mut out: std::fs::File = OwnedHandle::from(our_output).into();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 65536];
+            while let Ok(n) = out.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let collect = |label: &str| {
+            let mut bytes = Vec::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2500);
+            while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+                match rx.recv_timeout(left) {
+                    Ok(chunk) => bytes.extend(chunk),
+                    Err(_) => break,
+                }
+            }
+            let text: String = String::from_utf8_lossy(&bytes).escape_debug().to_string();
+            println!("=== {label}: {} bytes ===\n{text}\n", bytes.len());
+        };
+        collect("initial paint");
+        collect("initial paint (late)");
+        // Resize storm, like a window drag: many sizes in quick succession.
+        for (c, r) in [
+            (78, 23),
+            (75, 22),
+            (70, 21),
+            (66, 20),
+            (60, 18),
+            (55, 17),
+            (50, 16),
+            (45, 15),
+            (52, 17),
+            (61, 19),
+            (73, 22),
+            (85, 26),
+            (94, 28),
+            (100, 30),
+        ] {
+            signal.write_all(&resize_signal_packet(c, r)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        collect("after resize storm to 100x30");
+        // conhost's own truth: its size numbers and the absolute cursor
+        // positions it uses while echoing.
+        our_input.write_all(b"mode con\r").unwrap();
+        collect("mode con response");
+        drop(client);
+    }
+
+    /// The resize-storm probe distilled into an invariant: after a
+    /// shrink+grow storm, conhost echoes typed input at absolute
+    /// coordinates computed from ITS layout (it emits nothing during the
+    /// storm itself). With conhost-anchored growth our grid matches, so the
+    /// echo must land on the row that carries the prompt — not mid-listing,
+    /// which is what users saw as "typed text appears in the middle of the
+    /// screen after resizing a lot".
+    #[test]
+    fn resize_storm_keeps_conhost_and_grid_in_agreement() {
+        let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
+        let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
+        let session = spawn_with(
+            &dll,
+            "cmd.exe",
+            &[
+                "/k".into(),
+                "for /L %i in (1,1,40) do @echo LINE-%i-x".into(),
+            ],
+            None,
+            80,
+            24,
+            "test-identity",
+        )
+        .expect("spawn cmd");
+        let rows_text = || -> Vec<String> {
+            session
+                .snapshot
+                .lock()
+                .cells
+                .iter()
+                .map(|row| row.iter().map(|c| c.c).collect::<String>())
+                .collect()
+        };
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !rows_text().iter().any(|r| r.contains("LINE-40-x"))
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        // Storm like a window drag. Widths stay >= 70 so the ~62-char
+        // prompt+echo row never wraps: wrap-reflow parity with conhost is a
+        // separate (unfixed) axis; this pins the row-anchoring fix.
+        for (c, r) in [
+            (78, 23),
+            (76, 22),
+            (74, 21),
+            (72, 20),
+            (70, 18),
+            (70, 16),
+            (70, 15),
+            (72, 17),
+            (75, 19),
+            (80, 22),
+            (85, 26),
+            (94, 28),
+            (100, 30),
+        ] {
+            session.resize(c, r, (8.0, 16.0));
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        session.send_bytes(b"mode con\r");
+        let mut echo_row = None;
+        while std::time::Instant::now() < deadline {
+            if let Some(row) = rows_text().iter().find(|r| r.contains("mode con")) {
+                echo_row = Some(row.clone());
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let echo_row = echo_row.expect("echo never appeared");
+        assert!(
+            echo_row.contains("rikka-terminal>"),
+            "echo must land on the prompt row, got {echo_row:?}"
+        );
+        session.send_bytes(b"exit\r");
+    }
+
     /// Resizes must actually land in the console, not just in our grid:
     /// drive an interactive cmd, resize over the lifted signal pipe, and let
     /// `mode con` report the console's own idea of its dimensions. The

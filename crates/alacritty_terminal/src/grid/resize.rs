@@ -16,10 +16,30 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         T: ResetDiscriminant<D>,
         D: PartialEq,
     {
+        self.resize_anchored(reflow, lines, columns, false);
+    }
+
+    /// [`Self::resize`] with a choice of growth anchoring: `top_anchored`
+    /// growth never pulls rows back from history — blank lines appear at the
+    /// bottom and the cursor stays put. This is conhost's behavior; ConPTY
+    /// emits nothing on resize and positions all later output with absolute
+    /// coordinates computed against exactly that layout, so a ConPTY-backed
+    /// terminal must reflow the same way or drift permanently.
+    pub fn resize_anchored<D>(
+        &mut self,
+        reflow: bool,
+        lines: usize,
+        columns: usize,
+        top_anchored: bool,
+    ) where
+        T: ResetDiscriminant<D>,
+        D: PartialEq,
+    {
         // Use empty template cell for resetting cells due to resize.
         let template = mem::take(&mut self.cursor.template);
 
         match self.lines.cmp(&lines) {
+            Ordering::Less if top_anchored => self.grow_lines_top_anchored(lines),
             Ordering::Less => self.grow_lines(lines),
             Ordering::Greater => self.shrink_lines(lines),
             Ordering::Equal => (),
@@ -63,6 +83,29 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         // Move cursor down for every line pulled from history.
         self.saved_cursor.point.line += from_history;
         self.cursor.point.line += from_history;
+
+        self.display_offset = self.display_offset.saturating_sub(lines_added);
+        self.decrease_scroll_limit(lines_added);
+    }
+
+    /// Add lines to the visible area without touching history: the viewport
+    /// grows downward — blank rows at the bottom, content and cursor fixed.
+    /// The same path [`Self::grow_lines`] takes when history is empty, made
+    /// unconditional (conhost/ConPTY semantics; see [`Self::resize_anchored`]).
+    fn grow_lines_top_anchored<D>(&mut self, target: usize)
+    where
+        T: ResetDiscriminant<D>,
+        D: PartialEq,
+    {
+        let lines_added = target - self.lines;
+
+        // Need to resize before updating buffer.
+        self.raw.grow_visible_lines(target);
+        self.lines = target;
+
+        // The enlarged viewport reaches up into history; rotate those rows
+        // straight back out so fresh blank lines land at the bottom instead.
+        self.scroll_up(&(Line(0)..Line(target as i32)), lines_added);
 
         self.display_offset = self.display_offset.saturating_sub(lines_added);
         self.decrease_scroll_limit(lines_added);

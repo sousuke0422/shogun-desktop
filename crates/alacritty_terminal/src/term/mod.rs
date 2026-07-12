@@ -653,6 +653,16 @@ impl<T> Term<T> {
 
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
+        self.resize_anchored(size, false);
+    }
+
+    /// Like [`Self::resize`], but with `top_anchored_growth` a growing
+    /// viewport keeps content and cursor in place and adds blank lines at
+    /// the bottom instead of pulling rows back from history. This mirrors
+    /// conhost: ConPTY emits nothing on resize and computes every later
+    /// absolute cursor position against exactly that layout, so a
+    /// ConPTY-backed terminal reflowing any other way drifts permanently.
+    pub fn resize_anchored<S: Dimensions>(&mut self, size: S, top_anchored_growth: bool) {
         let old_cols = self.columns();
         let old_lines = self.screen_lines();
 
@@ -666,16 +676,20 @@ impl<T> Term<T> {
 
         debug!("New num_cols is {} and num_lines is {}", num_cols, num_lines);
 
-        // Move vi mode cursor with the content.
+        // Move vi mode cursor with the content. Top-anchored growth moves no
+        // content, so the vi cursor (and selection below) stay put too.
         let history_size = self.history_size();
         let mut delta = num_lines as i32 - old_lines as i32;
         let min_delta = cmp::min(0, num_lines as i32 - self.grid.cursor.point.line.0 - 1);
         delta = cmp::min(cmp::max(delta, min_delta), history_size as i32);
+        if top_anchored_growth && num_lines > old_lines {
+            delta = 0;
+        }
         self.vi_mode_cursor.point.line += delta;
 
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
-        self.grid.resize(!is_alt, num_lines, num_cols);
-        self.inactive_grid.resize(is_alt, num_lines, num_cols);
+        self.grid.resize_anchored(!is_alt, num_lines, num_cols, top_anchored_growth);
+        self.inactive_grid.resize_anchored(is_alt, num_lines, num_cols, top_anchored_growth);
 
         // Invalidate selection and tabs only when necessary.
         if old_cols != num_cols {

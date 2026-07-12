@@ -93,14 +93,20 @@ pub fn build_handoff_session(
         signal: pty.signal.map(|h| FairMutex::new(File::from(h))),
         _keepalive: pty.keepalive,
     });
-    build_terminal_session(
+    let session = build_terminal_session(
         cols,
         rows,
         reader,
         Arc::new(FairMutex::new(writer)),
         resizer,
         xtversion_identity,
-    )
+    )?;
+    // This session IS a ConPTY: reflow like conhost or drift (see the
+    // field's docs in lib.rs).
+    session
+        .conpty_resize_semantics
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(session)
 }
 
 #[cfg(test)]
@@ -154,6 +160,66 @@ mod resize_snapshot_tests {
             (100, 30),
             "snapshot must carry the new geometry immediately, with no output"
         );
+    }
+
+    /// ConPTY sessions must grow like conhost: content pinned to the top,
+    /// blank rows appended below, nothing pulled back from scrollback.
+    /// ConPTY emits nothing on resize and computes every later absolute
+    /// cursor position against that layout — Alacritty's native
+    /// bottom-anchored growth makes typed input land mid-screen after a
+    /// shrink+grow storm.
+    #[test]
+    fn conpty_growth_is_top_anchored() {
+        let (out_read, mut out_write) = std::io::pipe().expect("output pipe");
+        let (_in_read, in_write) = std::io::pipe().expect("input pipe");
+        let session = build_handoff_session(
+            80,
+            24,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: None,
+                keepalive: Vec::new(),
+            },
+            "test-identity",
+        )
+        .expect("session over pipes");
+
+        // 40 numbered lines: 24 visible, the rest already in scrollback.
+        let mut feed = String::new();
+        for i in 1..=40 {
+            feed.push_str(&format!("L{i}\r\n"));
+        }
+        out_write.write_all(feed.as_bytes()).unwrap();
+        let row_text = |r: usize| -> String {
+            session.snapshot.lock().cells[r]
+                .iter()
+                .map(|c| c.c)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while row_text(22) != "L40" {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "L40 never landed (row 22 = {:?})",
+                row_text(22)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let top_before = row_text(0);
+        session.resize(80, 30, (8.0, 16.0));
+        assert_eq!(
+            row_text(0),
+            top_before,
+            "growth must not pull scrollback down (top row changed)"
+        );
+        assert_eq!(row_text(22), "L40", "content must stay put");
+        for r in 24..30 {
+            assert_eq!(row_text(r), "", "grown rows must be blank (row {r})");
+        }
     }
 }
 

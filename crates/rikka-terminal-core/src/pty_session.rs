@@ -389,6 +389,7 @@ pub fn build_terminal_session(
         cols: AtomicU16::new(cols),
         rows: AtomicU16::new(rows),
         resizer,
+        conpty_resize_semantics: AtomicBool::new(false),
     })
 }
 

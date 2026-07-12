@@ -180,14 +180,20 @@ fn spawn_local_shell(
     let resizer: Arc<dyn PtyResizer> = Arc::new(LocalResizer {
         master: FairMutex::new(SendMaster(pair.master)),
     });
-    rikka_terminal_core::pty_session::build_terminal_session(
+    let session = rikka_terminal_core::pty_session::build_terminal_session(
         cols,
         rows,
         reader,
         Arc::new(FairMutex::new(writer)),
         resizer,
         &xtversion::engine_identity(),
-    )
+    )?;
+    // portable-pty on Windows is ConPTY underneath — same conhost reflow.
+    #[cfg(windows)]
+    session
+        .conpty_resize_semantics
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(session)
 }
 
 /// The shells to try, most preferred first.

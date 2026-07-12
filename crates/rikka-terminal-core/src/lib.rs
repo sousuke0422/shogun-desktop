@@ -157,6 +157,14 @@ pub struct TerminalSession {
     pub rows: AtomicU16,
     /// Backend-specific mechanism for propagating resize to the PTY / SSH channel.
     pub resizer: Arc<dyn PtyResizer>,
+    /// ConPTY resize semantics: growth adds blank lines at the bottom
+    /// instead of pulling from scrollback. ConPTY emits nothing on resize
+    /// and computes later absolute cursor positions against conhost's own
+    /// reflow, so a ConPTY-backed session must reflow identically or drift
+    /// permanently (typed input lands mid-screen after resize storms). Set
+    /// by ConPTY session builders; SSH / Unix PTYs keep Alacritty's native
+    /// bottom-anchored behavior.
+    pub conpty_resize_semantics: AtomicBool,
 }
 
 impl TerminalSession {
@@ -342,7 +350,10 @@ impl TerminalSession {
         //    prompt clipped out of view) until the next byte arrives.
         {
             let mut t = self.term.lock();
-            t.resize(TermSize::new(cols as usize, rows as usize));
+            t.resize_anchored(
+                TermSize::new(cols as usize, rows as usize),
+                self.conpty_resize_semantics.load(Ordering::Relaxed),
+            );
             *self.snapshot.lock() = take_snapshot(&t);
         }
         self.generation.fetch_add(1, Ordering::Relaxed);
