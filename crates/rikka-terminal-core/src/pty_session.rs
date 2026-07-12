@@ -41,6 +41,34 @@ pub fn build_terminal_session(
     resizer: Arc<dyn PtyResizer>,
     xtversion_identity: &str,
 ) -> Result<TerminalSession> {
+    build_terminal_session_with_preface(
+        cols,
+        rows,
+        reader,
+        writer,
+        resizer,
+        xtversion_identity,
+        Vec::new(),
+    )
+}
+
+/// [`build_terminal_session`] with `preface` bytes applied by the parse
+/// thread as one ATOMIC first chunk, before anything from the reader — and
+/// before any resize: the settler waits for it. A tab move's screen replay
+/// lands here; its absolute cursor positions assume the geometry the
+/// session was created with, so a resize slicing into a half-applied
+/// preface would scatter the rest across the new grid (the "input jumps
+/// to the bottom after merging into a differently-sized window" bug —
+/// chunked application through the reader was interruptible).
+pub fn build_terminal_session_with_preface(
+    cols: u16,
+    rows: u16,
+    reader: Box<dyn Read + Send>,
+    writer: Arc<FairMutex<Box<dyn Write + Send>>>,
+    resizer: Arc<dyn PtyResizer>,
+    xtversion_identity: &str,
+    preface: Vec<u8>,
+) -> Result<TerminalSession> {
     // Created ahead of the clipboard/query handler thread below. The terminal
     // itself is late-bound through `term_slot` (Weak, so the slot never keeps
     // a dead session's Term alive): the thread must exist before the Term —
@@ -157,6 +185,9 @@ pub fn build_terminal_session(
     let notifications: notify::NotificationQueue = Default::default();
     let images = Arc::new(kitty_graphics::KittyImageStore::default());
     let xtversion = crate::xtversion::XtversionScanner::new(xtversion_identity);
+    // Flipped once the preface (if any) has been applied — the resize
+    // settler holds every reflow until then (see the function docs).
+    let preface_done = Arc::new(AtomicBool::new(preface.is_empty()));
 
     let (reader_thread, parser_thread) = {
         let term2 = Arc::clone(&term);
@@ -170,6 +201,7 @@ pub fn build_terminal_session(
         let images2 = Arc::clone(&images);
         let cell_px2 = Arc::clone(&cell_size_px);
         let writer2 = Arc::clone(&writer);
+        let preface_done2 = Arc::clone(&preface_done);
         // The blocking `Read` lives on its own IO thread so the parse thread
         // can wait with a deadline: synchronized updates (CSI ? 2026, DEC
         // "Synchronized Output") buffer PTY bytes inside the vte Processor
@@ -245,28 +277,38 @@ pub fn build_terminal_session(
                 // XTWINOPS op 16 (cell pixel size): alacritty drops it, yazi
                 // needs it to size sixel rasters on Windows. See winops.
                 let mut winops = crate::winops::WinopsScanner::new();
+                // A tab move's screen replay runs as one atomic first chunk
+                // (one term.lock()), before anything from the pipe — its
+                // absolute positions assume the birth geometry, so nothing
+                // (especially not a reflow; the settler waits on
+                // preface_done) may slice into it.
+                let mut first_chunk = (!preface.is_empty()).then_some(preface);
                 loop {
                     // While a synchronized update is pending, wait only until its
                     // deadline so an unterminated BSU can't freeze the screen.
-                    let chunk = match parser.sync_timeout().sync_timeout() {
-                        Some(deadline) => {
-                            let wait =
-                                deadline.saturating_duration_since(std::time::Instant::now());
-                            match chunk_rx.recv_timeout(wait) {
-                                Ok(chunk) => Some(chunk),
-                                Err(RecvTimeoutError::Timeout) => {
-                                    let mut t = term2.lock();
-                                    parser.stop_sync(&mut *t);
-                                    *snap2.lock() = take_snapshot(&t);
-                                    drop(t);
-                                    gen2.fetch_add(1, Ordering::Relaxed);
-                                    notify2.notify_one();
-                                    continue;
+                    let chunk = if let Some(p) = first_chunk.take() {
+                        Some(p)
+                    } else {
+                        match parser.sync_timeout().sync_timeout() {
+                            Some(deadline) => {
+                                let wait =
+                                    deadline.saturating_duration_since(std::time::Instant::now());
+                                match chunk_rx.recv_timeout(wait) {
+                                    Ok(chunk) => Some(chunk),
+                                    Err(RecvTimeoutError::Timeout) => {
+                                        let mut t = term2.lock();
+                                        parser.stop_sync(&mut *t);
+                                        *snap2.lock() = take_snapshot(&t);
+                                        drop(t);
+                                        gen2.fetch_add(1, Ordering::Relaxed);
+                                        notify2.notify_one();
+                                        continue;
+                                    }
+                                    Err(RecvTimeoutError::Disconnected) => None,
                                 }
-                                Err(RecvTimeoutError::Disconnected) => None,
                             }
+                            None => chunk_rx.recv().ok(),
                         }
-                        None => chunk_rx.recv().ok(),
                     };
                     match chunk {
                         None => {
@@ -386,6 +428,9 @@ pub fn build_terminal_session(
                             }
                             gen2.fetch_add(1, Ordering::Relaxed);
                             notify2.notify_one();
+                            // The first pass through here was the preface
+                            // when one existed — reflows may proceed now.
+                            preface_done2.store(true, Ordering::Relaxed);
                         }
                     }
                 }
@@ -415,6 +460,7 @@ pub fn build_terminal_session(
         let cell_size_px = Arc::clone(&cell_size_px);
         let conpty = Arc::clone(&conpty_resize_semantics);
         let sealed = Arc::clone(&pty_sealed);
+        let preface_done = Arc::clone(&preface_done);
         let resizer = Arc::clone(&resizer);
         std::thread::Builder::new()
             .name("rikka-pty-resize".into())
@@ -426,6 +472,17 @@ pub fn build_terminal_session(
                     // during our teardown would fight its geometry.
                     if sealed.load(Ordering::Relaxed) {
                         return;
+                    }
+                    // A tab-move preface must be fully in the Term before
+                    // any reflow: its absolute positions assume the birth
+                    // geometry, and a resize slicing into it scatters the
+                    // rest across the new grid. The deadline only guards a
+                    // wedged parser — a lone reflow beats a frozen tab.
+                    let wait_until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while !preface_done.load(Ordering::Relaxed)
+                        && std::time::Instant::now() < wait_until
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
                     }
                     {
                         let mut t = term.lock();

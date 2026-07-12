@@ -604,6 +604,70 @@ mod tests {
         dump("after echo Z");
     }
 
+    /// Diagnostic probe (not a test): what does conhost do on a PURE
+    /// vertical grow — with content overflowing the viewport (rows already
+    /// scrolled out) vs fitting inside it? Determines the anchoring a
+    /// just-merged tab must reflow with when the receiving window is
+    /// TALLER than the sender (the "input jumps to the bottom" report).
+    /// Run: cargo test vertical_grow_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn vertical_grow_probe() {
+        let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
+        let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
+        for lines in [10u16, 40] {
+            let session = spawn_with(
+                &dll,
+                "cmd.exe",
+                &[
+                    "/k".into(),
+                    format!("for /L %i in (1,1,{lines}) do @echo LINE-%i-x"),
+                ],
+                None,
+                80,
+                24,
+                "test-identity",
+            )
+            .expect("spawn cmd");
+            let dump = |label: &str| {
+                let snap = session.snapshot.lock();
+                println!(
+                    "--- {label} ({}x{}, cursor row {}) ---",
+                    snap.cells[0].len(),
+                    snap.cells.len(),
+                    snap.cursor.1,
+                );
+                for (i, row) in snap.cells.iter().enumerate() {
+                    let text: String = row.iter().map(|c| c.c).collect();
+                    let text = text.trim_end();
+                    if !text.is_empty() {
+                        println!("{i:2}| {text}");
+                    }
+                }
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let done = session.snapshot.lock().cells.iter().any(|r| {
+                    r.iter()
+                        .map(|c| c.c)
+                        .collect::<String>()
+                        .contains(&format!("LINE-{lines}-x"))
+                });
+                if done || std::time::Instant::now() > deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            dump(&format!("{lines} lines, before grow (24 rows)"));
+            session.resize(80, 40, (8.0, 16.0));
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            session.send_bytes(b"echo ZZZ-MARKER\r");
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            dump(&format!("{lines} lines, after grow to 40 + echo"));
+            session.send_bytes(b"exit\r");
+        }
+    }
+
     /// The resize-storm probe distilled into an invariant: after a
     /// shrink+grow storm, conhost echoes typed input at absolute
     /// coordinates computed from ITS layout (it emits nothing during the

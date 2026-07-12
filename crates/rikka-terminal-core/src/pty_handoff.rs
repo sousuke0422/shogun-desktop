@@ -370,8 +370,9 @@ pub fn build_handoff_session(
     build_handoff_session_with_preface(cols, rows, pty, Vec::new(), xtversion_identity)
 }
 
-/// [`build_handoff_session`] with `preface` bytes fed to the parser BEFORE
-/// anything from the pipe — a tab move's [`replay_bytes`] lands here, so the
+/// [`build_handoff_session`] with `preface` bytes applied by the parse
+/// thread as one atomic first chunk, before anything from the pipe and
+/// before any reflow — a tab move's [`replay_bytes`] lands here, so the
 /// receiver's grid starts as a copy of the sender's instead of blank.
 pub fn build_handoff_session_with_preface(
     cols: u16,
@@ -384,23 +385,20 @@ pub fn build_handoff_session_with_preface(
     // boxes and worker threads — this is the only moment the full set is
     // still in one hand.
     let transfer = TransferKit::stock(&pty)?;
-    let reader: Box<dyn Read + Send> = if preface.is_empty() {
-        Box::new(File::from(pty.output))
-    } else {
-        Box::new(std::io::Cursor::new(preface).chain(File::from(pty.output)))
-    };
+    let reader: Box<dyn Read + Send> = Box::new(File::from(pty.output));
     let writer: Box<dyn Write + Send> = Box::new(File::from(pty.input));
     let resizer: Arc<dyn PtyResizer> = Arc::new(SignalResizer {
         signal: pty.signal.map(|h| FairMutex::new(File::from(h))),
         _keepalive: pty.keepalive,
     });
-    let session = build_terminal_session(
+    let session = crate::pty_session::build_terminal_session_with_preface(
         cols,
         rows,
         reader,
         Arc::new(FairMutex::new(writer)),
         resizer,
         xtversion_identity,
+        preface,
     )?;
     // This session IS a ConPTY: reflow like conhost or drift (see the
     // field's docs in lib.rs).
@@ -556,6 +554,74 @@ mod transfer_tests {
             replay.contains("TRAPPED"),
             "bytes in flight at quiesce were lost by the move"
         );
+    }
+
+    /// A resize racing the preface must lose: the replay's absolute
+    /// positions assume the birth geometry, so the settler holds every
+    /// reflow until the parse thread has applied the preface as one atomic
+    /// chunk. Before this ordering, the reader chunked the preface and an
+    /// adopt-time reflow could slice in, scattering the remainder across
+    /// the new grid — the "input jumps to the bottom after merging into a
+    /// differently-sized window" field report.
+    #[test]
+    fn resize_waits_for_the_preface() {
+        use std::fmt::Write as _;
+
+        // A 24-row screen painted via absolute CUP + a parked cursor —
+        // the shape replay_bytes emits.
+        let mut preface = String::new();
+        for r in 1..=24 {
+            let _ = write!(preface, "\x1b[{r};1HROW-{r}");
+        }
+        preface.push_str("\x1b[24;9H");
+
+        let (out_read, _out_write) = std::io::pipe().expect("output pipe");
+        let (_in_read, in_write) = std::io::pipe().expect("input pipe");
+        let session = build_handoff_session_with_preface(
+            80,
+            24,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: None,
+                keepalive: Vec::new(),
+            },
+            preface.into_bytes(),
+            "test-identity",
+        )
+        .expect("session with preface");
+
+        // Race the adopt-time fit: resize immediately after construction.
+        session.resize(80, 40, (8.0, 16.0));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let snap = session.snapshot.lock();
+                if snap.cells.len() == 40 {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "resize never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let snap = session.snapshot.lock().clone();
+        let row_text = |r: usize| -> String {
+            snap.cells[r]
+                .iter()
+                .map(|c| c.c)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        // Top-anchored ConPTY growth over a FULLY-applied preface: every
+        // row where the replay put it, blanks below, cursor still parked.
+        assert_eq!(row_text(0), "ROW-1");
+        assert_eq!(row_text(23), "ROW-24");
+        for r in 24..40 {
+            assert_eq!(row_text(r), "", "grown rows must be blank (row {r})");
+        }
+        assert_eq!(snap.cursor, (23, 8), "cursor must stay parked");
     }
 
     /// While the alt screen is active BOTH screens must travel: the
