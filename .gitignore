@@ -1,6 +1,7 @@
 /target
 /build.log
 /build_phase4.log
+target-deploy/
 target-release-verify/
 target-verify/
 target-verify-alac/
