@@ -154,12 +154,20 @@ mod resize_snapshot_tests {
         }
 
         session.resize(100, 30, (8.0, 16.0));
-        let snap = session.snapshot.lock();
-        assert_eq!(
-            (snap.cells[0].len(), snap.cells.len()),
-            (100, 30),
-            "snapshot must carry the new geometry immediately, with no output"
-        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            {
+                let snap = session.snapshot.lock();
+                if (snap.cells[0].len(), snap.cells.len()) == (100, 30) {
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "snapshot must pick up the new geometry with no output"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     /// ConPTY sessions must grow like conhost: content pinned to the top,
@@ -211,6 +219,11 @@ mod resize_snapshot_tests {
 
         let top_before = row_text(0);
         session.resize(80, 30, (8.0, 16.0));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while session.snapshot.lock().cells.len() != 30 {
+            assert!(std::time::Instant::now() < deadline, "resize never applied");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert_eq!(
             row_text(0),
             top_before,
@@ -220,6 +233,59 @@ mod resize_snapshot_tests {
         for r in 24..30 {
             assert_eq!(row_text(r), "", "grown rows must be blank (row {r})");
         }
+    }
+
+    /// A resize burst must reach the PTY as the leading + settled sizes
+    /// only. The transient widths of a window drag would wrap and unwrap
+    /// long rows in conhost's buffer with row accounting different from
+    /// ours — and ConPTY never repaints — so every intermediate size the
+    /// PTY never sees is drift avoided.
+    #[test]
+    fn pty_resize_bursts_coalesce_to_leading_and_settled() {
+        use std::io::Read as _;
+
+        let (out_read, _out_write) = std::io::pipe().expect("output pipe");
+        let (_in_read, in_write) = std::io::pipe().expect("input pipe");
+        let (mut sig_read, sig_write) = std::io::pipe().expect("signal pipe");
+        let session = build_handoff_session(
+            80,
+            24,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: Some(OwnedHandle::from(sig_write)),
+                keepalive: Vec::new(),
+            },
+            "test-identity",
+        )
+        .expect("session over pipes");
+
+        for c in [78u16, 75, 70, 66, 60, 55, 50, 45, 60, 75, 100] {
+            session.resize(c, 30, (8.0, 16.0));
+        }
+        // Dropping the session disconnects the settler, which applies the
+        // trailing edge and exits — closing the last signal write end.
+        drop(session);
+
+        let mut bytes = Vec::new();
+        sig_read.read_to_end(&mut bytes).expect("drain signal pipe");
+        assert_eq!(bytes.len() % 6, 0, "whole resize packets only");
+        let packets: Vec<(u16, u16)> = bytes
+            .chunks(6)
+            .map(|p| {
+                assert_eq!(u16::from_le_bytes([p[0], p[1]]), 8, "resize signal id");
+                (
+                    u16::from_le_bytes([p[2], p[3]]),
+                    u16::from_le_bytes([p[4], p[5]]),
+                )
+            })
+            .collect();
+        assert!(
+            packets.len() <= 3,
+            "burst must coalesce, PTY saw {packets:?}"
+        );
+        assert_eq!(packets.first(), Some(&(78, 30)), "leading edge is instant");
+        assert_eq!(packets.last(), Some(&(100, 30)), "settled size lands last");
     }
 }
 

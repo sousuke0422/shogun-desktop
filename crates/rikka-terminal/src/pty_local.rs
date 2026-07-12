@@ -527,6 +527,72 @@ mod tests {
         drop(client);
     }
 
+    /// Diagnostic probe (not a test): pure-WIDTH storm at fixed height,
+    /// through a prompt row long enough to wrap at the narrow sizes.
+    /// Any post-storm row drift between conhost's echoes and our grid is
+    /// wrap-reflow asymmetry, isolated from the (fixed) growth anchoring.
+    /// Run with `cargo test width_reflow_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn width_reflow_probe() {
+        let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
+        let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
+        let session = spawn_with(
+            &dll,
+            "cmd.exe",
+            &[
+                "/k".into(),
+                "for /L %i in (1,1,40) do @echo LINE-%i-x".into(),
+            ],
+            None,
+            80,
+            24,
+            "test-identity",
+        )
+        .expect("spawn cmd");
+        let dump = |label: &str| {
+            let snap = session.snapshot.lock();
+            println!(
+                "--- {label} ({}x{}) ---",
+                snap.cells[0].len(),
+                snap.cells.len()
+            );
+            for (i, row) in snap.cells.iter().enumerate() {
+                let text: String = row.iter().map(|c| c.c).collect();
+                let text = text.trim_end();
+                if !text.is_empty() {
+                    println!("{i:2}| {text}");
+                }
+            }
+        };
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let hit = session.snapshot.lock().cells.iter().any(|r| {
+                r.iter()
+                    .map(|c| c.c)
+                    .collect::<String>()
+                    .contains("release>")
+            });
+            if hit || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        dump("before storm");
+
+        for c in [70u16, 60, 50, 45, 50, 60, 70, 80] {
+            session.resize(c, 24, (8.0, 16.0));
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        dump("after width storm back to 80x24");
+
+        session.send_bytes(b"echo Z\r");
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        dump("after echo Z");
+    }
+
     /// The resize-storm probe distilled into an invariant: after a
     /// shrink+grow storm, conhost echoes typed input at absolute
     /// coordinates computed from ITS layout (it emits nothing during the

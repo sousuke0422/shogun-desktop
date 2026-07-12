@@ -151,20 +151,30 @@ pub struct TerminalSession {
     /// OSC 0/2 application window title (written by the term event listener,
     /// mirrored into the OS window title by the shell-window UI).
     pub title: Arc<FairMutex<Option<String>>>,
-    /// Current terminal width in columns (updated by `resize`).
-    pub cols: AtomicU16,
-    /// Current terminal height in rows (updated by `resize`).
-    pub rows: AtomicU16,
+    /// Current terminal width in columns (updated when a resize applies).
+    pub cols: Arc<AtomicU16>,
+    /// Current terminal height in rows (updated when a resize applies).
+    pub rows: Arc<AtomicU16>,
     /// Backend-specific mechanism for propagating resize to the PTY / SSH channel.
     pub resizer: Arc<dyn PtyResizer>,
+    /// Debounced resize lane (leading + trailing edge, see
+    /// `build_terminal_session`): a window drag's burst applies as its first
+    /// and its settled size only — to the local grid AND the PTY together.
+    /// The two must walk the *same* step sequence: reflow is path-dependent
+    /// (a shrink scrolls rows out that a conhost-anchored grow will not
+    /// bring back), and ConPTY never repaints, so any step one side takes
+    /// alone is permanent drift. Skipping the transient steps on both sides
+    /// also keeps momentary narrow widths from wrap/unwrapping long rows in
+    /// conhost's buffer, whose row accounting differs from ours.
+    pub pty_resize: std::sync::mpsc::Sender<(u16, u16, f32, f32)>,
     /// ConPTY resize semantics: growth adds blank lines at the bottom
     /// instead of pulling from scrollback. ConPTY emits nothing on resize
     /// and computes later absolute cursor positions against conhost's own
     /// reflow, so a ConPTY-backed session must reflow identically or drift
     /// permanently (typed input lands mid-screen after resize storms). Set
     /// by ConPTY session builders; SSH / Unix PTYs keep Alacritty's native
-    /// bottom-anchored behavior.
-    pub conpty_resize_semantics: AtomicBool,
+    /// bottom-anchored behavior. Shared with the resize settler thread.
+    pub conpty_resize_semantics: Arc<AtomicBool>,
 }
 
 impl TerminalSession {
@@ -343,35 +353,12 @@ impl TerminalSession {
     /// along so PTY consumers see real `TIOCGWINSZ` pixel dimensions (kitty
     /// graphics clients size images with them).
     pub fn resize(&self, cols: u16, rows: u16, cell_px: (f32, f32)) {
-        use alacritty_terminal::term::test::TermSize;
-        // 1. Resize the in-process term emulator and republish the snapshot
-        //    right away — the reader thread only refreshes it on PTY output,
-        //    so a quiet screen would keep rendering the old geometry (the
-        //    prompt clipped out of view) until the next byte arrives.
-        {
-            let mut t = self.term.lock();
-            t.resize_anchored(
-                TermSize::new(cols as usize, rows as usize),
-                self.conpty_resize_semantics.load(Ordering::Relaxed),
-            );
-            *self.snapshot.lock() = take_snapshot(&t);
-        }
-        self.generation.fetch_add(1, Ordering::Relaxed);
-        self.notify.notify_one();
-        // 2. Persist the new size so callers can detect when the session is
-        //    already at the right dimensions without re-sending the resize.
-        self.cols.store(cols, Ordering::Relaxed);
-        self.rows.store(rows, Ordering::Relaxed);
-        self.cell_size_px
-            .0
-            .store(cell_px.0.round().max(1.0) as u16, Ordering::Relaxed);
-        self.cell_size_px
-            .1
-            .store(cell_px.1.round().max(1.0) as u16, Ordering::Relaxed);
-        // 3. Tell the OS PTY / SSH channel.
-        let px_w = (f32::from(cols) * cell_px.0).round() as u16;
-        let px_h = (f32::from(rows) * cell_px.1).round() as u16;
-        let _ = self.resizer.resize(cols, rows, px_w, px_h);
+        // Everything — term reflow, snapshot, PTY notification — happens on
+        // the debounced settler thread (see the `pty_resize` field docs):
+        // the grid and the PTY must walk the same resize step sequence, so
+        // there is no synchronous local path. The leading edge applies
+        // within microseconds; a drag's transients coalesce away.
+        let _ = self.pty_resize.send((cols, rows, cell_px.0, cell_px.1));
     }
 }
 

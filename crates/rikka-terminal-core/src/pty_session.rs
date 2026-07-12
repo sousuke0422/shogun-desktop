@@ -372,6 +372,77 @@ pub fn build_terminal_session(
         });
     }
 
+    // Debounced resize settler (leading + trailing edge): the first size of
+    // a burst applies immediately (single resizes stay snappy), the rest
+    // coalesce until 120 ms of quiet, then the settled size applies. Term
+    // reflow, snapshot republish, and the PTY notification all happen HERE,
+    // so the grid and the PTY walk the same resize step sequence (see the
+    // `pty_resize` field docs). Exits when the session drops.
+    let cols_shared = Arc::new(AtomicU16::new(cols));
+    let rows_shared = Arc::new(AtomicU16::new(rows));
+    let conpty_resize_semantics = Arc::new(AtomicBool::new(false));
+    let pty_resize = {
+        let (tx, rx) = std::sync::mpsc::channel::<(u16, u16, f32, f32)>();
+        let term = Arc::clone(&term);
+        let snapshot = Arc::clone(&snapshot);
+        let generation = Arc::clone(&generation);
+        let notify = Arc::clone(&notify);
+        let cols = Arc::clone(&cols_shared);
+        let rows = Arc::clone(&rows_shared);
+        let cell_size_px = Arc::clone(&cell_size_px);
+        let conpty = Arc::clone(&conpty_resize_semantics);
+        let resizer = Arc::clone(&resizer);
+        std::thread::Builder::new()
+            .name("rikka-pty-resize".into())
+            .spawn(move || {
+                use alacritty_terminal::term::test::TermSize;
+                let apply = |(c, r, cw, ch): (u16, u16, f32, f32)| {
+                    {
+                        let mut t = term.lock();
+                        t.resize_anchored(
+                            TermSize::new(c as usize, r as usize),
+                            conpty.load(Ordering::Relaxed),
+                        );
+                        *snapshot.lock() = crate::take_snapshot(&t);
+                    }
+                    generation.fetch_add(1, Ordering::Relaxed);
+                    notify.notify_one();
+                    cols.store(c, Ordering::Relaxed);
+                    rows.store(r, Ordering::Relaxed);
+                    cell_size_px
+                        .0
+                        .store(cw.round().max(1.0) as u16, Ordering::Relaxed);
+                    cell_size_px
+                        .1
+                        .store(ch.round().max(1.0) as u16, Ordering::Relaxed);
+                    let px_w = (f32::from(c) * cw).round() as u16;
+                    let px_h = (f32::from(r) * ch).round() as u16;
+                    let _ = resizer.resize(c, r, px_w, px_h);
+                };
+                while let Ok(first) = rx.recv() {
+                    apply(first);
+                    let mut pending = None;
+                    loop {
+                        match rx.recv_timeout(std::time::Duration::from_millis(120)) {
+                            Ok(next) => pending = Some(next),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                if let Some(p) = pending {
+                                    apply(p);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                    if let Some(p) = pending {
+                        apply(p);
+                    }
+                }
+            })
+            .expect("spawn pty resize settler");
+        tx
+    };
+
     Ok(TerminalSession {
         term,
         writer,
@@ -386,10 +457,11 @@ pub fn build_terminal_session(
         focused: AtomicBool::new(true),
         cell_size_px,
         title,
-        cols: AtomicU16::new(cols),
-        rows: AtomicU16::new(rows),
+        cols: cols_shared,
+        rows: rows_shared,
         resizer,
-        conpty_resize_semantics: AtomicBool::new(false),
+        pty_resize,
+        conpty_resize_semantics,
     })
 }
 
