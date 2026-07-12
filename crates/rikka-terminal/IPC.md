@@ -210,14 +210,23 @@ own socket).
   given, so it must consume independent duplicates, never the session's own
   handles. No kit (SSH, legacy portable-pty) = not movable, refused before
   quiescing.
+- **Connect first, then quiesce**: the destination socket is opened BEFORE
+  the irreversible quiesce — a stale directory entry or a closed window
+  (there is no liveness pruning) must abort the move while the tab is
+  still fully alive. Connecting early cannot race the still-running
+  reader: the receiver only starts reading once the attach frame arrives.
 - **Quiesce before the handles leave**: the receiver starts reading the
   moment its session assembles, and two readers on one pipe shred the VT
   stream. `CancelSynchronousIo` on the reader thread, retried until the
-  loop exits (between reads it misses with `ERROR_NOT_FOUND`). Quiesce also
-  SEALS the resize settler: a straggler resize settling during the sender's
-  teardown (even the pending-flush on drop) would fight the receiver's
-  geometry, and ConPTY never repaints. Irreversible — a move that fails
-  afterwards leaves the tab honestly disconnected.
+  loop exits (between reads it misses with `ERROR_NOT_FOUND`); then the
+  parser thread is joined — chunks the reader consumed may still sit in
+  the channel or an open ?2026 sync buffer, and a replay serialized
+  without them would lose them for good (the pipe no longer holds them
+  for the receiver). Quiesce also SEALS the resize settler: a straggler
+  resize settling during the sender's teardown (even the pending-flush on
+  drop) would fight the receiver's geometry, and ConPTY never repaints.
+  Irreversible — a move that fails afterwards leaves the tab honestly
+  disconnected.
 - **Ownership across the wire**: relay (eject) transfers by inheritance =
   copies, so the kit keeps ownership on every path. A window-socket push is
   consumed by the receiver's pull — once the request is on the wire the

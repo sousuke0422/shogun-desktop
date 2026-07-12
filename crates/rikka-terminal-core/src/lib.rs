@@ -180,6 +180,12 @@ pub struct TerminalSession {
     /// [`Self::quiesce_for_transfer`]). `None` = no reader was spawned, or
     /// it was already quiesced/joined.
     pub reader_thread: FairMutex<Option<std::thread::JoinHandle<()>>>,
+    /// The parse thread ("rikka-parse"), joined by
+    /// [`Self::quiesce_for_transfer`] AFTER the reader: chunks the reader
+    /// consumed may still sit in the channel or an open ?2026 sync buffer,
+    /// and a replay serialized before they land in the Term loses them for
+    /// good — the pipe no longer holds them for the receiver.
+    pub parser_thread: FairMutex<Option<std::thread::JoinHandle<()>>>,
     /// Set by [`Self::quiesce_for_transfer`]: the settler thread skips every
     /// further apply, so no resize (grid or signal-pipe) can land after the
     /// receiver of a tab move took over — a straggler settling during the
@@ -231,6 +237,23 @@ impl TerminalSession {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let _ = handle.join();
+        // Now drain the parser: chunks the (dead) reader already consumed
+        // may still sit in the channel or an open ?2026 sync buffer, and a
+        // replay serialized before they reach the Term loses them for good
+        // — the pipe no longer holds them for the receiver. Reader death
+        // dropped the channel sender, so the parser provably flushes
+        // everything (its EOF path force-closes an open sync buffer) and
+        // exits; the deadline only guards a wedged thread.
+        if let Some(parser) = self.parser_thread.lock().take() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !parser.is_finished() {
+                if std::time::Instant::now() > deadline {
+                    anyhow::bail!("PTY parser did not drain within 5s");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            let _ = parser.join();
+        }
         Ok(())
     }
 

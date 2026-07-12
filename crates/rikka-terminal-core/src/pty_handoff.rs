@@ -195,6 +195,33 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
         color_params(&mut s, cell.bg, false);
         s
     };
+    // One cell → text+SGR emitter, shared by the history and screen loops.
+    let emit_cell = |out: &mut String,
+                     last: &mut Option<String>,
+                     cell: &alacritty_terminal::term::cell::Cell| {
+        // The wide char itself advances the parser two columns; its spacer
+        // must not emit anything or the row would overflow.
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            return;
+        }
+        let sgr = sgr_of(cell);
+        if last.as_ref() != Some(&sgr) {
+            let _ = write!(out, "\x1b[0{sgr}m");
+            *last = Some(sgr);
+        }
+        // A kitty/sixel placeholder carries an image id in its colors and
+        // an undefined glyph in `c`; the receiver has no image store, so
+        // the glyph would render as tofu. Blank it — the image itself does
+        // not survive a move either way.
+        if cell.c == crate::kitty_graphics::PLACEHOLDER {
+            out.push(' ');
+            return;
+        }
+        out.push(cell.c);
+        if let Some(extra) = cell.zerowidth() {
+            out.extend(extra);
+        }
+    };
 
     let grid = term.grid();
 
@@ -218,19 +245,7 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
             let mut row = String::new();
             let mut last: Option<String> = None;
             for col in 0..term.columns() {
-                let cell = &grid[line][Column(col)];
-                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    continue;
-                }
-                let sgr = sgr_of(cell);
-                if last.as_ref() != Some(&sgr) {
-                    let _ = write!(row, "\x1b[0{sgr}m");
-                    last = Some(sgr);
-                }
-                row.push(cell.c);
-                if let Some(extra) = cell.zerowidth() {
-                    row.extend(extra);
-                }
+                emit_cell(&mut row, &mut last, &grid[line][Column(col)]);
             }
             let wrapped = grid[line][Column(term.columns() - 1)]
                 .flags
@@ -261,21 +276,11 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
     for row in 0..term.screen_lines() {
         let _ = write!(out, "\x1b[{};1H", row + 1);
         for col in 0..term.columns() {
-            let cell = &grid[Line(row as i32)][Column(col)];
-            // The wide char itself advances the parser two columns; its
-            // spacer must not emit anything or the row would overflow.
-            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                continue;
-            }
-            let sgr = sgr_of(cell);
-            if last_sgr.as_ref() != Some(&sgr) {
-                let _ = write!(out, "\x1b[0{sgr}m");
-                last_sgr = Some(sgr);
-            }
-            out.push(cell.c);
-            if let Some(extra) = cell.zerowidth() {
-                out.extend(extra);
-            }
+            emit_cell(
+                &mut out,
+                &mut last_sgr,
+                &grid[Line(row as i32)][Column(col)],
+            );
         }
     }
 
@@ -494,6 +499,45 @@ mod transfer_tests {
         assert!(
             b.term.lock().mode().contains(TermMode::BRACKETED_PASTE),
             "mode bits must survive the move"
+        );
+    }
+
+    /// Bytes the reader consumed but the parser has not yet applied — an
+    /// open ?2026 sync buffer is the deterministic way to create that
+    /// state — must reach the Term BEFORE quiesce returns: the pipe no
+    /// longer holds them for the receiver, so a replay serialized without
+    /// them loses them for good. Quiesce joins the parser after the
+    /// reader; the parser's EOF path force-flushes the open sync buffer.
+    #[test]
+    fn quiesce_drains_sync_buffered_bytes_into_the_replay() {
+        let (out_read, mut out_write) = std::io::pipe().expect("output pipe");
+        let (_in_read, in_write) = std::io::pipe().expect("input pipe");
+        let session = build_handoff_session(
+            40,
+            5,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: None,
+                keepalive: Vec::new(),
+            },
+            "test-identity",
+        )
+        .expect("session over pipes");
+
+        // BSU with no ESU: the parser buffers TRAPPED without applying it.
+        // 50ms lets the reader consume the bytes (well under the 150ms
+        // sync deadline, so the parser still holds them when we quiesce —
+        // and if timing drifts past it, the deadline flush makes the
+        // assertion pass identically).
+        out_write.write_all(b"\x1b[?2026hTRAPPED").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        session.quiesce_for_transfer().expect("quiesce");
+        let replay = String::from_utf8(replay_bytes(&session)).unwrap();
+        assert!(
+            replay.contains("TRAPPED"),
+            "bytes in flight at quiesce were lost by the move"
         );
     }
 

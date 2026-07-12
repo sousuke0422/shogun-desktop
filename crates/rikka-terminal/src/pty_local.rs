@@ -388,6 +388,17 @@ fn env_block_with(overrides: &[(&str, &str)]) -> Vec<u16> {
 mod tests {
     use super::*;
 
+    /// Serialize the conhost-spawning tests: parallel cold starts crowd
+    /// each other out badly enough to blow ANY reasonable deadline on this
+    /// machine (0.77s alone, 30s+ under contention) — growing the deadline
+    /// was a losing race. Ignore poisoning: a panicked test already failed
+    /// on its own; the next one should still run serialized.
+    static CONHOST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn conhost_serial() -> std::sync::MutexGuard<'static, ()> {
+        CONHOST.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn quoted(arg: &str) -> String {
         let mut s = String::new();
         append_quoted(arg, &mut s);
@@ -602,6 +613,7 @@ mod tests {
     /// screen after resizing a lot".
     #[test]
     fn resize_storm_keeps_conhost_and_grid_in_agreement() {
+        let _serial = conhost_serial();
         let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
         let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
         let session = spawn_with(
@@ -689,6 +701,7 @@ mod tests {
     /// guarantee, so the probe re-runs until the console catches up.
     #[test]
     fn resize_reaches_the_console() {
+        let _serial = conhost_serial();
         let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
         let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
         let session =
@@ -732,6 +745,7 @@ mod tests {
     /// handoff-shaped.
     #[test]
     fn local_spawn_is_born_handoff_shaped() {
+        let _serial = conhost_serial();
         let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
         let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
         let session = spawn_with(

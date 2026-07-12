@@ -158,7 +158,7 @@ pub fn build_terminal_session(
     let images = Arc::new(kitty_graphics::KittyImageStore::default());
     let xtversion = crate::xtversion::XtversionScanner::new(xtversion_identity);
 
-    let reader_thread = {
+    let (reader_thread, parser_thread) = {
         let term2 = Arc::clone(&term);
         let snap2 = Arc::clone(&snapshot);
         let conn2 = Arc::clone(&connected);
@@ -212,172 +212,186 @@ pub fn build_terminal_session(
                 }
             })
             .ok();
-        spawn_named("rikka-parse", move || {
-            use std::sync::mpsc::RecvTimeoutError;
-            let mut parser = Processor::<StdSyncHandler>::new();
-            // OSC 9 / 9;4 / 777 observer — the vte stack drops these
-            // sequences, so a passive side-scanner extracts progress and
-            // desktop notifications (see terminal::progress / notify).
-            let mut osc = OscScanner::new();
-            // Kitty graphics: APC observer (vte swallows APC too) + protocol
-            // driver. Responses (query replies, transmission ACKs) go back
-            // to the PTY writer. See terminal::kitty_graphics.
-            let mut apc = kitty_graphics::ApcScanner::new();
-            let mut kitty = kitty_graphics::KittyGraphics::new(Arc::clone(&images2));
-            // Sixel (DCS q): third passive observer. Decoded images join the
-            // kitty store and are laid down as Unicode placeholder cells fed
-            // straight into the parser — grid/scrollback/renderer handling
-            // is shared with kitty graphics. See terminal::sixel.
-            let mut sixel_scanner = crate::sixel::SixelScanner::new();
-            let mut sixel_ids = crate::sixel::SixelIdAllocator::new();
-            // XTVERSION (CSI > 0 q): vte has no hook for it — answer from a
-            // passive scanner so applications can identify the terminal.
-            let mut xtversion = xtversion;
-            // XTWINOPS op 16 (cell pixel size): alacritty drops it, yazi
-            // needs it to size sixel rasters on Windows. See winops.
-            let mut winops = crate::winops::WinopsScanner::new();
-            loop {
-                // While a synchronized update is pending, wait only until its
-                // deadline so an unterminated BSU can't freeze the screen.
-                let chunk = match parser.sync_timeout().sync_timeout() {
-                    Some(deadline) => {
-                        let wait = deadline.saturating_duration_since(std::time::Instant::now());
-                        match chunk_rx.recv_timeout(wait) {
-                            Ok(chunk) => Some(chunk),
-                            Err(RecvTimeoutError::Timeout) => {
+        // Also kept on the session (like the reader): a tab move must wait
+        // for this thread to DRAIN — chunks the reader consumed may still
+        // sit in the channel or in an open ?2026 sync buffer, and a replay
+        // serialized before they land in the Term would lose them for good
+        // (the pipe no longer holds them for the receiver). Reader death
+        // drops the channel sender, so after the reader is joined this
+        // thread provably flushes everything and exits.
+        let parser_thread = std::thread::Builder::new()
+            .name("rikka-parse".into())
+            .spawn(move || {
+                use std::sync::mpsc::RecvTimeoutError;
+                let mut parser = Processor::<StdSyncHandler>::new();
+                // OSC 9 / 9;4 / 777 observer — the vte stack drops these
+                // sequences, so a passive side-scanner extracts progress and
+                // desktop notifications (see terminal::progress / notify).
+                let mut osc = OscScanner::new();
+                // Kitty graphics: APC observer (vte swallows APC too) + protocol
+                // driver. Responses (query replies, transmission ACKs) go back
+                // to the PTY writer. See terminal::kitty_graphics.
+                let mut apc = kitty_graphics::ApcScanner::new();
+                let mut kitty = kitty_graphics::KittyGraphics::new(Arc::clone(&images2));
+                // Sixel (DCS q): third passive observer. Decoded images join the
+                // kitty store and are laid down as Unicode placeholder cells fed
+                // straight into the parser — grid/scrollback/renderer handling
+                // is shared with kitty graphics. See terminal::sixel.
+                let mut sixel_scanner = crate::sixel::SixelScanner::new();
+                let mut sixel_ids = crate::sixel::SixelIdAllocator::new();
+                // XTVERSION (CSI > 0 q): vte has no hook for it — answer from a
+                // passive scanner so applications can identify the terminal.
+                let mut xtversion = xtversion;
+                // XTWINOPS op 16 (cell pixel size): alacritty drops it, yazi
+                // needs it to size sixel rasters on Windows. See winops.
+                let mut winops = crate::winops::WinopsScanner::new();
+                loop {
+                    // While a synchronized update is pending, wait only until its
+                    // deadline so an unterminated BSU can't freeze the screen.
+                    let chunk = match parser.sync_timeout().sync_timeout() {
+                        Some(deadline) => {
+                            let wait =
+                                deadline.saturating_duration_since(std::time::Instant::now());
+                            match chunk_rx.recv_timeout(wait) {
+                                Ok(chunk) => Some(chunk),
+                                Err(RecvTimeoutError::Timeout) => {
+                                    let mut t = term2.lock();
+                                    parser.stop_sync(&mut *t);
+                                    *snap2.lock() = take_snapshot(&t);
+                                    drop(t);
+                                    gen2.fetch_add(1, Ordering::Relaxed);
+                                    notify2.notify_one();
+                                    continue;
+                                }
+                                Err(RecvTimeoutError::Disconnected) => None,
+                            }
+                        }
+                        None => chunk_rx.recv().ok(),
+                    };
+                    match chunk {
+                        None => {
+                            // Flush any bytes still held by an open synchronized
+                            // update so final output isn't lost on disconnect.
+                            if parser.sync_timeout().sync_timeout().is_some() {
                                 let mut t = term2.lock();
                                 parser.stop_sync(&mut *t);
                                 *snap2.lock() = take_snapshot(&t);
-                                drop(t);
-                                gen2.fetch_add(1, Ordering::Relaxed);
-                                notify2.notify_one();
-                                continue;
                             }
-                            Err(RecvTimeoutError::Disconnected) => None,
+                            conn2.store(false, Ordering::Relaxed);
+                            *err2.lock() = Some("PTY接続が切断されました".into());
+                            // Bump + signal so the UI repaints the disconnected
+                            // state promptly instead of waiting for other traffic.
+                            gen2.fetch_add(1, Ordering::Relaxed);
+                            notify2.notify_one();
+                            break;
                         }
-                    }
-                    None => chunk_rx.recv().ok(),
-                };
-                match chunk {
-                    None => {
-                        // Flush any bytes still held by an open synchronized
-                        // update so final output isn't lost on disconnect.
-                        if parser.sync_timeout().sync_timeout().is_some() {
+                        Some(chunk) => {
                             let mut t = term2.lock();
-                            parser.stop_sync(&mut *t);
-                            *snap2.lock() = take_snapshot(&t);
-                        }
-                        conn2.store(false, Ordering::Relaxed);
-                        *err2.lock() = Some("PTY接続が切断されました".into());
-                        // Bump + signal so the UI repaints the disconnected
-                        // state promptly instead of waiting for other traffic.
-                        gen2.fetch_add(1, Ordering::Relaxed);
-                        notify2.notify_one();
-                        break;
-                    }
-                    Some(chunk) => {
-                        let mut t = term2.lock();
-                        let mut responses: Vec<Vec<u8>> = Vec::new();
-                        for &byte in &chunk {
-                            match osc.advance(byte) {
-                                Some(OscEvent::Progress(update)) => progress2.apply(update),
-                                Some(OscEvent::Notify(note)) => notify::push(&notifications2, note),
-                                None => {}
-                            }
-                            if let Some(payload) = apc.advance(byte)
-                                && let Some(resp) = kitty.apply(&payload)
-                            {
-                                responses.push(resp);
-                            }
-                            if let Some(reply) = xtversion.advance(byte) {
-                                responses.push(reply);
-                            }
-                            if winops.advance(byte) {
-                                let cw = cell_px2.0.load(Ordering::Relaxed) as usize;
-                                let chp = cell_px2.1.load(Ordering::Relaxed) as usize;
-                                responses.push(crate::winops::cell_size_reply(cw, chp));
-                            }
-                            parser.advance(&mut *t, byte);
-                            // Sixel: on a completed DCS (the parser has just
-                            // consumed the terminator and discarded the DCS
-                            // as unhandled), store the image and lay down
-                            // placeholder cells at the cursor.
-                            if let Some(seq) = sixel_scanner.advance(byte)
-                                && let Some(img) = crate::sixel::decode(&seq.data)
-                            {
-                                // A ?2026 synchronized update buffers bytes
-                                // inside the Processor, so the term's cursor
-                                // still predates the frame's CUP — inject
-                                // against that and the placement lands in
-                                // stale coordinates (the yazi empty/corrupt
-                                // preview). Flush the buffered prefix first:
-                                // the frame tears once per image, but the
-                                // cursor and SGR are true.
-                                if parser.sync_timeout().sync_timeout().is_some() {
-                                    parser.stop_sync(&mut *t);
+                            let mut responses: Vec<Vec<u8>> = Vec::new();
+                            for &byte in &chunk {
+                                match osc.advance(byte) {
+                                    Some(OscEvent::Progress(update)) => progress2.apply(update),
+                                    Some(OscEvent::Notify(note)) => {
+                                        notify::push(&notifications2, note)
+                                    }
+                                    None => {}
                                 }
-                                let cw = cell_px2.0.load(Ordering::Relaxed).max(1) as usize;
-                                let chp = cell_px2.1.load(Ordering::Relaxed).max(1) as usize;
-                                // Before the first resize the cell size is
-                                // unknown; assume a common 10×20 device px.
-                                let (cw, chp) = if cw <= 1 { (10, 20) } else { (cw, chp) };
-                                use alacritty_terminal::grid::Dimensions as _;
-                                let grid_cols = t.columns().max(1);
-                                // Fit the placement to the space right of the
-                                // cursor (yazi draws previews mid-screen via
-                                // CUP; wrapping would shred the layout).
-                                let start_col = t.grid().cursor.point.column.0.min(grid_cols - 1);
-                                let fit_cols = grid_cols - start_col;
-                                let cols =
-                                    img.width.div_ceil(cw).clamp(1, fit_cols).min(296) as u16;
-                                let rows = img.height.div_ceil(chp).clamp(1, 296) as u16;
-                                let id = sixel_ids.next_id();
-                                if images2.insert_rgba(
-                                    id,
-                                    img.width as u32,
-                                    img.height as u32,
-                                    img.rgba,
-                                    cols,
-                                    rows,
-                                ) {
-                                    // The injection changes the fg color to
-                                    // carry the image id; save and restore
-                                    // the application's SGR foreground.
-                                    let restore =
-                                        crate::sixel::sgr_fg_bytes(t.grid().cursor.template.fg);
-                                    for &b in &crate::sixel::placeholder_bytes(
+                                if let Some(payload) = apc.advance(byte)
+                                    && let Some(resp) = kitty.apply(&payload)
+                                {
+                                    responses.push(resp);
+                                }
+                                if let Some(reply) = xtversion.advance(byte) {
+                                    responses.push(reply);
+                                }
+                                if winops.advance(byte) {
+                                    let cw = cell_px2.0.load(Ordering::Relaxed) as usize;
+                                    let chp = cell_px2.1.load(Ordering::Relaxed) as usize;
+                                    responses.push(crate::winops::cell_size_reply(cw, chp));
+                                }
+                                parser.advance(&mut *t, byte);
+                                // Sixel: on a completed DCS (the parser has just
+                                // consumed the terminator and discarded the DCS
+                                // as unhandled), store the image and lay down
+                                // placeholder cells at the cursor.
+                                if let Some(seq) = sixel_scanner.advance(byte)
+                                    && let Some(img) = crate::sixel::decode(&seq.data)
+                                {
+                                    // A ?2026 synchronized update buffers bytes
+                                    // inside the Processor, so the term's cursor
+                                    // still predates the frame's CUP — inject
+                                    // against that and the placement lands in
+                                    // stale coordinates (the yazi empty/corrupt
+                                    // preview). Flush the buffered prefix first:
+                                    // the frame tears once per image, but the
+                                    // cursor and SGR are true.
+                                    if parser.sync_timeout().sync_timeout().is_some() {
+                                        parser.stop_sync(&mut *t);
+                                    }
+                                    let cw = cell_px2.0.load(Ordering::Relaxed).max(1) as usize;
+                                    let chp = cell_px2.1.load(Ordering::Relaxed).max(1) as usize;
+                                    // Before the first resize the cell size is
+                                    // unknown; assume a common 10×20 device px.
+                                    let (cw, chp) = if cw <= 1 { (10, 20) } else { (cw, chp) };
+                                    use alacritty_terminal::grid::Dimensions as _;
+                                    let grid_cols = t.columns().max(1);
+                                    // Fit the placement to the space right of the
+                                    // cursor (yazi draws previews mid-screen via
+                                    // CUP; wrapping would shred the layout).
+                                    let start_col =
+                                        t.grid().cursor.point.column.0.min(grid_cols - 1);
+                                    let fit_cols = grid_cols - start_col;
+                                    let cols =
+                                        img.width.div_ceil(cw).clamp(1, fit_cols).min(296) as u16;
+                                    let rows = img.height.div_ceil(chp).clamp(1, 296) as u16;
+                                    let id = sixel_ids.next_id();
+                                    if images2.insert_rgba(
                                         id,
+                                        img.width as u32,
+                                        img.height as u32,
+                                        img.rgba,
                                         cols,
                                         rows,
-                                        start_col as u16,
                                     ) {
-                                        parser.advance(&mut *t, b);
-                                    }
-                                    for &b in &restore {
-                                        parser.advance(&mut *t, b);
+                                        // The injection changes the fg color to
+                                        // carry the image id; save and restore
+                                        // the application's SGR foreground.
+                                        let restore =
+                                            crate::sixel::sgr_fg_bytes(t.grid().cursor.template.fg);
+                                        for &b in &crate::sixel::placeholder_bytes(
+                                            id,
+                                            cols,
+                                            rows,
+                                            start_col as u16,
+                                        ) {
+                                            parser.advance(&mut *t, b);
+                                        }
+                                        for &b in &restore {
+                                            parser.advance(&mut *t, b);
+                                        }
                                     }
                                 }
                             }
-                        }
-                        *snap2.lock() = take_snapshot(&t);
-                        drop(t);
-                        // Written only after releasing the term lock, so the
-                        // UI input path (which also takes the writer lock)
-                        // never waits behind parsing + snapshotting.
-                        if !responses.is_empty() {
-                            let mut w = writer2.lock();
-                            for resp in responses {
-                                let _ = w.write_all(&resp);
+                            *snap2.lock() = take_snapshot(&t);
+                            drop(t);
+                            // Written only after releasing the term lock, so the
+                            // UI input path (which also takes the writer lock)
+                            // never waits behind parsing + snapshotting.
+                            if !responses.is_empty() {
+                                let mut w = writer2.lock();
+                                for resp in responses {
+                                    let _ = w.write_all(&resp);
+                                }
+                                let _ = w.flush();
                             }
-                            let _ = w.flush();
+                            gen2.fetch_add(1, Ordering::Relaxed);
+                            notify2.notify_one();
                         }
-                        gen2.fetch_add(1, Ordering::Relaxed);
-                        notify2.notify_one();
                     }
                 }
-            }
-        });
-        reader_thread
+            })
+            .ok();
+        (reader_thread, parser_thread)
     };
 
     // Debounced resize settler (leading + trailing edge): the first size of
@@ -479,6 +493,7 @@ pub fn build_terminal_session(
         pty_resize,
         conpty_resize_semantics,
         reader_thread: FairMutex::new(reader_thread),
+        parser_thread: FairMutex::new(parser_thread),
         pty_sealed,
         #[cfg(windows)]
         transfer: FairMutex::new(None),

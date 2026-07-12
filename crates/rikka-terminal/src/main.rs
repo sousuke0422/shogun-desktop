@@ -1697,8 +1697,8 @@ fn spawn_ipc_accept(
             // The monarch hosts a window itself, so it is in the directory
             // too (same id scheme: pid), reachable through its own window
             // socket like everyone else.
-            let mut directory = WindowDirectory::default();
-            directory.register(ipc::RegisterWindow {
+            let directory = Arc::new(FairMutex::new(WindowDirectory::default()));
+            directory.lock().register(ipc::RegisterWindow {
                 pid: std::process::id(),
                 window_id: u64::from(std::process::id()),
                 endpoint: window_endpoint.unwrap_or_default(),
@@ -1707,52 +1707,63 @@ fn spawn_ipc_accept(
                 let Ok(mut conn) = monarch.accept() else {
                     break;
                 };
-                match conn.recv_request() {
-                    Ok(ipc::Request::Spawn(s)) => {
-                        // Crash isolation first; in-process only as fallback
-                        // (a monarch-resident window beats a dead launch).
-                        if let Err(e) = spawn_window_process(&s) {
-                            log::warn!("window-process spawn failed, opening in-process: {e}");
-                            let _ = tx.unbounded_send(Forwarded::Spawn(s.argv));
+                // One worker per connection: a client that connects but
+                // never sends its frame (dying process, wedged pipe) must
+                // not stall every later launch and tab move behind it.
+                let tx = tx.clone();
+                let directory = Arc::clone(&directory);
+                std::thread::Builder::new()
+                    .name("rikka-ipc-conn".into())
+                    .spawn(move || match conn.recv_request() {
+                        Ok(ipc::Request::Spawn(s)) => {
+                            // Crash isolation first; in-process only as
+                            // fallback (a monarch-resident window beats a
+                            // dead launch).
+                            if let Err(e) = spawn_window_process(&s) {
+                                log::warn!("window-process spawn failed, opening in-process: {e}");
+                                let _ = tx.unbounded_send(Forwarded::Spawn(s.argv));
+                            }
+                            let _ = conn.send_response(&ipc::Response::ok());
                         }
-                        let _ = conn.send_response(&ipc::Response::ok());
-                    }
-                    Ok(ipc::Request::Attach(a)) => {
-                        let resp = match handle_attach(&tx, a) {
-                            Ok(()) => ipc::Response::ok(),
-                            Err(e) => ipc::Response::error(e.to_string()),
-                        };
-                        let _ = conn.send_response(&resp);
-                    }
-                    Ok(ipc::Request::RegisterWindow(r)) => {
-                        directory.register(r);
-                        let _ = conn.send_response(&ipc::Response::ok());
-                    }
-                    Ok(ipc::Request::ListWindows) => {
-                        let _ = conn.send_response(&ipc::Response {
-                            ok: true,
-                            windows: Some(directory.list()),
-                            ..Default::default()
-                        });
-                    }
-                    Ok(ipc::Request::ResolveWindow { window }) => {
-                        let resp = match directory.resolve(window) {
-                            Some(endpoint) => ipc::Response {
+                        Ok(ipc::Request::Attach(a)) => {
+                            let resp = match handle_attach(&tx, a) {
+                                Ok(()) => ipc::Response::ok(),
+                                Err(e) => ipc::Response::error(e.to_string()),
+                            };
+                            let _ = conn.send_response(&resp);
+                        }
+                        Ok(ipc::Request::RegisterWindow(r)) => {
+                            directory.lock().register(r);
+                            let _ = conn.send_response(&ipc::Response::ok());
+                        }
+                        Ok(ipc::Request::ListWindows) => {
+                            let windows = directory.lock().list();
+                            let _ = conn.send_response(&ipc::Response {
                                 ok: true,
-                                endpoint: Some(endpoint),
+                                windows: Some(windows),
                                 ..Default::default()
-                            },
-                            None => ipc::Response::error(format!(
-                                "window {window} is unknown or unreachable"
-                            )),
-                        };
-                        let _ = conn.send_response(&resp);
-                    }
-                    Ok(ipc::Request::Ping) => {
-                        let _ = conn.send_response(&ipc::Response::ok());
-                    }
-                    Err(_) => {} // client hung up; wait for the next connection
-                }
+                            });
+                        }
+                        Ok(ipc::Request::ResolveWindow { window }) => {
+                            let resolved = directory.lock().resolve(window);
+                            let resp = match resolved {
+                                Some(endpoint) => ipc::Response {
+                                    ok: true,
+                                    endpoint: Some(endpoint),
+                                    ..Default::default()
+                                },
+                                None => ipc::Response::error(format!(
+                                    "window {window} is unknown or unreachable"
+                                )),
+                            };
+                            let _ = conn.send_response(&resp);
+                        }
+                        Ok(ipc::Request::Ping) => {
+                            let _ = conn.send_response(&ipc::Response::ok());
+                        }
+                        Err(_) => {} // client hung up before sending a frame
+                    })
+                    .ok();
             }
         })
         .ok();
@@ -1780,23 +1791,30 @@ fn window_accept_loop(
         let Ok(mut conn) = listener.accept() else {
             break;
         };
-        match conn.recv_request() {
-            Ok(ipc::Request::Attach(a)) => {
-                let resp = match adopt_attach(&tx, a) {
-                    Ok(()) => ipc::Response::ok(),
-                    Err(e) => ipc::Response::error(e.to_string()),
-                };
-                let _ = conn.send_response(&resp);
-            }
-            Ok(ipc::Request::Ping) => {
-                let _ = conn.send_response(&ipc::Response::ok());
-            }
-            Ok(_) => {
-                let _ = conn
-                    .send_response(&ipc::Response::error("window socket: attach and ping only"));
-            }
-            Err(_) => {}
-        }
+        // One worker per connection — same reasoning as the monarch loop: a
+        // silent client must not block the next tab move behind it.
+        let tx = tx.clone();
+        std::thread::Builder::new()
+            .name("rikka-win-conn".into())
+            .spawn(move || match conn.recv_request() {
+                Ok(ipc::Request::Attach(a)) => {
+                    let resp = match adopt_attach(&tx, a) {
+                        Ok(()) => ipc::Response::ok(),
+                        Err(e) => ipc::Response::error(e.to_string()),
+                    };
+                    let _ = conn.send_response(&resp);
+                }
+                Ok(ipc::Request::Ping) => {
+                    let _ = conn.send_response(&ipc::Response::ok());
+                }
+                Ok(_) => {
+                    let _ = conn.send_response(&ipc::Response::error(
+                        "window socket: attach and ping only",
+                    ));
+                }
+                Err(_) => {}
+            })
+            .ok();
     }
 }
 
@@ -2049,6 +2067,35 @@ mod tests {
         }
         drop(conn);
         drop(accept); // detach: the loop parks in accept() until process exit
+    }
+
+    /// A client that connects but never sends a frame must not stall the
+    /// socket: each connection gets its own worker, so the next client is
+    /// served while the silent one sits there.
+    #[cfg(windows)]
+    #[test]
+    fn silent_connection_does_not_block_the_window_socket() {
+        let name = format!("rikka-test-silent-{}.sock", std::process::id());
+        let listener = ipc::transport::Monarch::bind(&name).expect("bind window socket");
+        let (tx, _rx) = futures::channel::mpsc::unbounded::<Forwarded>();
+        let accept = std::thread::spawn(move || window_accept_loop(listener, tx));
+
+        let _silent = ipc::transport::connect(&name).expect("silent client connects");
+
+        // The ping runs on a helper thread so a regression fails by
+        // timeout instead of hanging the test run.
+        let name2 = name.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut conn = ipc::transport::connect(&name2).expect("second client connects");
+            conn.send_request(&ipc::Request::Ping).unwrap();
+            done_tx.send(conn.recv_response().unwrap().ok).ok();
+        });
+        let ok = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("second client starved behind the silent one");
+        assert!(ok, "ping must succeed");
+        drop(accept);
     }
 
     /// The SENDING half against the receiving half, one process, real

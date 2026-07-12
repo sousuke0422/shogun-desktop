@@ -4,18 +4,20 @@
 //! detach, transfer by CreateProcess inheritance) or an existing window's
 //! own socket (merge, transfer by receiver pull).
 //!
-//! Ordering contract: the receiver starts reading the moment its session
-//! assembles, and two readers on one pipe shred the VT stream — so OUR
-//! reader must be provably dead BEFORE the handles leave this process
-//! (`TerminalSession::quiesce_for_transfer`). Quiesce is irreversible: when
-//! a move fails afterwards, the tab stays behind reading as disconnected —
-//! honest, and the console itself is still owned by SOMEONE (our session's
-//! handles on an early failure, the receiver's pulls on a late one).
+//! Ordering contract: connect to the destination FIRST (a stale directory
+//! entry must abort while the tab is fully alive), then quiesce — the
+//! receiver starts reading the moment its session assembles, and two
+//! readers on one pipe shred the VT stream, so OUR reader must be provably
+//! dead and drained BEFORE the handles go on the wire
+//! (`TerminalSession::quiesce_for_transfer`). Quiesce is irreversible: a
+//! failure past it (spawn/wire errors, rare and local) leaves the tab
+//! honestly disconnected — the console itself is still owned by SOMEONE
+//! (our session's handles on an early failure, the receiver's pulls on a
+//! late one).
 //!
-//! v1 moves the PTY only: `state` (grid + scrollback) stays behind, and
-//! since ConPTY never repaints, the moved tab starts blank until the
-//! application writes again. The `state` wire slot exists for the day this
-//! is carried across (IPC.md Deferred).
+//! The move carries the screen: scrollback + visible grid + cursor + mode
+//! bits ride `state` as replayable VT (core `replay_bytes`), so the tab
+//! arrives wearing what it showed. See IPC.md "Screen carry".
 
 #![cfg(windows)]
 
@@ -50,7 +52,24 @@ pub fn is_transferable(session: &TerminalSession) -> bool {
 /// tab: the session's remaining handles are independent duplicates of what
 /// the new owner holds, so dropping them cannot break the pipes or kill the
 /// console.
+///
+/// Failure ordering: everything that can be checked is checked BEFORE the
+/// irreversible quiesce — no kit, too many keepalives, and (for a window
+/// move) the destination connection itself. A stale directory entry or a
+/// closed window then fails while the tab is still fully alive; only a
+/// failure past the quiesce (spawn/wire errors, both rare and local) costs
+/// the tab.
 pub fn send_tab(session: &TerminalSession, dest: Destination) -> Result<()> {
+    // Open the destination first: the receiver starts reading only once
+    // the attach frame arrives, so connecting early cannot race our still-
+    // running reader — and a dead endpoint aborts a fully-alive tab.
+    let conn = match &dest {
+        Destination::NewProcess => None,
+        Destination::Window { endpoint, .. } => Some(
+            ipc::transport::connect(endpoint)
+                .with_context(|| format!("connect window socket {endpoint}"))?,
+        ),
+    };
     // Refuse before quiescing — a session without a kit (SSH, legacy
     // portable-pty, or already moved) must stay fully alive.
     let kit = session
@@ -58,6 +77,10 @@ pub fn send_tab(session: &TerminalSession, dest: Destination) -> Result<()> {
         .lock()
         .take()
         .context("session is not transferable (no ConPTY transfer kit)")?;
+    ensure!(
+        kit.keepalive.len() <= 2,
+        "transfer kit carries more keepalive handles than the wire has slots"
+    );
     let startup = ipc::StartupInfo {
         title: session.title.lock().clone(),
         x: 0,
@@ -70,37 +93,31 @@ pub fn send_tab(session: &TerminalSession, dest: Destination) -> Result<()> {
     // still. The receiver replays this as its parser preface, so the tab
     // arrives wearing the sender's screen instead of blank.
     let vt = rikka_terminal_core::pty_handoff::replay_bytes(session);
-    match dest {
+    match (dest, conn) {
         // Inheritance COPIES the handles into the child, so the kit keeps
         // ownership of ours throughout — plain drop semantics on every path.
-        Destination::NewProcess => LocalAttach::from_transfer(kit, startup, Some(vt))?
+        (Destination::NewProcess, _) => LocalAttach::from_transfer(kit, startup, Some(vt))?
             .relay_to_window_process()
             .context("relay the detached tab to its window process"),
-        Destination::Window { id, endpoint } => push_to_window(kit, startup, vt, id, &endpoint),
+        (Destination::Window { id, .. }, Some(conn)) => push_to_window(conn, kit, startup, vt, id),
+        (Destination::Window { .. }, None) => unreachable!("window move always connects first"),
     }
 }
 
-/// Send the kit to a window's own socket. The receiver pulls each handle
-/// with `DUPLICATE_CLOSE_SOURCE` — the values are CONSUMED over there, so
-/// once the request is on the wire we must never close them ourselves:
-/// after a pull the same value may already name an unrelated handle
-/// (kernel reuse), and closing that corrupts the process. Leaking a few
-/// pipe handles on the rare failure path is the safe price.
+/// Send the kit over an already-open window socket. The receiver pulls
+/// each handle with `DUPLICATE_CLOSE_SOURCE` — the values are CONSUMED
+/// over there, so once the request is on the wire we must never close
+/// them ourselves: after a pull the same value may already name an
+/// unrelated handle (kernel reuse), and closing that corrupts the
+/// process. Leaking a few pipe handles on the rare failure path is the
+/// safe price.
 fn push_to_window(
+    mut conn: ipc::transport::Conn,
     kit: TransferKit,
     startup: ipc::StartupInfo,
     state_vt: Vec<u8>,
     id: u64,
-    endpoint: &str,
 ) -> Result<()> {
-    ensure!(
-        kit.keepalive.len() <= 2,
-        "transfer kit carries more keepalive handles than the wire has slots"
-    );
-    // Connect before surrendering ownership: a refused connection leaves the
-    // kit intact and dropping it closes our duplicates normally.
-    let mut conn = ipc::transport::connect(endpoint)
-        .with_context(|| format!("connect window socket {endpoint}"))?;
     let raw = |h: OwnedHandle| h.into_raw_handle() as isize as i64;
     let mut keepalive = kit.keepalive.into_iter();
     let args = ipc::AttachArgs {
@@ -179,4 +196,64 @@ pub fn move_to_any_other_window(session: &TerminalSession) -> Result<()> {
             endpoint,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::os::windows::io::OwnedHandle;
+
+    use rikka_terminal_core::pty_handoff::{HandoffPty, build_handoff_session};
+
+    use super::*;
+
+    /// A dead destination must fail BEFORE the irreversible quiesce: the
+    /// tab stays fully alive — kit still stocked, reader still pumping
+    /// output into the grid. This is the transactionality of a move: a
+    /// stale directory entry may abort it, but must never cost the tab.
+    #[test]
+    fn dead_endpoint_leaves_the_tab_alive() {
+        let (out_read, mut out_write) = std::io::pipe().unwrap();
+        let (_in_read, in_write) = std::io::pipe().unwrap();
+        let session = build_handoff_session(
+            80,
+            24,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: None,
+                keepalive: Vec::new(),
+            },
+            "test-identity",
+        )
+        .expect("live session");
+
+        let err = send_tab(
+            &session,
+            Destination::Window {
+                id: 9,
+                endpoint: format!("rikka-test-dead-{}.sock", std::process::id()),
+            },
+        )
+        .expect_err("a dead endpoint must refuse the move");
+        assert!(err.to_string().contains("connect"), "{err:#}");
+        assert!(is_transferable(&session), "kit must remain stocked");
+
+        out_write.write_all(b"still-alive").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let row0: String = session.snapshot.lock().cells[0]
+                .iter()
+                .map(|c| c.c)
+                .collect();
+            if row0.starts_with("still-alive") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reader must still pump after the aborted move"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 }
