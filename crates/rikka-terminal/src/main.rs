@@ -995,6 +995,19 @@ impl Render for TabsWindow {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
                 let m = &ks.modifiers;
+                // FIELD PROBE (temporary): Ctrl+Shift+E reached the PTY as
+                // ^E on the 殿 machine — log what gpui actually delivers
+                // for every Ctrl chord so the mismatch shows itself.
+                if m.control {
+                    log::warn!(
+                        "chord probe: key={:?} key_char={:?} shift={} alt={} fn={}",
+                        ks.key,
+                        ks.key_char,
+                        m.shift,
+                        m.alt,
+                        m.function,
+                    );
+                }
                 // ── tab management chords ─────────────────────────────
                 if m.control && m.shift {
                     let handled = match ks.key.as_str() {
