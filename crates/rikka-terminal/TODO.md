@@ -37,12 +37,16 @@
 
 - [ ] **「window not found」ログノイズ** — 窓 close 後に gpui 内部が dead
       handle を叩く ERROR ログ（実害なし）。出所特定して黙らせる。
-- [ ] タブ strip の空白部への drop = 末尾移動（未実装・誤爆懸念で見送り）。
+- [x] ~~タブ strip の空白部への drop = 末尾移動~~ — 実装済（タブ上 drop は
+      子が consume するため空白部のみ末尾移動・誤爆なし）。
 - [ ] drag-merge の挿入位置 — 現状は移送先の末尾 adopt 固定。drop 位置の
-      タブ間に挿入できると自然。
-- [ ] ghost の掴み位置 — drag ghost が cursor_offset を使わず左上基準。
-- [ ] **設定ファイル**（P1 積み残し）— acrylic opt-in・フォント選択・
-      キーバインド等。現状は環境変数と既定値のみ。
+      タブ間に挿入できると自然（cross-process は wire に挿入 index 追加）。
+- [x] ~~ghost の掴み位置~~ — 非問題と判明: gpui が cursor_offset を自動で
+      保存・適用しており ghost は掴んだ位置に追従する。
+- [x] ~~設定ファイル~~ — 初版済: `[appearance] font / font_size / acrylic`
+      と `[terminal] scrollback`（%APPDATA%/rikka-terminal/config.toml・
+      実窓検証済）。残: キーバインド設定・テーマ/配色。
+- [ ] キーバインド設定（config.toml で chord の再割当）。
 - [ ] フォント同梱（Cascadia 等）。
 
 ## 保守メモ

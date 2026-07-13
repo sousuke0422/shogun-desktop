@@ -202,9 +202,45 @@ pub struct TerminalSession {
     pub transfer: FairMutex<Option<pty_handoff::TransferKit>>,
 }
 
+/// The grid's font size, settable once by the embedding app before any
+/// window renders (a config value). A process-wide atomic instead of a
+/// parameter: the size threads through measure_cell_metrics, render_grid
+/// and the pane overlay across two applications — a signature change for
+/// a value that never varies per call.
+pub mod typography {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static FONT_SIZE_BITS: AtomicU32 = AtomicU32::new(0);
+
+    /// Set the terminal font size in (logical) pixels. Call at startup.
+    pub fn set_font_size(px_size: f32) {
+        if px_size.is_finite() && px_size >= 6.0 && px_size <= 72.0 {
+            FONT_SIZE_BITS.store(px_size.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// The configured font size, defaulting to the classic 13px.
+    pub fn font_size() -> gpui::Pixels {
+        let bits = FONT_SIZE_BITS.load(Ordering::Relaxed);
+        if bits == 0 {
+            gpui::px(13.0)
+        } else {
+            gpui::px(f32::from_bits(bits))
+        }
+    }
+}
+
 impl TerminalSession {
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
+    }
+
+    /// Resize this session's scrollback (history) capacity — applied to a
+    /// live Term, so the embedder can set a configured value right after
+    /// session assembly without threading one more parameter through
+    /// every builder.
+    pub fn set_scrollback(&self, lines: usize) {
+        self.term.lock().set_scrolling_history(lines);
     }
 
     /// Quiesce this session for a cross-process tab move: stop the blocking

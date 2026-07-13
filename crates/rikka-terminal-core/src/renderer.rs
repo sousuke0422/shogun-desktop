@@ -956,7 +956,7 @@ pub fn render_grid(
             .unwrap_or(false);
     v_flex()
         .font_family(font.to_string())
-        .text_size(px(13.))
+        .text_size(crate::typography::font_size())
         .children(snap.cells.iter().enumerate().map(move |(row_idx, row)| {
             // Reverse-video marking is the Block presentation only; Beam /
             // Underline draw a thin quad instead (below), and Hidden (?25l)
@@ -1019,7 +1019,7 @@ pub fn render_grid(
                     let _ft_paint = crate::frametime::paint_guard();
                     let ox = f32::from(bounds.origin.x);
                     let oy = f32::from(bounds.origin.y);
-                    let font_size = px(13.);
+                    let font_size = crate::typography::font_size();
                     let line_height = px(ch);
                     let mut col = 0usize;
 
@@ -1489,7 +1489,7 @@ pub fn measure_cell_metrics(
     // Convert to owned String first to satisfy the lifetime bound.
     let font_spec = gpui::font(font_name.to_string());
     let font_id = ts.resolve_font(&font_spec);
-    let font_size = px(13.0);
+    let font_size = crate::typography::font_size();
 
     // ch_advance returns Result<Pixels, _>.  Guard against both Err and Ok(0.0):
     // GPUI may return Ok(Pixels(0.0)) while the font is still being measured

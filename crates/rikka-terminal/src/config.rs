@@ -26,6 +26,37 @@ use crate::wt_profiles::WtProfile;
 pub struct Config {
     #[serde(default)]
     pub profiles: ProfilesSection,
+    #[serde(default)]
+    pub appearance: AppearanceSection,
+    #[serde(default)]
+    pub terminal: TerminalSection,
+}
+
+/// ```toml
+/// [appearance]
+/// font = "Cascadia Mono"   # grid font (default: Consolas)
+/// font_size = 14.0         # logical px (default: 13.0)
+/// acrylic = true           # blurred window background (default: off;
+///                          # the RIKKA_ACRYLIC env var still works)
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AppearanceSection {
+    #[serde(default)]
+    pub font: Option<String>,
+    #[serde(default)]
+    pub font_size: Option<f32>,
+    #[serde(default)]
+    pub acrylic: Option<bool>,
+}
+
+/// ```toml
+/// [terminal]
+/// scrollback = 50000       # history lines per tab (default: 10000)
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TerminalSection {
+    #[serde(default)]
+    pub scrollback: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -184,6 +215,8 @@ mod tests {
     #[test]
     fn hidden_drops_by_name_or_guid() {
         let cfg = Config {
+            appearance: AppearanceSection::default(),
+            terminal: TerminalSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: true,
                 hidden: vec!["Ubuntu".into(), "{c}".into()],
@@ -200,6 +233,8 @@ mod tests {
     #[test]
     fn explicit_default_wins_over_wt() {
         let cfg = Config {
+            appearance: AppearanceSection::default(),
+            terminal: TerminalSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: true,
                 hidden: vec![],
@@ -214,6 +249,8 @@ mod tests {
     #[test]
     fn opt_out_yields_empty_menu() {
         let cfg = Config {
+            appearance: AppearanceSection::default(),
+            terminal: TerminalSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: false,
                 ..Default::default()

@@ -646,6 +646,15 @@ impl<T> Term<T> {
         &self.grid
     }
 
+    /// Change the scrollback capacity of a LIVE terminal (rikka addition —
+    /// upstream only reads it from the config at construction). Both grids
+    /// update; shrinking drops the oldest history rows.
+    pub fn set_scrolling_history(&mut self, lines: usize) {
+        self.config.scrolling_history = lines;
+        self.grid.update_history(lines);
+        self.inactive_grid.update_history(lines);
+    }
+
     /// The grid NOT currently displayed — the primary screen (with its
     /// scrollback) while the alternate screen is active, and vice versa.
     /// A cross-window tab move serializes it so leaving the alt screen

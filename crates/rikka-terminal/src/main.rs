@@ -86,13 +86,44 @@ pub(crate) const FRAME_COALESCE: Duration = Duration::from_millis(8);
 
 gpui::actions!(rikka_terminal, [TerminalCopy, TerminalPaste]);
 
-/// RIKKA_ACRYLIC=1 → system acrylic blur behind the window, with the chrome
-/// and pane surround going translucent. The grid itself stays opaque (the
-/// engine paints cell backgrounds) — blur belongs to the chrome, not under
-/// the text.
+/// Appearance/terminal settings resolved once at startup from
+/// `%APPDATA%/rikka-terminal/config.toml` (see `config.rs`).
+static FONT_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static ACRYLIC_CFG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static SCROLLBACK_CFG: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+
+fn apply_appearance(cfg: &config::Config) {
+    if let Some(size) = cfg.appearance.font_size {
+        rikka_terminal_core::typography::set_font_size(size);
+    }
+    if let Some(font) = &cfg.appearance.font {
+        let _ = FONT_OVERRIDE.set(font.clone());
+    }
+    let _ = ACRYLIC_CFG.set(cfg.appearance.acrylic.unwrap_or(false));
+    let _ = SCROLLBACK_CFG.set(cfg.terminal.scrollback.map(|n| n as usize));
+}
+
+/// The grid font: configured, or the classic default.
+fn mono_font() -> &'static str {
+    FONT_OVERRIDE.get().map(String::as_str).unwrap_or(MONO_FONT)
+}
+
+/// Configured scrollback capacity, applied to every new session by
+/// [`hub::new_tab`]. `None` = keep the engine default.
+pub(crate) fn configured_scrollback() -> Option<usize> {
+    SCROLLBACK_CFG.get().copied().flatten()
+}
+
+/// `[appearance] acrylic = true` (or RIKKA_ACRYLIC=1) → system acrylic
+/// blur behind the window, with the chrome and pane surround going
+/// translucent. The grid itself stays opaque (the engine paints cell
+/// backgrounds) — blur belongs to the chrome, not under the text.
 fn acrylic() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("RIKKA_ACRYLIC").is_ok_and(|v| v != "0"))
+    *ON.get_or_init(|| {
+        std::env::var("RIKKA_ACRYLIC").is_ok_and(|v| v != "0")
+            || ACRYLIC_CFG.get().copied().unwrap_or(false)
+    })
 }
 
 /// Strip fill: solid chrome, or a 72% tint over acrylic.
@@ -350,7 +381,7 @@ impl ImeHost for TabsWindow {
     }
 
     fn ime_font(&self) -> &str {
-        MONO_FONT
+        mono_font()
     }
 }
 
@@ -748,7 +779,7 @@ impl Render for TabsWindow {
             }
         }
 
-        let (cw, ch) = measure_cell_metrics(&cx.text_system(), MONO_FONT, window.scale_factor());
+        let (cw, ch) = measure_cell_metrics(&cx.text_system(), mono_font(), window.scale_factor());
 
         // Fit the ACTIVE tab's PTY to the pane (viewport minus strip/padding).
         let vp = window.viewport_size();
@@ -819,6 +850,13 @@ impl Render for TabsWindow {
                     v.overflow_hidden()
                 }
             })
+            // A drop on the strip's empty space (past the last tab) moves
+            // the dragged tab to the end — drops ON a tab are consumed by
+            // that tab's own handler and never bubble here.
+            .on_drop(cx.listener(|this, drag: &TabDrag, _window, cx| {
+                let last = this.tabs.len().saturating_sub(1);
+                this.reorder_tab(drag.ix, last, cx);
+            }))
             .children(self.tabs.iter().enumerate().flat_map(|(ix, entry)| {
                 let title = entry
                     .0
@@ -1094,7 +1132,7 @@ impl Render for TabsWindow {
                         .size_full()
                         .child(render_grid(
                             &snap,
-                            MONO_FONT,
+                            mono_font(),
                             cw,
                             ch,
                             snap.selection,
@@ -2051,7 +2089,9 @@ fn main() {
         // at startup; a broken/absent config or wt just yields an empty menu
         // and the built-in shell search).
         let (wt, wt_default) = wt_profiles::discover();
-        let menu = config::Config::load().build_menu(wt, wt_default);
+        let cfg = config::Config::load();
+        apply_appearance(&cfg);
+        let menu = cfg.build_menu(wt, wt_default);
         hub::init(cx, menu);
         // A cold-start handoff rides in this launch (IPC.md "attach cold"):
         // adopt the inherited handles as the initial window. On failure fall

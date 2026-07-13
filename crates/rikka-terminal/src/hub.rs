@@ -53,6 +53,11 @@ pub struct TabEntry(pub Arc<TabSession>);
 
 /// Wrap a fresh session into a tab and spawn its (sole,永住) driver task.
 pub fn new_tab(cx: &mut App, session: TerminalSession) -> TabEntry {
+    // Every tab passes through here (local spawns, handoffs, adopted
+    // moves) — the one spot to apply the configured scrollback.
+    if let Some(lines) = crate::configured_scrollback() {
+        session.set_scrollback(lines);
+    }
     let closed = Arc::new(AtomicBool::new(false));
     let generation = Arc::clone(&session.generation);
     let notify = Arc::clone(&session.notify);
