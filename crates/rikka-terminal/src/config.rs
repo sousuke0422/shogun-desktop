@@ -36,6 +36,7 @@ pub struct Config {
 /// [appearance]
 /// font = "Cascadia Mono"   # grid font (default: Consolas)
 /// font_size = 14.0         # logical px (default: 13.0)
+/// line_height = 1.3        # cell height = font_size × this (default: 1.2)
 /// acrylic = true           # blurred window background (default: off;
 ///                          # the RIKKA_ACRYLIC env var still works)
 /// ```
@@ -45,6 +46,8 @@ pub struct AppearanceSection {
     pub font: Option<String>,
     #[serde(default)]
     pub font_size: Option<f32>,
+    #[serde(default)]
+    pub line_height: Option<f32>,
     #[serde(default)]
     pub acrylic: Option<bool>,
 }

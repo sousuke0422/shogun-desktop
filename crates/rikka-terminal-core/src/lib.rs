@@ -228,6 +228,24 @@ pub mod typography {
             gpui::px(f32::from_bits(bits))
         }
     }
+
+    static LINE_HEIGHT_BITS: AtomicU32 = AtomicU32::new(0);
+
+    /// Set the line-height multiplier (`cell_height = font_size × this`).
+    pub fn set_line_height(mult: f32) {
+        if mult.is_finite() && (1.0..=3.0).contains(&mult) {
+            LINE_HEIGHT_BITS.store(mult.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// The configured line-height multiplier. The 1.2 default matches what
+    /// mainstream terminals (wt, alacritty, ghostty) get from their font
+    /// metrics (ascent + descent + line gap ≈ 1.2 × font size) — the old
+    /// fixed 1.5 read noticeably airier than any of them.
+    pub fn line_height() -> f32 {
+        let bits = LINE_HEIGHT_BITS.load(Ordering::Relaxed);
+        if bits == 0 { 1.2 } else { f32::from_bits(bits) }
+    }
 }
 
 impl TerminalSession {

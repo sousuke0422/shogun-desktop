@@ -96,6 +96,9 @@ fn apply_appearance(cfg: &config::Config) {
     if let Some(size) = cfg.appearance.font_size {
         rikka_terminal_core::typography::set_font_size(size);
     }
+    if let Some(mult) = cfg.appearance.line_height {
+        rikka_terminal_core::typography::set_line_height(mult);
+    }
     if let Some(font) = &cfg.appearance.font {
         let _ = FONT_OVERRIDE.set(font.clone());
     }

@@ -1449,18 +1449,11 @@ pub(crate) fn coalesce_runs(
     runs.into_iter()
 }
 
-/// Line-height multiplier applied to `font_size` to compute the cell height.
-///
-/// Following Zed's terminal approach: `cell_height = font_size × LINE_HEIGHT_MULT`.
-///
-/// Rationale for 1.5:
-///   - OS-independent: avoids platform-specific differences between DirectWrite
-///     (ascent+descent ≈ 1.53×) and CoreText (leading not included in ascent+descent).
-///   - Empirically validated on Windows: 13pt × 1.5 = 19.5 ≈ 20.0 (CELL_H fallback).
-///   - macOS CoreText returns `ascent+descent` without `leading`, so the old formula
-///     produced cramped rows on Retina. A fixed multiplier removes the OS dependency.
-///   - Matches Alacritty / Windows Terminal's typical inter-line breathing room.
-const LINE_HEIGHT_MULT: f32 = 1.5;
+// Line height: `cell_height = font_size × typography::line_height()`.
+// A fixed multiplier (not font metrics) keeps DirectWrite / CoreText /
+// FreeType identical; the 1.2 default matches mainstream terminals — the
+// old fixed 1.5 measured ~30% airier than wt on the same font. Config:
+// `[appearance] line_height`.
 
 /// Measure cell dimensions from the active GPUI `TextSystem`.
 ///
@@ -1471,7 +1464,7 @@ const LINE_HEIGHT_MULT: f32 = 1.5;
 ///   At 125% DPI: `6.825 × 1.25 = 8.53 physical px → ceil → 9 → /1.25 = 7.2 logical px`.
 ///   Without the snap, each glyph overflows its cell by ≈0.4 px, breaking table
 ///   column alignment after ~30 characters.
-/// - **ch** = `font_size × LINE_HEIGHT_MULT` snapped to physical-pixel ceiling.
+/// - **ch** = `font_size × typography::line_height()` snapped to physical-pixel ceiling.
 ///   At 125% DPI: `19.5 × 1.25 = 24.375 physical px → ceil → 25 → /1.25 = 20.0 logical px`.
 ///   Without the snap, GPUI flex layout introduces per-row rounding drift, causing
 ///   tmux horizontal pane-border characters (`─`) to misalign vertically after N rows.
@@ -1523,7 +1516,7 @@ pub fn measure_cell_metrics(
     //   125% DPI: ceil(19.5 × 1.25) / 1.25 = 25 / 1.25 = 20.0 px
     //   200% DPI: ceil(19.5 × 2.0) / 2.0 = 39 / 2.0 = 19.5 px (no change)
     let ch = {
-        let raw = f32::from(font_size) * LINE_HEIGHT_MULT;
+        let raw = f32::from(font_size) * crate::typography::line_height();
         let sf = scale_factor.max(1.0);
         (raw * sf).ceil() / sf
     };
