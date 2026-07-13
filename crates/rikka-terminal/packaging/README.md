@@ -68,6 +68,29 @@ msiexec /x RikkaTerminal-0.1.0-machine.msi /qn
   before distribution (`signtool sign /fd SHA256 /a <msi>`), or
   SmartScreen/AppLocker will flag them on managed fleets.
 
+### Global (all-users) default-terminal registration
+
+`provision-default-terminal.ps1` (admin; `-DryRun` to preview) makes the
+sparse package machine-wide, pairing with the per-machine MSI:
+
+1. stages the signed `.msix` beside the binaries (rides an OS image),
+2. trusts the signing cert in `LocalMachine\TrustedPeople`,
+3. registers for every user — on Windows 11 via
+   `Add-AppxProvisionedPackage -ExternalLocation` (users auto-register at
+   logon); on Windows 10 (whose provisioning API lacks the parameter,
+   e.g. 19045) via an **Active Setup** stub that runs the per-user
+   `Add-AppxPackage` once at each user's next logon,
+4. registers the current user immediately.
+
+WDS recipe: per-machine MSI → this script → sysprep/capture. The
+Program Files payload, the machine cert and the Active Setup key all
+ride the image; every user on every deployed machine gets the package at
+first logon. The default-terminal *choice* stays per-user (HKCU) — pick
+RikkaTerminal once in Settings, or push the two `%%Startup` Delegation
+values via GPP if the fleet should default to it. Raise
+`ACTIVE_SETUP_VERSION` in the script when shipping a new package so
+existing profiles re-run the stub.
+
 ## Mechanism (verified against microsoft/terminal)
 
 Windows hands a newly launched console session to the registered terminal
