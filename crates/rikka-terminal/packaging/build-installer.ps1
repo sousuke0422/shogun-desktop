@@ -22,12 +22,24 @@ foreach ($f in @("rikka-terminal.exe", "rt.exe", "rikka-handoff.exe", "conpty.dl
     }
 }
 
-$out = Join-Path $PSScriptRoot "RikkaTerminal-$Version.msi"
+$user = Join-Path $PSScriptRoot "RikkaTerminal-$Version.msi"
 wix build (Join-Path $PSScriptRoot "installer.wxs") `
     -d "BinDir=$BinDir" -d "Version=$Version" `
-    -o $out
-if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
+    -o $user
+if ($LASTEXITCODE -ne 0) { throw "wix build failed (per-user)" }
 
-Write-Host "built: $out"
-Write-Host "install (per-user, no admin):  msiexec /i `"$out`""
-Write-Host "then, for default-terminal:    .\install-default-terminal.ps1  (by hand)"
+$machine = Join-Path $PSScriptRoot "RikkaTerminal-$Version-machine.msi"
+wix build (Join-Path $PSScriptRoot "installer-machine.wxs") `
+    -d "BinDir=$BinDir" -d "Version=$Version" `
+    -o $machine
+if ($LASTEXITCODE -ne 0) { throw "wix build failed (per-machine)" }
+
+Write-Host "built: $user"
+Write-Host "built: $machine"
+Write-Host ""
+Write-Host "per-user   (no admin):  msiexec /i `"$user`""
+Write-Host "per-machine (admin):    msiexec /i `"$machine`""
+Write-Host "then, for default-terminal (by hand):"
+Write-Host "  per-user:    .\install-default-terminal.ps1"
+Write-Host "  per-machine: .\install-default-terminal.ps1 -ExternalLocation `"C:\Program Files\RikkaTerminal`""
+Write-Host "NOTE: pick ONE scope — installing both leaves two copies."

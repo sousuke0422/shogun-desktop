@@ -11,20 +11,34 @@ The BINARIES ship as a per-user MSI (no admin): `rikka-terminal.exe`,
 `%LOCALAPPDATA%\RikkaTerminal` — the same directory the manual deploys
 always used — plus a Start-menu shortcut.
 
+A per-MACHINE variant (admin, `C:\Program Files\RikkaTerminal`, all-users
+shortcut) builds alongside it from `installer-machine.wxs`.
+
 ```powershell
 # build (WiX 5 as a dotnet tool: `dotnet tool install --global wix --version 5.0.2`
 #        — v6+ demands the OSMF EULA, v5 is the last plain-MIT line)
 cargo build --release --target-dir target-deploy -p rikka-terminal -p rikka-terminal-windows-integration
-.\build-installer.ps1                       # → RikkaTerminal-<ver>.msi
+.\build-installer.ps1        # → RikkaTerminal-<ver>.msi + RikkaTerminal-<ver>-machine.msi
 
-# install / upgrade / uninstall (all per-user)
-msiexec /i RikkaTerminal-0.1.0.msi
+msiexec /i RikkaTerminal-0.1.0.msi           # per-user (no admin)
+msiexec /i RikkaTerminal-0.1.0-machine.msi   # per-machine (admin prompt)
 ```
 
-The MSI carries the binaries ONLY. The default-terminal registration below
+Pick ONE scope — the two packages are independent products (different
+UpgradeCodes; Windows Installer cannot upgrade across install contexts),
+so installing both leaves two copies. Migrate by uninstalling one and
+installing the other.
+
+The MSIs carry the binaries ONLY. The default-terminal registration below
 (the sparse MSIX) stays a separate, manual step run AFTER the MSI — it
-points Windows at the files the MSI lays down. The `UpgradeCode` in
-`installer.wxs` is the product identity: never change it.
+points Windows at the files the MSI lays down:
+
+```powershell
+.\install-default-terminal.ps1                                                # per-user install
+.\install-default-terminal.ps1 -ExternalLocation "C:\Program Files\RikkaTerminal"  # per-machine install
+```
+
+The `UpgradeCode` in each .wxs is that product's identity: never change it.
 
 ## Mechanism (verified against microsoft/terminal)
 

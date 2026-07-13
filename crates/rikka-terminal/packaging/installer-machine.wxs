@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-MACHINE MSI for the RikkaTerminal binaries: same payload as
+  installer.wxs but into "Program Files\RikkaTerminal" for all users
+  (admin required), with an all-users Start-menu shortcut.
+
+  Its UpgradeCode is deliberately DIFFERENT from the per-user package:
+  Windows Installer only detects related products within one install
+  context anyway, so sharing the code would not make cross-scope
+  upgrades work — it would only invite confusion. Migrating between
+  scopes = uninstall one, install the other (see packaging/README.md).
+
+  Component GUIDs are also fresh: reusing the per-user ones would make
+  Installer treat the files as shared components across both products.
+
+  Default-terminal registration afterwards needs the matching path:
+      .\install-default-terminal.ps1 -ExternalLocation "C:\Program Files\RikkaTerminal"
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="RikkaTerminal"
+           Manufacturer="rikka"
+           Version="$(var.Version)"
+           UpgradeCode="9AD48A5F-54AB-48F2-8E83-A506669BCF13"
+           Scope="perMachine"
+           Language="1041"
+           Codepage="65001">
+
+    <MajorUpgrade DowngradeErrorMessage="新しい版が既に入っています。先にアンインストールしてください。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="RikkaTerminal">
+        <Component Id="MainExe" Guid="2A38E383-17F1-40D2-BD28-EB1DF185E74E">
+          <File Id="RikkaTerminalExe" Source="$(var.BinDir)\rikka-terminal.exe" KeyPath="yes" />
+          <Shortcut Id="RikkaShortcut"
+                    Directory="ProgramMenuFolder"
+                    Name="RikkaTerminal"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Advertise="yes" />
+        </Component>
+        <Component Id="RtExe" Guid="7C11FA41-9AF3-4A0C-88D2-2D9B1F18F16D">
+          <File Id="RtExe" Source="$(var.BinDir)\rt.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="HandoffExe" Guid="96625A62-89EA-48AD-86DA-B7A1462592EB">
+          <File Id="HandoffExe" Source="$(var.BinDir)\rikka-handoff.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="ConptyDll" Guid="8B039E0C-9D4A-40FD-841E-3D45F8BDE674">
+          <File Id="ConptyDll" Source="$(var.BinDir)\conpty.dll" KeyPath="yes" />
+        </Component>
+        <Component Id="OpenConsoleExe" Guid="41681CEA-D5C5-489A-9332-C9CAA4E07D49">
+          <File Id="OpenConsoleExe" Source="$(var.BinDir)\OpenConsole.exe" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+  </Package>
+</Wix>
