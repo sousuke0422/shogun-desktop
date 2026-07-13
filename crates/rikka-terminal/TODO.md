@@ -63,7 +63,5 @@
 
 ## 隣接（shogun-desktop 側）
 
-- [ ] **shogun-desktop の再ビルド+配備** — vendored の conhost Reflow
-      （`dbc90c8`）は共有コードにあり、System 経路（ssh.exe over ConPTY）
-      に効くが、shogun-desktop バイナリは `23b6f1a` 時点のまま。
-      殿の常用 Native (russh) 経路は ConPTY 非経由のため影響なし＝急がない。
+- [x] ~~shogun-desktop の再ビルド+配備~~ — `e88cd3c` で完了（conhost
+      Reflow + font_size/line_height 設定込み・rename 退避配備）。
