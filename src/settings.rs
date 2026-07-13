@@ -48,6 +48,13 @@ pub struct TerminalSettings {
     /// ss07 ::, ss08 .= — enable per feature to taste.
     #[serde(default)]
     pub font_features: String,
+    /// Terminal font size in logical px.
+    #[serde(default = "default_font_size")]
+    pub font_size: f32,
+    /// Cell height = font_size × this. The 1.2 default matches mainstream
+    /// terminals (wt/alacritty); raise for airier rows.
+    #[serde(default = "default_line_height")]
+    pub line_height: f32,
     /// Ask the remote tmux to forward pane titles (`set-titles on`), so the
     /// terminal can turn an agent's title spinner into a progress bar when the
     /// agent can't use OSC 9;4 (Claude Code inside tmux). On by default; turning
@@ -135,6 +142,14 @@ pub fn parse_font_features(raw: &str) -> Vec<(String, u32)> {
         .collect()
 }
 
+fn default_font_size() -> f32 {
+    13.0
+}
+
+fn default_line_height() -> f32 {
+    1.2
+}
+
 fn default_terminal_font() -> String {
     "Moralerspace Neon HW".to_string()
 }
@@ -152,6 +167,8 @@ impl Default for TerminalSettings {
             identity: TerminalIdentity::default(),
             term: TermName::default(),
             font_features: String::new(),
+            font_size: default_font_size(),
+            line_height: default_line_height(),
             tmux_forward_titles: true,
             tsf: true,
         }
@@ -461,6 +478,8 @@ mod tests {
                 identity: TerminalIdentity::Ghostty,
                 term: TermName::XtermGhostty,
                 font_features: "ss01, ss03".into(),
+                font_size: 13.0,
+                line_height: 1.2,
                 tmux_forward_titles: false,
                 tsf: false,
             },

@@ -1049,6 +1049,8 @@ impl ShogunWindow {
         crate::terminal::renderer::set_font_features(crate::settings::parse_font_features(
             &settings.terminal.font_features,
         ));
+        crate::terminal::typography::set_font_size(settings.terminal.font_size);
+        crate::terminal::typography::set_line_height(settings.terminal.line_height);
         // TSF gate is read per-frame, so store it live (the toggle already
         // did, but a save from any state re-syncs it); then persist below.
         crate::tsf::set_enabled(settings.terminal.tsf);

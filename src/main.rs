@@ -82,6 +82,8 @@ fn main() {
     rikka_terminal_core::renderer::set_font_features(settings::parse_font_features(
         &startup_settings.terminal.font_features,
     ));
+    rikka_terminal_core::typography::set_font_size(startup_settings.terminal.font_size);
+    rikka_terminal_core::typography::set_line_height(startup_settings.terminal.line_height);
     // Seed the TSF enable flag from settings (on by default); saving settings
     // re-applies it at runtime, and the SHOGUN_TSF env var still overrides.
     tsf::set_enabled(startup_settings.terminal.tsf);

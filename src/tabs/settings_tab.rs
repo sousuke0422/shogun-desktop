@@ -24,6 +24,10 @@ pub struct SettingsTab {
     multiagent_session: Entity<InputState>,
     terminal_font: Entity<InputState>,
     font_features: Entity<InputState>,
+    /// No UI yet — carried through so saving does not reset them
+    /// (edit settings.json directly).
+    font_size: f32,
+    line_height: f32,
     pub desktop_notifications: bool,
     pub desktop_notifications_multiagent: bool,
     pub tmux_forward_titles: bool,
@@ -114,6 +118,8 @@ impl SettingsTab {
             multiagent_session,
             terminal_font,
             font_features,
+            font_size: settings.terminal.font_size,
+            line_height: settings.terminal.line_height,
             desktop_notifications: settings.terminal.desktop_notifications,
             desktop_notifications_multiagent: settings.terminal.desktop_notifications_multiagent,
             tmux_forward_titles: settings.terminal.tmux_forward_titles,
@@ -165,6 +171,8 @@ impl SettingsTab {
             terminal: crate::settings::TerminalSettings {
                 font: self.terminal_font.read(cx).value().to_string(),
                 font_features: self.font_features.read(cx).value().to_string(),
+                font_size: self.font_size,
+                line_height: self.line_height,
                 desktop_notifications: self.desktop_notifications,
                 desktop_notifications_multiagent: self.desktop_notifications_multiagent,
                 tmux_forward_titles: self.tmux_forward_titles,
