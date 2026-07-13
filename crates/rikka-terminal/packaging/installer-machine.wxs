@@ -28,10 +28,20 @@
     <MajorUpgrade DowngradeErrorMessage="新しい版が既に入っています。先にアンインストールしてください。" />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- Remember-property — see installer.wxs: an uninstall never receives
+         the command-line INSTALLFOLDER; without this read-back it deletes
+         from the DEFAULT path instead. -->
+    <Property Id="INSTALLFOLDER">
+      <RegistrySearch Id="RememberInstallFolder" Root="HKLM"
+                      Key="Software\RikkaTerminal\Install"
+                      Name="InstallFolder" Type="raw" />
+    </Property>
+
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="RikkaTerminal">
         <Component Id="MainExe" Guid="2A38E383-17F1-40D2-BD28-EB1DF185E74E">
           <File Id="RikkaTerminalExe" Source="$(var.BinDir)\rikka-terminal.exe" KeyPath="yes" />
+          <RegistryValue Root="HKLM" Key="Software\RikkaTerminal\Install" Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" />
           <Shortcut Id="RikkaShortcut"
                     Directory="ProgramMenuFolder"
                     Name="RikkaTerminal"

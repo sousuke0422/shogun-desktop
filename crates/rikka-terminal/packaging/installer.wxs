@@ -26,6 +26,17 @@
     <MajorUpgrade DowngradeErrorMessage="新しい版が既に入っています。先にアンインストールしてください。" />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- Remember-property: a later uninstall/repair does NOT receive the
+         INSTALLFOLDER the install was given on its command line — without
+         this read-back it would resolve the DEFAULT path and delete
+         whatever lives there (learned the hard way: a test uninstall with
+         an overridden folder wiped the real deployment). -->
+    <Property Id="INSTALLFOLDER">
+      <RegistrySearch Id="RememberInstallFolder" Root="HKCU"
+                      Key="Software\RikkaTerminal\Install"
+                      Name="InstallFolder" Type="raw" />
+    </Property>
+
     <!-- Per-user components: HKCU registry values are the key paths
          (files under the user profile cannot be, per ICE38). -->
     <StandardDirectory Id="LocalAppDataFolder">
@@ -33,6 +44,7 @@
         <Component Id="MainExe" Guid="8B1C7E58-95F3-4E38-A56B-2D9C7B24E101">
           <File Id="RikkaTerminalExe" Source="$(var.BinDir)\rikka-terminal.exe" />
           <RegistryValue Root="HKCU" Key="Software\RikkaTerminal\Install" Name="main" Type="integer" Value="1" KeyPath="yes" />
+          <RegistryValue Root="HKCU" Key="Software\RikkaTerminal\Install" Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" />
           <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
         </Component>
         <Component Id="RtExe" Guid="2E64D0A3-A6F9-4A6E-93F3-52C4A45D1B02">

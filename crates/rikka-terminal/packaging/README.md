@@ -40,6 +40,34 @@ points Windows at the files the MSI lays down:
 
 The `UpgradeCode` in each .wxs is that product's identity: never change it.
 
+## Unattended & image-based deployment (WDS / Intune / SCCM)
+
+Silent install / uninstall, both scopes (verified):
+
+```powershell
+msiexec /i RikkaTerminal-0.1.0-machine.msi /qn /l*v install.log     # SYSTEM-context friendly
+msiexec /i RikkaTerminal-0.1.0-machine.msi INSTALLFOLDER="D:\Tools\Rikka" /qn
+msiexec /x RikkaTerminal-0.1.0-machine.msi /qn
+```
+
+- **Baking into an OS image (WDS):** use the per-MACHINE MSI. Its payload
+  is Program Files only, its registry footprint is one HKLM key (no user
+  profile, no SID/machine-specific data), so a sysprep'd captured image
+  deploys cleanly. The per-user MSI and the default-terminal sparse MSIX
+  are profile-bound — do NOT bake them; run them per user after first
+  logon (the MSIX step is manual by design).
+- **Detection rules:** detect by `UpgradeCode` (the ProductCode changes
+  every build by design — MajorUpgrade), or by the
+  `Software\RikkaTerminal\Install\InstallFolder` registry value
+  (HKLM for per-machine, HKCU for per-user).
+- **Custom folder + uninstall:** the install records `INSTALLFOLDER` in
+  that registry value and uninstall reads it back (remember-property
+  pattern). Without it, Windows Installer would resolve the DEFAULT path
+  on uninstall and delete the wrong directory — this bit us in testing.
+- **Signing:** signtool is available via the Windows SDK; sign both MSIs
+  before distribution (`signtool sign /fd SHA256 /a <msi>`), or
+  SmartScreen/AppLocker will flag them on managed fleets.
+
 ## Mechanism (verified against microsoft/terminal)
 
 Windows hands a newly launched console session to the registered terminal
