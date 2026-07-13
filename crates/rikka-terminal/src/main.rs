@@ -797,6 +797,13 @@ impl Render for TabsWindow {
         let plus_w = 32.0 + if has_profile_menu { 18.0 } else { 0.0 };
         let avail = (vp.width / px(1.)) - 8.0 - (3.0 * 46.0) - (2.0 * 24.0);
         let needs_scroll = (self.tabs.len() as f32 * 100.0 + plus_w) > avail;
+        // WinUI TabView (Files/wt) sizing: EQUAL widths regardless of the
+        // title — the standard 240px, shrinking uniformly to the 100px
+        // floor as tabs crowd the strip, then they scroll. Computed here
+        // instead of leaning on flex shrink: a (potential) scroll
+        // container measures its children against infinite space, so
+        // taffy would never shrink them.
+        let tab_w = ((avail - plus_w) / self.tabs.len().max(1) as f32).clamp(100.0, 240.0);
         let tab_viewport = div()
             .id("tab-viewport")
             .flex_1()
@@ -836,8 +843,9 @@ impl Render for TabsWindow {
                 let tab = div()
                     .id(("tab", ix))
                     .h(px(TAB_H))
-                    .min_w(px(100.))
-                    .max_w(px(240.))
+                    // Equal WinUI TabView width — see `tab_w` above.
+                    .w(px(tab_w))
+                    .flex_shrink_0()
                     .pl(px(8.))
                     .pr(px(4.))
                     .py(px(3.))
