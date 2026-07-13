@@ -796,14 +796,50 @@ impl Render for TabsWindow {
         // plus [+]/⌄ can't fit left of the caption group and the arrows.
         let plus_w = 32.0 + if has_profile_menu { 18.0 } else { 0.0 };
         let avail = (vp.width / px(1.)) - 8.0 - (3.0 * 46.0) - (2.0 * 24.0);
-        let needs_scroll = (self.tabs.len() as f32 * 100.0 + plus_w) > avail;
-        // WinUI TabView (Files/wt) sizing: EQUAL widths regardless of the
-        // title — the standard 240px, shrinking uniformly to the 100px
-        // floor as tabs crowd the strip, then they scroll. Computed here
-        // instead of leaning on flex shrink: a (potential) scroll
-        // container measures its children against infinite space, so
-        // taffy would never shrink them.
-        let tab_w = ((avail - plus_w) / self.tabs.len().max(1) as f32).clamp(100.0, 240.0);
+        // wt-feel sizing: a tab fits its TITLE — close button and padding
+        // included — capped at WinUI's 240px standard, floored at 100px.
+        // Widths are computed (not left to flex): the strip is a potential
+        // scroll container, and taffy measures such children against
+        // infinite space, never shrinking them. shape_line results are
+        // cached by the text system, so the per-frame cost is negligible.
+        let ui_font = window.text_style().font();
+        let tab_meta: Vec<(String, f32)> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(ix, entry)| {
+                let title = entry
+                    .0
+                    .session
+                    .title
+                    .lock()
+                    .clone()
+                    .unwrap_or_else(|| format!("シェル {}", ix + 1));
+                let title: String = title.chars().take(20).collect();
+                let text_w: f32 = window
+                    .text_system()
+                    .shape_line(
+                        title.clone().into(),
+                        px(12.),
+                        &[gpui::TextRun {
+                            len: title.len(),
+                            font: ui_font.clone(),
+                            color: gpui::Hsla::default(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        }],
+                        None,
+                    )
+                    .width
+                    .into();
+                // Chrome: 8 pl + 4 pr + 4 close-margin + 32 close button.
+                let w = (text_w + 48.0).clamp(100.0, 240.0);
+                (title, w)
+            })
+            .collect();
+        let tabs_total: f32 = tab_meta.iter().map(|(_, w)| w).sum();
+        let needs_scroll = tabs_total + plus_w > avail;
         let tab_viewport = div()
             .id("tab-viewport")
             .flex_1()
@@ -819,15 +855,8 @@ impl Render for TabsWindow {
                     v.overflow_hidden()
                 }
             })
-            .children(self.tabs.iter().enumerate().flat_map(|(ix, entry)| {
-                let title = entry
-                    .0
-                    .session
-                    .title
-                    .lock()
-                    .clone()
-                    .unwrap_or_else(|| format!("シェル {}", ix + 1));
-                let title: String = title.chars().take(20).collect();
+            .children(self.tabs.iter().enumerate().flat_map(|(ix, _entry)| {
+                let (title, tab_w) = tab_meta[ix].clone();
                 let drag_title = title.clone();
                 let active = ix == active_ix;
                 // Separator to the left of this tab — hidden next to the
