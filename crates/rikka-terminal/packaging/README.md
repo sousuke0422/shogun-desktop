@@ -4,6 +4,28 @@ Make RikkaTerminal selectable (and eventually the active choice) in the
 Windows 10/11 **Default terminal application** dropdown — without packaging `rt`
 itself into MSIX and without `rt` ever linking COM.
 
+## Installing the terminal itself (per-user MSI)
+
+The BINARIES ship as a per-user MSI (no admin): `rikka-terminal.exe`,
+`rt.exe`, `rikka-handoff.exe` and the sideloaded ConPTY pair land in
+`%LOCALAPPDATA%\RikkaTerminal` — the same directory the manual deploys
+always used — plus a Start-menu shortcut.
+
+```powershell
+# build (WiX 5 as a dotnet tool: `dotnet tool install --global wix --version 5.0.2`
+#        — v6+ demands the OSMF EULA, v5 is the last plain-MIT line)
+cargo build --release --target-dir target-deploy -p rikka-terminal -p rikka-terminal-windows-integration
+.\build-installer.ps1                       # → RikkaTerminal-<ver>.msi
+
+# install / upgrade / uninstall (all per-user)
+msiexec /i RikkaTerminal-0.1.0.msi
+```
+
+The MSI carries the binaries ONLY. The default-terminal registration below
+(the sparse MSIX) stays a separate, manual step run AFTER the MSI — it
+points Windows at the files the MSI lays down. The `UpgradeCode` in
+`installer.wxs` is the product identity: never change it.
+
 ## Mechanism (verified against microsoft/terminal)
 
 Windows hands a newly launched console session to the registered terminal

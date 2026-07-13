@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-user MSI for the RikkaTerminal BINARIES only: rikka-terminal.exe,
+  rt.exe, rikka-handoff.exe and the sideloaded ConPTY pair, into
+  %LOCALAPPDATA%\RikkaTerminal (the same directory the manual deploys have
+  always used), plus a Start-menu shortcut. No admin rights involved.
+
+  Deliberately NOT here: the default-terminal registration. That is the
+  sparse MSIX package (AppxManifest.xml + install-default-terminal.ps1),
+  installed by hand AFTER this MSI — it points Windows at the very files
+  this MSI lays down. See packaging/README.md.
+
+  Build: packaging/build-installer.ps1 (wix build, BinDir bound to the
+  release output). The UpgradeCode is the product identity — never change
+  it, or upgrades stop replacing older installs.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="RikkaTerminal"
+           Manufacturer="rikka"
+           Version="$(var.Version)"
+           UpgradeCode="5132BD06-6062-4B85-A32A-743C98B69DFC"
+           Scope="perUser"
+           Language="1041"
+           Codepage="65001">
+
+    <MajorUpgrade DowngradeErrorMessage="新しい版が既に入っています。先にアンインストールしてください。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Per-user components: HKCU registry values are the key paths
+         (files under the user profile cannot be, per ICE38). -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="RikkaTerminal">
+        <Component Id="MainExe" Guid="8B1C7E58-95F3-4E38-A56B-2D9C7B24E101">
+          <File Id="RikkaTerminalExe" Source="$(var.BinDir)\rikka-terminal.exe" />
+          <RegistryValue Root="HKCU" Key="Software\RikkaTerminal\Install" Name="main" Type="integer" Value="1" KeyPath="yes" />
+          <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        </Component>
+        <Component Id="RtExe" Guid="2E64D0A3-A6F9-4A6E-93F3-52C4A45D1B02">
+          <File Id="RtExe" Source="$(var.BinDir)\rt.exe" />
+          <RegistryValue Root="HKCU" Key="Software\RikkaTerminal\Install" Name="rt" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+        <Component Id="HandoffExe" Guid="C0B7F5D1-30E4-4B7B-8C34-9AF2E60C3D03">
+          <File Id="HandoffExe" Source="$(var.BinDir)\rikka-handoff.exe" />
+          <RegistryValue Root="HKCU" Key="Software\RikkaTerminal\Install" Name="handoff" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+        <Component Id="ConptyDll" Guid="6A93B2C4-71D8-4F0A-BD15-04E8A7F61E04">
+          <File Id="ConptyDll" Source="$(var.BinDir)\conpty.dll" />
+          <RegistryValue Root="HKCU" Key="Software\RikkaTerminal\Install" Name="conpty" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+        <Component Id="OpenConsoleExe" Guid="D45E19F7-8B26-4C51-9E60-B31C5D28F605">
+          <File Id="OpenConsoleExe" Source="$(var.BinDir)\OpenConsole.exe" />
+          <RegistryValue Root="HKCU" Key="Software\RikkaTerminal\Install" Name="openconsole" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="StartMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="F8A20C6B-4D97-4E13-8842-6C1F0B39A706">
+        <Shortcut Id="RikkaShortcut"
+                  Name="RikkaTerminal"
+                  Target="[INSTALLFOLDER]rikka-terminal.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\RikkaTerminal\Install" Name="shortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Package>
+</Wix>

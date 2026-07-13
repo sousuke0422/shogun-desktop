@@ -6,3 +6,7 @@ target-release-verify/
 target-verify/
 target-verify-alac/
 target-win-verify/
+
+# WiX installer outputs (packaging/build-installer.ps1)
+*.msi
+*.wixpdb
