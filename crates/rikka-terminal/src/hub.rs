@@ -58,6 +58,9 @@ pub fn new_tab(cx: &mut App, session: TerminalSession) -> TabEntry {
     if let Some(lines) = crate::configured_scrollback() {
         session.set_scrollback(lines);
     }
+    // Same funnel logic for `[logging] auto_start` — a moved tab resumes
+    // recording into a fresh file on the receiving side.
+    crate::session_log::auto_start(&session);
     let closed = Arc::new(AtomicBool::new(false));
     let generation = Arc::clone(&session.generation);
     let notify = Arc::clone(&session.notify);

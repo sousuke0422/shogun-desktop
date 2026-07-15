@@ -188,6 +188,10 @@ pub fn build_terminal_session_with_preface(
     // Flipped once the preface (if any) has been applied — the resize
     // settler holds every reflow until then (see the function docs).
     let preface_done = Arc::new(AtomicBool::new(preface.is_empty()));
+    // Session log sinks (Tera Term-style); attached at runtime through
+    // TerminalSession::set_logging.
+    let output_log: Arc<FairMutex<Option<std::fs::File>>> = Arc::default();
+    let input_log: Arc<FairMutex<Option<std::fs::File>>> = Arc::default();
 
     let (reader_thread, parser_thread) = {
         let term2 = Arc::clone(&term);
@@ -202,6 +206,7 @@ pub fn build_terminal_session_with_preface(
         let cell_px2 = Arc::clone(&cell_size_px);
         let writer2 = Arc::clone(&writer);
         let preface_done2 = Arc::clone(&preface_done);
+        let output_log2 = Arc::clone(&output_log);
         // The blocking `Read` lives on its own IO thread so the parse thread
         // can wait with a deadline: synchronized updates (CSI ? 2026, DEC
         // "Synchronized Output") buffer PTY bytes inside the vte Processor
@@ -233,6 +238,13 @@ pub fn build_terminal_session_with_preface(
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             if let Some(f) = dump.as_mut() {
+                                use std::io::Write as _;
+                                let _ = f.write_all(&buf[..n]);
+                            }
+                            // Session output log (Tera Term-style tee); the
+                            // lock is uncontended unless logging just
+                            // toggled.
+                            if let Some(f) = &mut *output_log2.lock() {
                                 use std::io::Write as _;
                                 let _ = f.write_all(&buf[..n]);
                             }
@@ -552,6 +564,8 @@ pub fn build_terminal_session_with_preface(
         reader_thread: FairMutex::new(reader_thread),
         parser_thread: FairMutex::new(parser_thread),
         pty_sealed,
+        output_log,
+        input_log,
         #[cfg(windows)]
         transfer: FairMutex::new(None),
     })
@@ -634,6 +648,58 @@ mod tests {
     fn row0_text(session: &TerminalSession) -> String {
         let snap = session.snapshot.lock();
         snap.cells[0].iter().map(|c| c.c).collect::<String>()
+    }
+
+    /// Session logging (Tera Term-style): the output log receives the raw
+    /// PTY byte stream verbatim, the input log what `send_bytes` carries.
+    /// The reader is gated on a channel so `set_logging` provably lands
+    /// before the first byte flows.
+    #[test]
+    fn session_logging_tees_output_and_input() {
+        struct Gated(std::sync::mpsc::Receiver<Vec<u8>>);
+        impl Read for Gated {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.0.recv() {
+                    Ok(b) => {
+                        let n = b.len().min(buf.len());
+                        buf[..n].copy_from_slice(&b[..n]);
+                        Ok(n)
+                    }
+                    Err(_) => Ok(0), // sender dropped = EOF
+                }
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let writer: Arc<FairMutex<Box<dyn Write + Send>>> =
+            Arc::new(FairMutex::new(Box::new(std::io::sink())));
+        let session = build_terminal_session(
+            20,
+            5,
+            Box::new(Gated(rx)),
+            writer,
+            Arc::new(crate::NoopResizer),
+            "test-terminal 0.0",
+        )
+        .unwrap();
+
+        let dir = std::env::temp_dir().join(format!("rikka-session-log-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.log");
+        let in_path = dir.join("in.log");
+        session.set_logging(
+            Some(std::fs::File::create(&out_path).unwrap()),
+            Some(std::fs::File::create(&in_path).unwrap()),
+        );
+        let script = b"hello \x1b[31mred\x1b[0m".to_vec();
+        tx.send(script.clone()).unwrap();
+        session.send_bytes(b"typed");
+        drop(tx);
+        wait_for_eof(&session);
+        session.set_logging(None, None); // close = flush
+
+        assert_eq!(std::fs::read(&out_path).unwrap(), script);
+        assert_eq!(std::fs::read(&in_path).unwrap(), b"typed");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// CSI ? 2026: bytes inside BSU/ESU are buffered by the vte Processor and

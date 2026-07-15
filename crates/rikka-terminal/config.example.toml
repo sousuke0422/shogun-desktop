@@ -23,3 +23,28 @@ hidden = ["Azure Cloud Shell"]
 # [[profiles.list]]
 # name = "Arch (WSL)"
 # command = ["wsl.exe", "-d", "Arch"]
+
+[appearance]
+# Grid font (default: Consolas) and size in logical px (default: 13.0).
+# font = "Cascadia Mono"
+# font_size = 14.0
+# Cell height = font_size × line_height (default: 1.2).
+# line_height = 1.3
+# Blurred (acrylic) window background. Default: off.
+# acrylic = true
+
+[terminal]
+# Scrollback history lines per tab (default: 10000).
+# scrollback = 50000
+
+[logging]
+# Tera Term-style session logging, toggled per tab with Ctrl+Shift+L
+# (● shows in the tab while recording). Raw PTY output is teed verbatim,
+# so `type`/`cat` of the file replays colors and all.
+# Save directory (default: ~/Documents/rikka-terminal-logs).
+# directory = 'C:\logs'
+# ALSO record sent keystrokes into *.input.log. Default: off — an input
+# log captures typed passwords; opt in deliberately.
+# log_input = true
+# Start logging on every new tab automatically. Default: off.
+# auto_start = true

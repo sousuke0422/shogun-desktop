@@ -192,6 +192,11 @@ pub struct TerminalSession {
     /// sender's teardown would fight the receiver's geometry, and ConPTY
     /// never repaints, so it would be permanent. Shared with the settler.
     pub pty_sealed: Arc<AtomicBool>,
+    /// Session log sinks (Tera Term-style). `output_log` is fed every raw
+    /// PTY byte by the reader thread; `input_log` receives what the user
+    /// sends via [`Self::send_bytes`]. Set through [`Self::set_logging`].
+    pub output_log: Arc<FairMutex<Option<std::fs::File>>>,
+    pub input_log: Arc<FairMutex<Option<std::fs::File>>>,
     /// Windows: birth-time duplicates of the ConPTY handle set, stocked by
     /// [`pty_handoff::build_handoff_session`] for a later cross-process tab
     /// move. `None` = not transferable (SSH, legacy portable-pty) or already
@@ -261,6 +266,21 @@ impl TerminalSession {
         self.term.lock().set_scrolling_history(lines);
     }
 
+    /// Start/replace session logging (Tera Term-style): `output` receives
+    /// every raw PTY byte (VT sequences included) from the reader thread;
+    /// `input` receives what the USER sends (keys, IME commits, pastes —
+    /// not protocol replies), so it may contain typed secrets: the
+    /// embedder should keep it opt-in. `None` closes that side.
+    pub fn set_logging(&self, output: Option<std::fs::File>, input: Option<std::fs::File>) {
+        *self.output_log.lock() = output;
+        *self.input_log.lock() = input;
+    }
+
+    /// Whether any log sink is currently attached.
+    pub fn logging_active(&self) -> bool {
+        self.output_log.lock().is_some() || self.input_log.lock().is_some()
+    }
+
     /// Quiesce this session for a cross-process tab move: stop the blocking
     /// PTY reader (two readers on one pipe shred the VT stream, so ours must
     /// be provably dead BEFORE the receiver assembles its session and starts
@@ -312,6 +332,12 @@ impl TerminalSession {
     }
 
     pub fn send_bytes(&self, bytes: &[u8]) {
+        // Input logging taps HERE (not the writer): protocol replies from
+        // the parse/clipboard threads also hit the writer, but only what
+        // the user sends belongs in an input log.
+        if let Some(log) = &mut *self.input_log.lock() {
+            let _ = log.write_all(bytes);
+        }
         let _ = self.writer.lock().write_all(bytes);
     }
 

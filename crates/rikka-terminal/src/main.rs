@@ -9,6 +9,7 @@
 //! A merge every window into this one (M where the OS delivers it);
 //! Ctrl+PageDown/PageUp (or Ctrl+Tab where delivered) cycles;
 //! Ctrl+Shift+C/V (and Ctrl/Shift+Insert) copy/paste;
+//! Ctrl+Shift+L toggles session logging (● in the tab; see session_log);
 //! Shift+PageUp/PageDown pages the scrollback.
 
 // Release builds are GUI-subsystem: no console window tags along (and
@@ -23,6 +24,7 @@ mod config;
 mod hub;
 #[cfg(windows)]
 mod pty_local;
+mod session_log;
 #[cfg(windows)]
 mod tab_move;
 mod tsf;
@@ -871,6 +873,14 @@ impl Render for TabsWindow {
                 let title: String = title.chars().take(20).collect();
                 let drag_title = title.clone();
                 let active = ix == active_ix;
+                // Recording indicator: session logging is on (Ctrl+Shift+L).
+                let rec_dot = entry.0.session.logging_active().then(|| {
+                    div()
+                        .mr(px(4.))
+                        .flex_shrink_0()
+                        .text_color(rgb(0xE81123))
+                        .child("●")
+                });
                 // Separator to the left of this tab — hidden next to the
                 // selected tab, whose silhouette does the separating.
                 let sep = (ix > 0 && !active && ix - 1 != active_ix).then(|| {
@@ -904,6 +914,7 @@ impl Render for TabsWindow {
                                 .hover(|t| t.bg(gpui::rgba(TAB_HOVER)))
                         }
                     })
+                    .children(rec_dot)
                     .child(
                         div()
                             .flex_1()
@@ -1278,6 +1289,15 @@ impl Render for TabsWindow {
                         // arrives.
                         "m" | "a" => {
                             this.merge_all(cx);
+                            true
+                        }
+                        // Session logging toggle — the ● in the tab is the
+                        // feedback, so redraw right away.
+                        "l" => {
+                            if let Some(s) = this.active_session() {
+                                session_log::toggle(s);
+                            }
+                            cx.notify();
                             true
                         }
                         "c" => {
@@ -2094,6 +2114,7 @@ fn main() {
         let (wt, wt_default) = wt_profiles::discover();
         let cfg = config::Config::load();
         apply_appearance(&cfg);
+        session_log::init(cfg.logging.clone());
         let menu = cfg.build_menu(wt, wt_default);
         hub::init(cx, menu);
         // A cold-start handoff rides in this launch (IPC.md "attach cold"):

@@ -50,6 +50,12 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
   （ContextMenu は開くと窓サイズ absolute 子を注入するため、スクロール
   コンテナに付けると grid が画面外へ吹き飛ぶ: shogun-desktop で実証済みの罠）
 - Shift+PageUp/PageDown で履歴ページング
+- **セッションロギング（Tera Term 流）**: Ctrl+Shift+L でタブ単位トグル
+  （記録中はタブに ●）。PTY 生バイトをそのまま tee するので、ログを
+  `type`/`cat` すれば色ごと再生できる。保存先や自動開始は config の
+  `[logging]`。入力ログ（`*.input.log`）は**タイプしたパスワードも写る**ため
+  `log_input = true` の明示オプトイン（実装: `src/session_log.rs`・
+  tee 本体はエンジン `pty_session.rs`/`lib.rs::send_bytes`）
 - フォントは Consolas（システム解決・CJK は DirectWrite fallback 任せ）
 - **UI の方向性 = Files (files.community) 系のソフト Fluent**: 低コントラストの
   レイヤ面（白 8〜12% オーバーレイ）・角丸ピルタブ＋hover・アクセントは

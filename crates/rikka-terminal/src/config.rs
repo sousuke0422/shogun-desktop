@@ -30,6 +30,8 @@ pub struct Config {
     pub appearance: AppearanceSection,
     #[serde(default)]
     pub terminal: TerminalSection,
+    #[serde(default)]
+    pub logging: LoggingSection,
 }
 
 /// ```toml
@@ -60,6 +62,26 @@ pub struct AppearanceSection {
 pub struct TerminalSection {
     #[serde(default)]
     pub scrollback: Option<u32>,
+}
+
+/// Tera Term-style session logging (Ctrl+Shift+L per tab; see session_log).
+///
+/// ```toml
+/// [logging]
+/// directory = 'C:\logs'    # save dir (default: ~/Documents/rikka-terminal-logs)
+/// log_input = true         # ALSO record keystrokes into *.input.log
+///                          # (default off — an input log captures typed
+///                          # passwords; opt in deliberately)
+/// auto_start = true        # every new tab starts logging (default off)
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LoggingSection {
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub log_input: Option<bool>,
+    #[serde(default)]
+    pub auto_start: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -220,6 +242,7 @@ mod tests {
         let cfg = Config {
             appearance: AppearanceSection::default(),
             terminal: TerminalSection::default(),
+            logging: LoggingSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: true,
                 hidden: vec!["Ubuntu".into(), "{c}".into()],
@@ -238,6 +261,7 @@ mod tests {
         let cfg = Config {
             appearance: AppearanceSection::default(),
             terminal: TerminalSection::default(),
+            logging: LoggingSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: true,
                 hidden: vec![],
@@ -254,6 +278,7 @@ mod tests {
         let cfg = Config {
             appearance: AppearanceSection::default(),
             terminal: TerminalSection::default(),
+            logging: LoggingSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: false,
                 ..Default::default()

@@ -43,9 +43,14 @@
       タブ間に挿入できると自然（cross-process は wire に挿入 index 追加）。
 - [x] ~~ghost の掴み位置~~ — 非問題と判明: gpui が cursor_offset を自動で
       保存・適用しており ghost は掴んだ位置に追従する。
-- [x] ~~設定ファイル~~ — 初版済: `[appearance] font / font_size / acrylic`
-      と `[terminal] scrollback`（%APPDATA%/rikka-terminal/config.toml・
-      実窓検証済）。残: キーバインド設定・テーマ/配色。
+- [x] ~~設定ファイル~~ — 初版済: `[appearance] font / font_size /
+      line_height / acrylic`・`[terminal] scrollback`・`[logging]`
+      （%APPDATA%/rikka-terminal/config.toml・実窓検証済）。
+      残: キーバインド設定・テーマ/配色。
+- [x] ~~セッションロギング（Tera Term 流）~~ — Ctrl+Shift+L トグル＋タブ●
+      表示＋`[logging]` config（auto_start / directory / log_input
+      オプトイン）。出力は PTY 生バイト tee（src/session_log.rs）。
+      実窓スモーク済（auto_start でログ生成・●表示・エスケープ列込み記録）。
 - [ ] キーバインド設定（config.toml で chord の再割当）。
 - [ ] フォント同梱（Cascadia 等）。
 
@@ -65,3 +70,5 @@
 
 - [x] ~~shogun-desktop の再ビルド+配備~~ — `e88cd3c` で完了（conhost
       Reflow + font_size/line_height 設定込み・rename 退避配備）。
+- [ ] セッションロギングの shogun-desktop 露出 — tee はエンジン側実装
+      なので `set_logging` を呼ぶ UI（トグル＋設定）を足すだけで載る。
