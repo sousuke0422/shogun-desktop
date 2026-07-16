@@ -54,6 +54,24 @@
 - [ ] キーバインド設定（config.toml で chord の再割当）。
 - [ ] フォント同梱（Cascadia 等）。
 
+## 将来構想
+
+- [ ] **own OpenConsole（fork 保有）** — 殿意向 2026-07-16。conhost 起因の実害が
+      累積しており（①APC 剥がし=ローカル kitty 画像不可・sixel 迂回中
+      ②OSC 0 タブタイトル不達疑い ③kitty keyboard pop で終了 burst 丸呑み
+      =今回の yazi 事件）、全て「端末側での回避」しかできていない。
+      microsoft/terminal は MIT でフォーク可能・vendored ABI（HPCON 手挙げ）を
+      自前ビルドで釘付けにできる利点もある。
+      - **やるなら patch-set 方式**: upstream 素のソース＋小さなパッチ列＋CI
+        ビルド（C++/MSVC toolchain が増えるのが最大コスト。upstream は高churn
+        なので直 fork は追従地獄）。
+      - **先にやる軽い手**: 今回の teardown 丸呑みは再現手順が probe で固まって
+        いるので upstream へ issue 報告（gh トークン RO のため起票は殿。文面は
+        こちらで起こせる）。修正が取り込まれれば vendored 更新だけで済む。
+      - **着手トリガー**: 端末側回避が不可能な要求が出た時。筆頭candidate=
+        ローカル kitty graphics passthrough（conhost が APC を落とす限り
+        こちら側では原理的に直せない）。
+
 ## 保守メモ
 
 - **ConPTY 越しに kitty keyboard を広告するな**（2026-07-16 yazi 事件）:
