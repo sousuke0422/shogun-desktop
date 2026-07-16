@@ -75,8 +75,24 @@
       Conn::peer_pid()`・不明なら fail-closed）。`DUPLICATE_CLOSE_SOURCE`
       故に偽 pid で第三者ハンドル窃取＋破壊ができた穴を塞ぐ。実窓で正規移送
       不変を確認。**Unix の listener ACL は未対応**（owner_only に一手）。
-- [ ] **Unix listener の 0700/0600 化** — 現状 abstract namespace は netns 内
-      から到達可能。P3 の Unix 移植時に owner_only へ実装。
+- [ ] **Unix listener の権限境界** — 現状 abstract namespace は netns 内から
+      到達可能かつ ACL/mode が一切効かない。P3 Unix 移植時の方針（2026-07-16
+      決定）:
+      1. **アクセス層** = filesystem socket を **0700 の per-user ランタイム
+         dir**（`$XDG_RUNTIME_DIR`／macOS `$TMPDIR`・既定で 0700）に置く。親
+         dir の traversal 拒否で「現ユーザーのみ」を表現でき、socket mode を
+         OS が尊重するかに依存しない。`$XDG_RUNTIME_DIR` 未設定時の
+         `/tmp/...-$UID.sock` fallback は 0700 親 dir を自前生成・検証して
+         symlink/再bind レースを防ぐこと（ここが Unix 実装の肝で、ACL より
+         面倒）。
+      2. **能力層** = accept で `Conn::peer_creds().euid() == 自分の euid` を
+         強制（`SO_PEERCRED`/`getpeereid`・interprocess が抽象化済）。Windows
+         の peer-pid gate の双子で、これが本命。
+      - **拡張 ACL は既定では使わない**: 「自分だけ」なら 0700 dir で足り
+        ACL は冗長。跨アカウント共有（艦隊で特定サービスアカウント許可等）が
+        要件化したときだけ導入 — その際 Linux=POSIX.1e(libacl)、macOS=NFSv4
+        系 ACL で API が分岐する可搬性コストを織り込む。owner_only の一手として
+        seam 内に閉じる。
 
 ## 将来構想
 
