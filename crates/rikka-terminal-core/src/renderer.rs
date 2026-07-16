@@ -91,9 +91,10 @@ pub fn with_emoji_fallback<E: gpui::Styled>(mut el: E) -> E {
 /// Covered:
 ///   U+2500-U+257F  Box Drawing (─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ ═ ║ ╔ ╗ ╚ ╝ …)
 ///   U+2580-U+259F  Block Elements (▀ ▄ █ ▌ ▐ ░ ▒ ▓ …)
+///   U+25A0         ■ BLACK SQUARE (btop's meter bar; alacritty fills it too)
 pub(crate) fn is_geom_box_char(c: char) -> bool {
     let cp = c as u32;
-    matches!(cp, 0x2500..=0x259F)
+    matches!(cp, 0x2500..=0x259F | 0x25A0)
 }
 
 /// A styled run of consecutive terminal cells with identical visual properties.
@@ -688,6 +689,11 @@ fn paint_box_char(
         '▆' => q!(rect!(ox, oy + ch * 2.0 / 8.0, x1, y1)),
         '▇' => q!(rect!(ox, oy + ch * 1.0 / 8.0, x1, y1)),
         '█' => q!(rect!(ox, oy, x1, y1)), // full block
+        // U+25A0 ■ BLACK SQUARE: btop's meter uses a row of these and expects
+        // a gapless bar, so fill the whole cell like a full block (what
+        // alacritty's built-in renderer does). The font glyph has side
+        // bearings that would leave gaps between adjacent squares.
+        '■' => q!(rect!(ox, oy, x1, y1)),
         '▉' => q!(rect!(ox, oy, ox + cw * 7.0 / 8.0, y1)),
         '▊' => q!(rect!(ox, oy, ox + cw * 6.0 / 8.0, y1)),
         '▋' => q!(rect!(ox, oy, ox + cw * 5.0 / 8.0, y1)),
@@ -1762,23 +1768,26 @@ mod tests {
         assert!(is_geom_box_char('┌')); // U+250C
         assert!(is_geom_box_char('█')); // U+2588
         assert!(is_geom_box_char('░')); // U+2591
-        assert!(is_geom_box_char('\u{259F}')); // U+259F upper limit
-        assert!(!is_geom_box_char('\u{25A0}')); // Geometric shapes start
+        assert!(is_geom_box_char('\u{259F}')); // U+259F upper limit of the block range
+        assert!(is_geom_box_char('■')); // U+25A0 — btop's meter (filled like a block)
+        assert!(!is_geom_box_char('\u{25A1}')); // U+25A1 (WHITE SQUARE) stays font-drawn
         assert!(!is_geom_box_char('→'));
         assert!(!is_geom_box_char('a'));
     }
 
     #[test]
     fn arrow_and_diamond_are_not_geom() {
-        // Arrows (U+2190-U+21FF) and geometric shapes (U+25A0-U+25FF)
-        // are NOT geometry-rendered — they use the primary font at 1-cell width.
+        // Arrows (U+2190-U+21FF) and the geometric shapes past U+25A0
+        // (U+25A1-U+25FF) are NOT geometry-rendered — they use the primary
+        // font at 1-cell width. U+25A0 ■ is the lone exception (btop meter).
         assert!(!is_geom_box_char('→')); // U+2192
         assert!(!is_geom_box_char('←')); // U+2190
         assert!(!is_geom_box_char('◆')); // U+25C6
         assert!(!is_geom_box_char('▶')); // U+25B6
-        // But box-drawing / block-elements ARE geometry:
+        // But box-drawing / block-elements / the black square ARE geometry:
         assert!(is_geom_box_char('─')); // U+2500
         assert!(is_geom_box_char('█')); // U+2588
+        assert!(is_geom_box_char('■')); // U+25A0
     }
 
     fn narrow_row(cols: usize) -> Vec<crate::SnapshotCell> {
