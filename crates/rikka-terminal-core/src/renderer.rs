@@ -689,11 +689,17 @@ fn paint_box_char(
         '▆' => q!(rect!(ox, oy + ch * 2.0 / 8.0, x1, y1)),
         '▇' => q!(rect!(ox, oy + ch * 1.0 / 8.0, x1, y1)),
         '█' => q!(rect!(ox, oy, x1, y1)), // full block
-        // U+25A0 ■ BLACK SQUARE: btop's meter uses a row of these and expects
-        // a gapless bar, so fill the whole cell like a full block (what
-        // alacritty's built-in renderer does). The font glyph has side
-        // bearings that would leave gaps between adjacent squares.
-        '■' => q!(rect!(ox, oy, x1, y1)),
+        // U+25A0 ■ BLACK SQUARE: a SQUARE (side = cell width), centered
+        // vertically — NOT a full-height rectangle like █. btop's meter is a
+        // row of these; alacritty/konsole/wt draw them square, forming a
+        // centered band ~half the cell tall. Full width, so adjacent squares
+        // tile into a continuous bar with no gaps (device-pixel cell snapping
+        // keeps the joins seam-free); the font glyph's side bearings — which
+        // is what left gaps before — are bypassed.
+        '■' => {
+            let top = oy + ((ch - cw) * 0.5).max(0.0);
+            q!(rect!(ox, top, x1, top + cw));
+        }
         '▉' => q!(rect!(ox, oy, ox + cw * 7.0 / 8.0, y1)),
         '▊' => q!(rect!(ox, oy, ox + cw * 6.0 / 8.0, y1)),
         '▋' => q!(rect!(ox, oy, ox + cw * 5.0 / 8.0, y1)),
