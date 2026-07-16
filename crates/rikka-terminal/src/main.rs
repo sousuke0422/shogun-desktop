@@ -1813,13 +1813,14 @@ fn pump_forwarded(cx: &mut App, msg: Forwarded) {
 fn handle_attach(
     tx: &futures::channel::mpsc::UnboundedSender<Forwarded>,
     args: ipc::AttachArgs,
+    peer_pid: u32,
 ) -> Result<()> {
     if args.target != ipc::Target::New {
         // Tab moves route directly: resolve_window, then attach on the
         // window's own socket. The monarch never proxies handles.
         anyhow::bail!("attach target window:<id>: resolve_window and attach its own socket");
     }
-    let pulled = attach::pull_attach(&args)?;
+    let pulled = attach::pull_attach(&args, peer_pid)?;
     match pulled.relay_to_window_process() {
         // Dropping `pulled` closes our copies; the child keeps its
         // inherited ones.
@@ -1839,6 +1840,7 @@ fn handle_attach(
 fn handle_attach(
     _tx: &futures::channel::mpsc::UnboundedSender<Forwarded>,
     _args: ipc::AttachArgs,
+    _peer_pid: u32,
 ) -> Result<()> {
     anyhow::bail!("attach is Windows-only (OS default-terminal handoff)")
 }
@@ -1956,9 +1958,17 @@ fn spawn_ipc_accept(
                             let _ = conn.send_response(&ipc::Response::ok());
                         }
                         Ok(ipc::Request::Attach(a)) => {
-                            let resp = match handle_attach(&tx, a) {
-                                Ok(()) => ipc::Response::ok(),
-                                Err(e) => ipc::Response::error(e.to_string()),
+                            // Handle transfer is gated on the OS-attested
+                            // peer PID; an unattestable peer is refused
+                            // (fail closed).
+                            let resp = match conn.peer_pid() {
+                                Some(peer) => match handle_attach(&tx, a, peer) {
+                                    Ok(()) => ipc::Response::ok(),
+                                    Err(e) => ipc::Response::error(e.to_string()),
+                                },
+                                None => ipc::Response::error(
+                                    "attach refused: peer identity could not be verified",
+                                ),
                             };
                             let _ = conn.send_response(&resp);
                         }
@@ -2028,9 +2038,15 @@ fn window_accept_loop(
             .name("rikka-win-conn".into())
             .spawn(move || match conn.recv_request() {
                 Ok(ipc::Request::Attach(a)) => {
-                    let resp = match adopt_attach(&tx, a) {
-                        Ok(()) => ipc::Response::ok(),
-                        Err(e) => ipc::Response::error(e.to_string()),
+                    // Same fail-closed peer gate as the monarch socket.
+                    let resp = match conn.peer_pid() {
+                        Some(peer) => match adopt_attach(&tx, a, peer) {
+                            Ok(()) => ipc::Response::ok(),
+                            Err(e) => ipc::Response::error(e.to_string()),
+                        },
+                        None => ipc::Response::error(
+                            "attach refused: peer identity could not be verified",
+                        ),
                     };
                     let _ = conn.send_response(&resp);
                 }
@@ -2055,9 +2071,10 @@ fn window_accept_loop(
 fn adopt_attach(
     tx: &futures::channel::mpsc::UnboundedSender<Forwarded>,
     args: ipc::AttachArgs,
+    peer_pid: u32,
 ) -> Result<()> {
     let drop_at = args.drop_at;
-    let pulled = attach::pull_attach(&args)?;
+    let pulled = attach::pull_attach(&args, peer_pid)?;
     let startup = pulled.startup.clone();
     let session = pulled.into_session()?;
     tx.unbounded_send(Forwarded::AdoptTab(Box::new(session), startup, drop_at))

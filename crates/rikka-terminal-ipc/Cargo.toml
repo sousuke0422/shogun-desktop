@@ -13,3 +13,14 @@ base64 = "0.22"
 # Cross-platform local socket: Unix domain socket on Unix, named pipe on
 # Windows, one API. Namespaced names → no manual path/cleanup.
 interprocess = "2.4"
+
+# Windows: current-user-only DACL on the listener (security.rs). widestring
+# matches interprocess's own version so the SDDL round-trips cleanly.
+[target.'cfg(windows)'.dependencies]
+widestring = "1"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }

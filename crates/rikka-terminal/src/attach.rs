@@ -70,7 +70,20 @@ fn pull(source: HANDLE, raw: i64) -> Result<Option<OwnedHandle>> {
 /// sender blocks on our response, so its process (and handle table) stays
 /// alive throughout the pull; once we respond `ok` it may exit, and by then
 /// ownership has moved.
-pub fn pull_attach(args: &ipc::AttachArgs) -> Result<LocalAttach> {
+pub fn pull_attach(args: &ipc::AttachArgs, peer_pid: u32) -> Result<LocalAttach> {
+    // Bind the pull to the AUTHENTICATED connecting process. The handle
+    // values are duplicated out of `args.pid` with DUPLICATE_CLOSE_SOURCE,
+    // which also CLOSES them in the source — so a client free to name any
+    // pid could make us steal (and destroy) handles from a third victim it
+    // never owned. Requiring `args.pid == peer_pid` (the pid the OS attests
+    // for this very connection) means a client can only ever surrender its
+    // OWN handles. `peer_pid` comes from `Conn::peer_pid`; the caller has
+    // already refused the connection when the OS could not attest one.
+    ensure!(
+        args.pid == peer_pid,
+        "attach pid {} does not match the connected peer {peer_pid}",
+        args.pid
+    );
     let source = unsafe { OpenProcess(PROCESS_DUP_HANDLE, false, args.pid) }
         .with_context(|| format!("OpenProcess({}) for attach handle pull", args.pid))?;
     // Owned wrapper so the process handle closes on every return path.
@@ -312,6 +325,25 @@ mod tests {
     fn local_attach_without_pipes_is_refused() {
         let args = ipc::AttachArgs::default();
         assert!(local_attach(&args).is_err());
+    }
+
+    /// The handle pull is refused before ANY OpenProcess when the claimed
+    /// source pid does not match the OS-attested peer — the guard that stops
+    /// a spoofed attach from making us steal (and DUPLICATE_CLOSE_SOURCE)
+    /// handles out of a third victim. Refused up front, so no valid handles
+    /// are needed to hit the check.
+    #[test]
+    fn pull_attach_refuses_a_pid_that_isnt_the_peer() {
+        let args = ipc::AttachArgs {
+            pid: 4242, // claims to be some other process
+            ..Default::default()
+        };
+        let msg = match pull_attach(&args, 9999) {
+            // ...but the connection is someone else.
+            Ok(_) => panic!("mismatched peer must be refused"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("does not match the connected peer"), "{msg}");
     }
 
     /// The ConDrv reference handle must be closed once the session is live —

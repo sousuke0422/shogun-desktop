@@ -65,6 +65,19 @@
 - [ ] フォント同梱（Cascadia 等）。
 - [ ] テーマ/配色設定（config.toml でパレット差し替え）。
 
+## セキュリティ
+
+- [x] ~~IPC の権限境界~~ — 名前空間は rendezvous であって境界でないと判明
+      （USERNAME 偽装で別 monarch に接続できた実証が発端）。二層で恒久対処:
+      (1) listener を現ユーザー SID のみの DACL に制限
+      （`ipc::security::owner_only`・Windows 固有を seam に隔離）、
+      (2) `pull_attach` を OS 認証済み peer PID に束縛（`attach.pid ==
+      Conn::peer_pid()`・不明なら fail-closed）。`DUPLICATE_CLOSE_SOURCE`
+      故に偽 pid で第三者ハンドル窃取＋破壊ができた穴を塞ぐ。実窓で正規移送
+      不変を確認。**Unix の listener ACL は未対応**（owner_only に一手）。
+- [ ] **Unix listener の 0700/0600 化** — 現状 abstract namespace は netns 内
+      から到達可能。P3 の Unix 移植時に owner_only へ実装。
+
 ## 将来構想
 
 - [ ] **own OpenConsole（fork 保有）** — 殿意向 2026-07-16。conhost 起因の実害が

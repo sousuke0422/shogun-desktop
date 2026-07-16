@@ -55,6 +55,19 @@ impl Conn {
     pub fn send_response(&mut self, resp: &Response) -> io::Result<()> {
         write_frame(&mut self.0, resp)
     }
+
+    /// The connected peer's PID, when the OS can attest it (Windows:
+    /// `GetNamedPipeClientProcessId` under interprocess's `peer_creds`).
+    /// `None` = the OS could not attest it; a caller gating a capability on
+    /// the peer's identity (the handle-transfer authorization) MUST treat
+    /// `None` as untrusted and refuse.
+    pub fn peer_pid(&self) -> Option<u32> {
+        self.0
+            .peer_creds()
+            .ok()
+            .and_then(|c| c.pid())
+            .map(|p| p as u32)
+    }
 }
 
 /// The monarch's listener. `bind` succeeds only for the first process to claim
@@ -64,7 +77,10 @@ pub struct Monarch(Listener);
 impl Monarch {
     pub fn bind(name: &str) -> io::Result<Self> {
         let ns = name.to_ns_name::<GenericNamespaced>()?;
-        Ok(Self(ListenerOptions::new().name(ns).create_sync()?))
+        // Restrict the listener to the current user at the OS layer — the
+        // name is only a rendezvous (see security.rs).
+        let opts = crate::security::owner_only(ListenerOptions::new().name(ns))?;
+        Ok(Self(opts.create_sync()?))
     }
     /// Blocking accept of the next client connection.
     pub fn accept(&self) -> io::Result<Conn> {
@@ -112,5 +128,37 @@ mod tests {
         client.send_request(&Request::Ping).unwrap();
         assert_eq!(client.recv_response().unwrap().window_id, Some(5));
         server.join().unwrap();
+    }
+
+    /// The hardened listener still accepts THIS process (same user) and
+    /// attests its PID — the DACL restriction and peer attestation don't
+    /// break the legitimate same-user path. A cross-user rejection can't be
+    /// exercised from a single-user test, so this guards the "didn't lock
+    /// ourselves out" direction; the boundary itself is the OS's job.
+    #[test]
+    fn hardened_listener_admits_same_user_and_attests_peer() {
+        let name = format!("rikka-terminal-sec-{}.sock", std::process::id());
+        let server_name = name.clone();
+        let server = std::thread::spawn(move || {
+            let m = Monarch::bind(&server_name).expect("bind hardened");
+            let conn = m.accept().expect("accept");
+            // The server sees the client's PID; same process here.
+            conn.peer_pid()
+        });
+        let mut client = None;
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(20));
+            if let Ok(c) = connect(&name) {
+                client = Some(c);
+                break;
+            }
+        }
+        let _client = client.expect("same-user connect must still succeed");
+        let peer = server.join().unwrap();
+        assert_eq!(
+            peer,
+            Some(std::process::id()),
+            "server must attest the connecting PID"
+        );
     }
 }

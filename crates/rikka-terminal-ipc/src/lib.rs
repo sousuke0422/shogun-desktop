@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::{self, Read, Write};
 
+pub mod security;
 pub mod transport;
 
 /// Protocol version, carried in every frame's envelope (`{ "v": … }`).

@@ -50,8 +50,22 @@ One local IPC shared by three binaries:
 - **Election:** first process to create the endpoint = monarch; others become
   clients (forward their request, exit). Windows: `FILE_FLAG_FIRST_PIPE_INSTANCE`.
   Unix: exclusive bind (unlink stale socket first, guarded by a lock file).
-- **Security:** current user only (pipe ACL restricted to the creator SID; on
-  Unix the socket lives in a 0700 user dir).
+- **Security (two layers — the name is a rendezvous, never a boundary):**
+  1. *Access* — the listener is restricted to the current user at the OS.
+     Windows: an explicit DACL granting only the creator's SID
+     (`ipc::security::owner_only`; the interprocess default SD is
+     configuration-dependent and can admit other users, so we set it
+     ourselves). Unix: **not yet hardened** — the abstract-namespace socket is
+     reachable by any process in the netns; a real Unix deployment must move to
+     a filesystem socket at 0700/0600. That work lives in `owner_only`, the one
+     platform seam.
+  2. *Capability* — every `attach` that pulls handles is bound to the
+     OS-attested peer PID. `pull_attach` requires `attach.pid ==
+     Conn::peer_pid()`, and the accept loops refuse a connection whose peer the
+     OS cannot attest (fail closed). Handles move with `DUPLICATE_CLOSE_SOURCE`,
+     so without this a spoofed `pid` could make the receiver duplicate — and
+     close — handles out of a third victim; the binding means a client can only
+     ever surrender its OWN handles.
 
 ## Protocol (JSON, versioned)
 
