@@ -304,7 +304,7 @@ fn create_tab_spec(cx: &mut App, spec: &cli::TabSpec) -> Option<TabEntry> {
 /// `None`: nothing there, or it is ours. Whether that pid is actually a
 /// rikka window is settled by `resolve_window` (unknown pids fail).
 #[cfg(windows)]
-fn other_process_under_cursor() -> Option<u32> {
+fn other_process_under_cursor() -> Option<(u32, (i32, i32))> {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::{
         GA_ROOT, GetAncestor, GetCursorPos, GetWindowThreadProcessId, WindowFromPoint,
@@ -318,7 +318,17 @@ fn other_process_under_cursor() -> Option<u32> {
     let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(root, Some(&mut pid)) };
-    (pid != 0 && pid != std::process::id()).then_some(pid)
+    (pid != 0 && pid != std::process::id()).then_some((pid, (pt.x, pt.y)))
+}
+
+/// Strip content-x → insertion index: the gap nearest the drop point.
+/// Dropping on a tab's left half inserts before it, right half after;
+/// anything past the last tab appends.
+fn strip_insert_index(content_x: f32, tab_w: f32, len: usize) -> usize {
+    if tab_w <= 0.0 {
+        return len;
+    }
+    (((content_x / tab_w) + 0.5).floor().max(0.0) as usize).min(len)
 }
 
 /// Drag payload of a tab being moved: its strip index (`title` rides along
@@ -480,13 +490,83 @@ impl TabsWindow {
     /// make it the active tab. This is the whole "attach" operation — the
     /// session itself never moves threads.
     fn adopt(&mut self, entry: TabEntry, cx: &mut Context<Self>) {
+        self.adopt_at(entry, None, cx);
+    }
+
+    /// [`Self::adopt`] at a strip position; `None`/out-of-range appends.
+    fn adopt_at(&mut self, entry: TabEntry, ix: Option<usize>, cx: &mut Context<Self>) {
         let weak = cx.weak_entity();
         *entry.0.waker.lock() = Some(Box::new(move |acx| {
             let _ = weak.update(acx, |_, cx| cx.notify());
         }));
-        self.tabs.push(entry);
-        self.active = self.tabs.len() - 1;
+        let ix = ix.unwrap_or(usize::MAX).min(self.tabs.len());
+        self.tabs.insert(ix, entry);
+        self.active = ix;
         self.after_tab_change(cx);
+    }
+
+    /// [`Self::adopt`], but a drag-merge lands at the strip position under
+    /// the drop point instead of always appending. The geometry runs on
+    /// Win32 — the adopt path arrives from the IPC pump with no
+    /// `&mut Window` — recreating `render`'s strip math from the client
+    /// rect and DPI of the window under the point. Anything that doesn't
+    /// line up (point over a different window of this process, stale
+    /// coordinates) falls back to append.
+    #[cfg(windows)]
+    fn adopt_dropped(
+        &mut self,
+        entry: TabEntry,
+        drop_at: Option<(i32, i32)>,
+        cx: &mut Context<Self>,
+    ) {
+        let ix = drop_at.and_then(|pt| self.drop_index_at(pt, cx));
+        self.adopt_at(entry, ix, cx);
+    }
+
+    /// Map a screen-pixel drop point to the tab-strip insertion index —
+    /// `render`'s layout math (equal-width tabs, WinUI paddings) replayed
+    /// against Win32 window metrics. `None` = not on this window, append.
+    #[cfg(windows)]
+    fn drop_index_at(&self, pt: (i32, i32), cx: &App) -> Option<usize> {
+        use windows::Win32::Foundation::{POINT, RECT};
+        use windows::Win32::Graphics::Gdi::ScreenToClient;
+        use windows::Win32::UI::HiDpi::GetDpiForWindow;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GA_ROOT, GetAncestor, GetClientRect, GetWindowThreadProcessId, WindowFromPoint,
+        };
+        let mut p = POINT { x: pt.0, y: pt.1 };
+        let hwnd = unsafe { WindowFromPoint(p) };
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let hwnd = unsafe { GetAncestor(hwnd, GA_ROOT) };
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        // A window process hosts one window, so ours-by-pid is ours. (An
+        // in-process second window would need per-window addressing first —
+        // see TODO "窓単位 addressing".)
+        if pid != std::process::id() {
+            return None;
+        }
+        let mut rc = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut rc) }.ok()?;
+        if !unsafe { ScreenToClient(hwnd, &mut p) }.as_bool() {
+            return None;
+        }
+        let dpi = unsafe { GetDpiForWindow(hwnd) };
+        let scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
+        let width = (rc.right - rc.left) as f32 / scale;
+        let x = p.x as f32 / scale;
+        // Mirror render(): avail / plus_w / needs_scroll / tab_w, then the
+        // strip origin (pl_2 = 8, plus the left arrow when scrolling).
+        let profiles = cx.global::<hub::ProfileMenu>().0.profiles.len();
+        let plus_w = 32.0 + if profiles > 1 { 18.0 } else { 0.0 };
+        let avail = width - 8.0 - (3.0 * 46.0) - (2.0 * 24.0);
+        let needs_scroll = (self.tabs.len() as f32 * 100.0 + plus_w) > avail;
+        let tab_w = ((avail - plus_w) / self.tabs.len().max(1) as f32).clamp(100.0, 240.0);
+        let origin = 8.0 + if needs_scroll { 22.0 } else { 0.0 };
+        let content_x = x - origin - (self.strip_scroll.offset().x / px(1.));
+        Some(strip_insert_index(content_x, tab_w, self.tabs.len()))
     }
 
     fn switch_to(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -623,6 +703,7 @@ impl TabsWindow {
         &mut self,
         ix: usize,
         pid: u32,
+        drop_at: (i32, i32),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -641,6 +722,7 @@ impl TabsWindow {
             tab_move::Destination::Window {
                 id: u64::from(pid),
                 endpoint,
+                drop_at: Some(drop_at),
             },
         ) {
             Ok(()) => self.close_at(ix, window, cx),
@@ -1243,8 +1325,8 @@ impl Render for TabsWindow {
                     // tab moves there, even from a single-tab window);
                     // anywhere else = tear-off into a fresh window.
                     #[cfg(windows)]
-                    if let Some(pid) = other_process_under_cursor()
-                        && this.drop_tab_on_window_process(ix, pid, window, cx)
+                    if let Some((pid, drop_at)) = other_process_under_cursor()
+                        && this.drop_tab_on_window_process(ix, pid, drop_at, window, cx)
                     {
                         return;
                     }
@@ -1647,6 +1729,7 @@ fn attach_request(a: &cli::AttachSpec, launch: &cli::Launch) -> ipc::AttachArgs 
         state,
         elevated: false,
         target: ipc::Target::New,
+        drop_at: None,
     }
 }
 
@@ -1721,7 +1804,7 @@ enum Forwarded {
     /// A tab-move arriving on this window's OWN socket: adopt the session as
     /// a tab of the window this process hosts (never a new window).
     #[cfg(windows)]
-    AdoptTab(Box<TerminalSession>, ipc::StartupInfo),
+    AdoptTab(Box<TerminalSession>, ipc::StartupInfo, Option<(i32, i32)>),
 }
 
 /// Apply one IPC-thread message on the gpui thread — shared by the monarch's
@@ -1732,7 +1815,9 @@ fn pump_forwarded(cx: &mut App, msg: Forwarded) {
         #[cfg(windows)]
         Forwarded::Attach(session, startup) => open_attached(cx, *session, startup),
         #[cfg(windows)]
-        Forwarded::AdoptTab(session, startup) => adopt_forwarded(cx, *session, startup),
+        Forwarded::AdoptTab(session, startup, drop_at) => {
+            adopt_forwarded(cx, *session, startup, drop_at)
+        }
     }
 }
 
@@ -1987,10 +2072,11 @@ fn adopt_attach(
     tx: &futures::channel::mpsc::UnboundedSender<Forwarded>,
     args: ipc::AttachArgs,
 ) -> Result<()> {
+    let drop_at = args.drop_at;
     let pulled = attach::pull_attach(&args)?;
     let startup = pulled.startup.clone();
     let session = pulled.into_session()?;
-    tx.unbounded_send(Forwarded::AdoptTab(Box::new(session), startup))
+    tx.unbounded_send(Forwarded::AdoptTab(Box::new(session), startup, drop_at))
         .map_err(|_| anyhow::anyhow!("window is shutting down"))?;
     Ok(())
 }
@@ -2031,11 +2117,16 @@ fn spawn_window_accept(cx: &mut App) -> Option<String> {
 /// same thread with no await between them, so the entry cannot fall through
 /// the gap.
 #[cfg(windows)]
-fn adopt_forwarded(cx: &mut App, session: TerminalSession, startup: ipc::StartupInfo) {
+fn adopt_forwarded(
+    cx: &mut App,
+    session: TerminalSession,
+    startup: ipc::StartupInfo,
+    drop_at: Option<(i32, i32)>,
+) {
     match hub::any_window(cx) {
         Some(view) => {
             let entry = hub::new_tab(cx, session);
-            let _ = view.update(cx, |v, cx| v.adopt(entry, cx));
+            let _ = view.update(cx, |v, cx| v.adopt_dropped(entry, drop_at, cx));
         }
         None => open_attached(cx, session, startup),
     }
@@ -2156,6 +2247,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn strip_insert_index_picks_the_nearest_gap() {
+        // 5 tabs of 200px: left half of tab 0 → before it, right half →
+        // after it, and so on down the strip.
+        assert_eq!(strip_insert_index(-50.0, 200.0, 5), 0);
+        assert_eq!(strip_insert_index(40.0, 200.0, 5), 0);
+        assert_eq!(strip_insert_index(160.0, 200.0, 5), 1);
+        assert_eq!(strip_insert_index(430.0, 200.0, 5), 2);
+        assert_eq!(strip_insert_index(999.0, 200.0, 5), 5);
+        assert_eq!(strip_insert_index(5000.0, 200.0, 5), 5);
+        // Degenerate width appends rather than dividing by zero.
+        assert_eq!(strip_insert_index(100.0, 0.0, 3), 3);
+    }
+
+    #[test]
     fn window_directory_upserts_by_pid_and_lists_ids() {
         let reg = |pid: u32, id: u64| ipc::RegisterWindow {
             pid,
@@ -2223,7 +2328,7 @@ mod tests {
         assert!(resp.ok, "adopt must succeed: {:?}", resp.error);
 
         match rx.try_recv().expect("one pumped message") {
-            Forwarded::AdoptTab(session, startup) => {
+            Forwarded::AdoptTab(session, startup, _) => {
                 assert_eq!(startup.title.as_deref(), Some("moved"));
                 assert_eq!(session.title.lock().as_deref(), Some("moved"));
             }
@@ -2324,13 +2429,17 @@ mod tests {
             tab_move::Destination::Window {
                 id: 1,
                 endpoint: name,
+                drop_at: Some((123, 45)),
             },
         )
         .expect("send the live tab");
 
         let received = match rx.try_recv().expect("one pumped message") {
-            Forwarded::AdoptTab(session, startup) => {
+            Forwarded::AdoptTab(session, startup, drop_at) => {
                 assert_eq!(startup.title.as_deref(), Some("mover"));
+                // The drag-drop point survives the wire — the receiver
+                // inserts at the strip position under it.
+                assert_eq!(drop_at, Some((123, 45)));
                 session
             }
             _ => panic!("expected exactly one AdoptTab"),

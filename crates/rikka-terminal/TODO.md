@@ -39,8 +39,12 @@
       handle を叩く ERROR ログ（実害なし）。出所特定して黙らせる。
 - [x] ~~タブ strip の空白部への drop = 末尾移動~~ — 実装済（タブ上 drop は
       子が consume するため空白部のみ末尾移動・誤爆なし）。
-- [ ] drag-merge の挿入位置 — 現状は移送先の末尾 adopt 固定。drop 位置の
-      タブ間に挿入できると自然（cross-process は wire に挿入 index 追加）。
+- [x] ~~drag-merge の挿入位置~~ — drop 点のスクリーン座標を wire
+      (`AttachArgs.drop_at`) で運び、受け側が Win32 実寸（client rect＋DPI＋
+      strip レイアウト再計算＋scroll offset）から最寄りのタブ間に挿入。
+      末尾 append は Ctrl+Shift+X 等 drop_at 無しの経路として温存。
+      注: 受け側プロセスが in-process 複数窓を持つ場合の窓照合は
+      「窓単位 addressing」解決待ち（現状は clamp で破綻はしない）。
 - [x] ~~ghost の掴み位置~~ — 非問題と判明: gpui が cursor_offset を自動で
       保存・適用しており ghost は掴んだ位置に追従する。
 - [x] ~~設定ファイル~~ — 初版済: `[appearance] font / font_size /

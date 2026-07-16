@@ -102,6 +102,11 @@ pub struct AttachArgs {
     pub elevated: bool,
     #[serde(default)]
     pub target: Target,
+    /// Screen-pixel cursor position of a drag-merge drop: the receiver
+    /// inserts the tab at the strip position under it. Absent = append
+    /// (Ctrl+Shift+X moves, CLI attaches, OS handoffs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drop_at: Option<(i32, i32)>,
 }
 
 /// Wrap a tab-move screen replay (VT bytes, see core's `replay_bytes`) as

@@ -36,8 +36,14 @@ pub enum Destination {
     /// A fresh window process — crash isolation for the detached tab.
     NewProcess,
     /// An existing window process, addressed by its own socket (resolved
-    /// through the monarch before calling).
-    Window { id: u64, endpoint: String },
+    /// through the monarch before calling). `drop_at` = screen-pixel
+    /// cursor position of a drag-merge drop; the receiver inserts the tab
+    /// at the strip position under it (`None` = append, e.g. Ctrl+Shift+X).
+    Window {
+        id: u64,
+        endpoint: String,
+        drop_at: Option<(i32, i32)>,
+    },
 }
 
 /// Whether the session can leave this process at all — born handoff-shaped
@@ -99,7 +105,9 @@ pub fn send_tab(session: &TerminalSession, dest: Destination) -> Result<()> {
         (Destination::NewProcess, _) => LocalAttach::from_transfer(kit, startup, Some(vt))?
             .relay_to_window_process()
             .context("relay the detached tab to its window process"),
-        (Destination::Window { id, .. }, Some(conn)) => push_to_window(conn, kit, startup, vt, id),
+        (Destination::Window { id, drop_at, .. }, Some(conn)) => {
+            push_to_window(conn, kit, startup, vt, id, drop_at)
+        }
         (Destination::Window { .. }, None) => unreachable!("window move always connects first"),
     }
 }
@@ -117,6 +125,7 @@ fn push_to_window(
     startup: ipc::StartupInfo,
     state_vt: Vec<u8>,
     id: u64,
+    drop_at: Option<(i32, i32)>,
 ) -> Result<()> {
     let raw = |h: OwnedHandle| h.into_raw_handle() as isize as i64;
     let mut keepalive = kit.keepalive.into_iter();
@@ -136,6 +145,7 @@ fn push_to_window(
         elevated: false,
         // Informational: an attach on a window socket always adopts there.
         target: ipc::Target::Window(id),
+        drop_at,
     };
     conn.send_request(&ipc::Request::Attach(args))
         .context("send tab-move attach")?;
@@ -196,6 +206,7 @@ pub fn move_to_any_other_window(session: &TerminalSession) -> Result<()> {
         Destination::Window {
             id: target.id,
             endpoint,
+            drop_at: None,
         },
     )
 }
@@ -235,6 +246,7 @@ mod tests {
             Destination::Window {
                 id: 9,
                 endpoint: format!("rikka-test-dead-{}.sock", std::process::id()),
+                drop_at: None,
             },
         )
         .expect_err("a dead endpoint must refuse the move");

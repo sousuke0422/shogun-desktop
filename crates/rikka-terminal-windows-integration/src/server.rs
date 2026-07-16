@@ -205,6 +205,7 @@ fn establish(
         state: None,
         elevated: false,
         target: ipc::Target::New,
+        drop_at: None,
     };
 
     let endpoint = ipc::transport::endpoint_name();
