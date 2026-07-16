@@ -16,8 +16,8 @@
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 
 use anyhow::{Context as _, Result, bail, ensure};
+use rikka_terminal_core::TerminalSession;
 use rikka_terminal_core::pty_handoff::{HandoffPty, TransferKit};
-use rikka_terminal_core::{TerminalSession, xtversion};
 use rikka_terminal_ipc as ipc;
 use windows::Win32::Foundation::{
     DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HANDLE_FLAG_INHERIT,
@@ -190,7 +190,7 @@ impl LocalAttach {
                 keepalive,
             },
             state_vt.unwrap_or_default(),
-            &xtversion::engine_identity(),
+            crate::spawn_xtversion(),
         )?;
         // The \Reference handle keeps conhost serving even after its last
         // client left (winconpty.h) — held for the session's lifetime, an

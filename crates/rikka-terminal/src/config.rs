@@ -61,11 +61,22 @@ pub struct AppearanceSection {
 /// ```toml
 /// [terminal]
 /// scrollback = 50000       # history lines per tab (default: 10000)
+/// term = "xterm-256color"  # TERM for spawned shells (default: xterm-256color;
+///                          # what konsole/alacritty set — cross-platform TUIs
+///                          # like btop read it for color/capability detection)
+/// identity = "honest"      # XTVERSION + TERM_PROGRAM: "honest" (rikka-terminal)
+///                          # or "ghostty" (masquerade so emulator-sniffing apps
+///                          # enable kitty features). Default honest — a spoof
+///                          # over ConPTY invites conhost-stripped features.
 /// ```
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TerminalSection {
     #[serde(default)]
     pub scrollback: Option<u32>,
+    #[serde(default)]
+    pub term: Option<String>,
+    #[serde(default)]
+    pub identity: Option<String>,
 }
 
 /// Tera Term-style session logging (Ctrl+Shift+L per tab; see session_log).

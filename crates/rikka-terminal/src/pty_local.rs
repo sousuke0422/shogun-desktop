@@ -30,8 +30,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
+use rikka_terminal_core::TerminalSession;
 use rikka_terminal_core::pty_handoff::{HandoffPty, build_handoff_session};
-use rikka_terminal_core::{TerminalSession, xtversion};
 use windows::Win32::Foundation::{
     DUPLICATE_SAME_ACCESS, DuplicateHandle, FreeLibrary, HANDLE, HMODULE,
 };
@@ -158,7 +158,7 @@ pub fn spawn_local(
         cwd,
         cols,
         rows,
-        &xtversion::engine_identity(),
+        crate::spawn_xtversion(),
     )
 }
 
@@ -250,9 +250,16 @@ fn launch_client(
     };
     let cwd_wide: Option<Vec<u16>> =
         cwd.map(|d| std::ffi::OsStr::new(d).encode_wide().chain([0]).collect());
+    // TERM/COLORTERM tell cross-platform TUIs (btop, ncurses apps) our color
+    // depth and capabilities — konsole/alacritty set them too. Native console
+    // apps (cmd/pwsh) ignore TERM, so this is harmless for them. TERM_PROGRAM
+    // follows the configured identity (honest, or a ghostty masquerade).
+    let (term_program, term_program_version) = crate::spawn_term_program();
     let env = env_block_with(&[
-        ("TERM_PROGRAM", xtversion::TERM_PROGRAM),
-        ("TERM_PROGRAM_VERSION", xtversion::TERM_PROGRAM_VERSION),
+        ("TERM", crate::spawn_term()),
+        ("COLORTERM", "truecolor"),
+        ("TERM_PROGRAM", term_program),
+        ("TERM_PROGRAM_VERSION", term_program_version),
     ]);
 
     let mut size: usize = 0;

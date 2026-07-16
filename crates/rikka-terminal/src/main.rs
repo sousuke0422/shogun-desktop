@@ -115,6 +115,79 @@ fn apply_appearance(cfg: &config::Config) {
     let _ = SCROLLBACK_CFG.set(cfg.terminal.scrollback.map(|n| n as usize));
 }
 
+/// The environment/identity a spawned shell is launched with. Resolved once
+/// from `[terminal]` at startup; every spawn reads it (`pty_local`).
+struct SpawnIdentity {
+    /// `TERM` — capability/terminfo name (default `xterm-256color`).
+    term: String,
+    /// XTVERSION reply body (`DCS >| <this> ST`).
+    xtversion: String,
+    /// `(TERM_PROGRAM, TERM_PROGRAM_VERSION)`.
+    term_program: (String, String),
+}
+
+impl Default for SpawnIdentity {
+    fn default() -> Self {
+        Self {
+            term: "xterm-256color".into(),
+            xtversion: rikka_terminal_core::xtversion::engine_identity(),
+            term_program: (
+                rikka_terminal_core::xtversion::TERM_PROGRAM.into(),
+                rikka_terminal_core::xtversion::TERM_PROGRAM_VERSION.into(),
+            ),
+        }
+    }
+}
+
+static SPAWN_IDENTITY: std::sync::OnceLock<SpawnIdentity> = std::sync::OnceLock::new();
+
+/// Resolve `[terminal] term`/`identity` and stash it for spawns. Default is
+/// honest (`rikka-terminal` / `xterm-256color`); `identity = "ghostty"`
+/// masquerades so emulator-sniffing apps enable kitty features — reserved for
+/// non-ConPTY paths (SSH/Unix), where advertising them doesn't invite
+/// conhost-stripped protocols.
+fn apply_identity(cfg: &config::Config) {
+    let _ = SPAWN_IDENTITY.set(resolve_spawn_identity(&cfg.terminal));
+}
+
+/// Pure mapping of `[terminal]` into a [`SpawnIdentity`] (default honest /
+/// `xterm-256color`; `identity = "ghostty"` masquerades).
+fn resolve_spawn_identity(t: &config::TerminalSection) -> SpawnIdentity {
+    let mut id = SpawnIdentity::default();
+    if let Some(term) = &t.term {
+        id.term = term.clone();
+    }
+    match t.identity.as_deref() {
+        Some("ghostty") => {
+            id.xtversion = "ghostty 1.3.1".into();
+            id.term_program = ("ghostty".into(), "1.3.1".into());
+        }
+        Some("honest") | None => {}
+        Some(other) => log::warn!("[terminal] unknown identity {other:?} — using honest"),
+    }
+    id
+}
+
+fn spawn_identity() -> &'static SpawnIdentity {
+    SPAWN_IDENTITY.get_or_init(SpawnIdentity::default)
+}
+
+/// `TERM` for spawned shells.
+pub(crate) fn spawn_term() -> &'static str {
+    &spawn_identity().term
+}
+
+/// XTVERSION identity string for spawned sessions.
+pub(crate) fn spawn_xtversion() -> &'static str {
+    &spawn_identity().xtversion
+}
+
+/// `(TERM_PROGRAM, TERM_PROGRAM_VERSION)` for spawned shells.
+pub(crate) fn spawn_term_program() -> (&'static str, &'static str) {
+    let tp = &spawn_identity().term_program;
+    (&tp.0, &tp.1)
+}
+
 /// Resolve `[theme]` into a palette and install it engine-wide. Order:
 /// start from the built-in default, fold a `wt_scheme` import over it (compat
 /// mode), then apply inline `#RRGGBB` overrides last so they always win. A
@@ -328,7 +401,7 @@ fn spawn_local_shell(
         reader,
         Arc::new(FairMutex::new(writer)),
         resizer,
-        &xtversion::engine_identity(),
+        spawn_xtversion(),
     )?;
     // portable-pty on Windows is ConPTY underneath — same conhost reflow
     // and no kitty-keyboard advertisement (mark_conpty docs).
@@ -2340,6 +2413,7 @@ fn main() {
         let cfg = config::Config::load();
         apply_appearance(&cfg);
         apply_theme(&cfg);
+        apply_identity(&cfg);
         session_log::init(cfg.logging.clone());
         keymap::init(&cfg.keys);
         let menu = cfg.build_menu(wt, wt_default);
@@ -2395,6 +2469,32 @@ mod tests {
         assert_eq!(strip_insert_index(5000.0, 200.0, 5), 5);
         // Degenerate width appends rather than dividing by zero.
         assert_eq!(strip_insert_index(100.0, 0.0, 3), 3);
+    }
+
+    #[test]
+    fn spawn_identity_defaults_honest_and_ghostty_masquerades() {
+        // Default: honest identity, xterm-256color.
+        let d = resolve_spawn_identity(&config::TerminalSection::default());
+        assert_eq!(d.term, "xterm-256color");
+        assert_eq!(d.term_program.0, "rikka-terminal");
+        assert!(d.xtversion.starts_with("rikka-terminal "));
+
+        // ghostty: XTVERSION + TERM_PROGRAM masquerade; term still overridable.
+        let g = resolve_spawn_identity(&config::TerminalSection {
+            term: Some("xterm-ghostty".into()),
+            identity: Some("ghostty".into()),
+            ..Default::default()
+        });
+        assert_eq!(g.term, "xterm-ghostty");
+        assert_eq!(g.xtversion, "ghostty 1.3.1");
+        assert_eq!(g.term_program, ("ghostty".into(), "1.3.1".into()));
+
+        // Unknown identity falls back to honest.
+        let u = resolve_spawn_identity(&config::TerminalSection {
+            identity: Some("nope".into()),
+            ..Default::default()
+        });
+        assert_eq!(u.term_program.0, "rikka-terminal");
     }
 
     #[test]
