@@ -185,6 +185,10 @@ pub struct ProfileDef {
     /// Optional starting directory.
     #[serde(default)]
     pub dir: Option<String>,
+    /// Windows Terminal color-scheme name for tabs opened from this profile
+    /// (resolved through `wt_schemes`) — per-profile theming.
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 impl ProfileDef {
@@ -196,6 +200,7 @@ impl ProfileDef {
             guid: format!("user:{}", self.name),
             argv: self.command.clone(),
             dir: self.dir.clone(),
+            color_scheme: self.theme.clone(),
         }
     }
 }
@@ -293,6 +298,7 @@ mod tests {
             guid: guid.into(),
             argv: vec![format!("{name}.exe")],
             dir: None,
+            color_scheme: None,
         }
     }
 

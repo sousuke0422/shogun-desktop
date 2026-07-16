@@ -36,6 +36,11 @@ pub type Waker = Box<dyn Fn(&mut AsyncApp)>;
 pub struct TabSession {
     pub session: TerminalSession,
     pub waker: Mutex<Option<Waker>>,
+    /// This tab's color palette (from its profile's scheme), installed into
+    /// the engine when the tab becomes active. `None` = follow the global
+    /// `[theme]` (or the built-in default). Interior-mutable so the tab
+    /// factory can attach it without widening `new_tab`'s signature.
+    theme: Mutex<Option<rikka_terminal_core::theme::Palette>>,
     closed: Arc<AtomicBool>,
 }
 
@@ -44,6 +49,16 @@ impl TabSession {
     pub fn shutdown(&self) {
         self.closed.store(true, Ordering::Relaxed);
         self.session.notify.notify_waiters();
+    }
+
+    /// Attach this tab's palette (its profile's color scheme).
+    pub fn set_theme(&self, palette: Option<rikka_terminal_core::theme::Palette>) {
+        *self.theme.lock() = palette;
+    }
+
+    /// This tab's palette, if it carries one.
+    pub fn theme(&self) -> Option<rikka_terminal_core::theme::Palette> {
+        self.theme.lock().clone()
     }
 }
 
@@ -68,6 +83,7 @@ pub fn new_tab(cx: &mut App, session: TerminalSession) -> TabEntry {
     let tab = Arc::new(TabSession {
         session,
         waker: Mutex::new(None),
+        theme: Mutex::new(None),
         closed: Arc::clone(&closed),
     });
     let waker_slot = Arc::clone(&tab);

@@ -96,10 +96,10 @@ gpui::actions!(rikka_terminal, [TerminalCopy, TerminalPaste]);
 static FONT_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static ACRYLIC_CFG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static SCROLLBACK_CFG: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-/// The pane surround color when a `[theme]` sets one — so the themed
-/// background (e.g. Ubuntu's aubergine) is what shows behind the grid, not
-/// the WinUI tertiary fill. `None` = no theme configured, keep `PANE_BG`.
-static PANE_BG_OVERRIDE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+/// The `[theme]` palette (inline + `wt_scheme`), the base a tab with no
+/// per-profile scheme falls back to. `None` = no global theme configured.
+static CONFIG_PALETTE: std::sync::OnceLock<rikka_terminal_core::theme::Palette> =
+    std::sync::OnceLock::new();
 
 fn apply_appearance(cfg: &config::Config) {
     if let Some(size) = cfg.appearance.font_size {
@@ -166,13 +166,39 @@ fn apply_theme(cfg: &config::Config) {
             );
         }
     }
-    // The pane surround adopts the themed background, so the grid sits on
-    // the scheme's color (and the selected tab, which shares pane_fill,
-    // stays merged). Only set when a theme is active — no theme leaves the
-    // default WinUI pane fill untouched.
-    let bg = palette.background;
-    let _ = PANE_BG_OVERRIDE.set(u32::from_be_bytes([0, bg.r, bg.g, bg.b]));
+    // Remember the base for per-tab resolution and install it as the
+    // initial palette (pre-first-tab paint); after_tab_change then keeps the
+    // global in step with the active tab.
+    let _ = CONFIG_PALETTE.set(palette.clone());
     theme::set_palette(palette);
+}
+
+/// Resolve a profile's color-scheme name into a palette, folded onto the
+/// `[theme]` base (or the built-in default). `None` for an unknown name (the
+/// tab then follows the global theme) — logged so a typo is visible.
+fn resolve_tab_palette(scheme: &str) -> Option<rikka_terminal_core::theme::Palette> {
+    let base = CONFIG_PALETTE
+        .get()
+        .cloned()
+        .unwrap_or(rikka_terminal_core::theme::DEFAULT);
+    match wt_schemes::palette_for(scheme, base) {
+        Some(p) => Some(p),
+        None => {
+            log::warn!("[profile] color scheme {scheme:?} not found in wt settings/fragments");
+            None
+        }
+    }
+}
+
+/// Install the active tab's palette (its profile scheme, else the global
+/// `[theme]`, else the built-in default) into the engine, so the visible tab
+/// wears its own colors. Called from `after_tab_change`.
+fn apply_active_theme(palette: Option<rikka_terminal_core::theme::Palette>) {
+    use rikka_terminal_core::theme;
+    match palette.or_else(|| CONFIG_PALETTE.get().cloned()) {
+        Some(p) => theme::set_palette(p),
+        None => theme::clear_palette(),
+    }
 }
 
 /// The grid font: configured, or the classic default.
@@ -210,7 +236,16 @@ fn chrome_fill() -> gpui::Rgba {
 /// Pane surround fill (also the selected tab, which merges with it): solid,
 /// or a 78% tint over acrylic.
 fn pane_fill() -> gpui::Rgba {
-    let base = PANE_BG_OVERRIDE.get().copied().unwrap_or(PANE_BG);
+    // With a theme active, the pane adopts the palette background so the grid
+    // sits on the scheme's color (and the selected tab, sharing this fill,
+    // stays merged); unthemed keeps the WinUI tertiary fill. is_overridden
+    // tracks the ACTIVE tab's theme (after_tab_change swaps it per tab).
+    let base = if rikka_terminal_core::theme::is_overridden() {
+        let c = rikka_terminal_core::theme::background();
+        u32::from_be_bytes([0, c.r, c.g, c.b])
+    } else {
+        PANE_BG
+    };
     if acrylic() {
         // Same 0xC8 (78%) tint over acrylic, on the themed (or default) base.
         gpui::rgba((base << 8) | 0xC8)
@@ -322,6 +357,7 @@ fn profile_to_spec(p: &wt_profiles::WtProfile) -> cli::TabSpec {
         title: Some(p.name.clone()),
         cmdline: p.argv.clone(),
         hold: false,
+        color_scheme: p.color_scheme.clone(),
     }
 }
 
@@ -363,7 +399,14 @@ fn create_tab_spec(cx: &mut App, spec: &cli::TabSpec) -> Option<TabEntry> {
     if let Some(t) = &spec.title {
         *session.title.lock() = Some(t.clone());
     }
-    Some(hub::new_tab(cx, session))
+    let entry = hub::new_tab(cx, session);
+    // Resolve this profile's color scheme once, at creation (no file IO on
+    // the per-tab-switch path); after_tab_change installs it when the tab
+    // becomes active.
+    if let Some(scheme) = &spec.color_scheme {
+        entry.0.set_theme(resolve_tab_palette(scheme));
+    }
+    Some(entry)
 }
 
 // ── the tabbed window ────────────────────────────────────────────────────────
@@ -699,6 +742,10 @@ impl TabsWindow {
         self.cols = 0;
         self.rows = 0;
         self.applied_title = None;
+        // Install the now-active tab's palette so the visible tab wears its
+        // own colors (per-profile theming). Only the active tab renders, so
+        // one global palette is enough.
+        apply_active_theme(self.tabs.get(self.active).and_then(|t| t.0.theme()));
         cx.notify();
     }
 

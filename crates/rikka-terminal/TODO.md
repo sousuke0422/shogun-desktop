@@ -67,6 +67,12 @@
       dir を名前解決・engine `theme` を process-global 化・パネル背景も追従）。
       実機で Ubuntu スキーム適用を確認。残: 内蔵スキーム（Campbell 等・wt に
       ファイルが無い分）・OSC 4/10/11 クエリへのテーマ値応答・ライブリロード。
+- [x] ~~プロファイルごとのテーマ~~ — `[[profiles.list]].theme` と wt profile の
+      `colorScheme`/`profiles.defaults` 継承を honor。タブ生成時に scheme を
+      解決して TabSession に保持、`after_tab_change` で engine global へ
+      載せ替え（アクティブタブのみ描画ゆえ global 1枚で成立）。同一窓の2タブで
+      Ubuntu/Plain 切替=配色入替を実機実証。**残: タブ移送で wire に palette を
+      載せてない**ので、別窓へ移すと移送先の既定テーマに戻る（v1 制限）。
 - [ ] フォント同梱（Cascadia 等）。
 
 ## セキュリティ

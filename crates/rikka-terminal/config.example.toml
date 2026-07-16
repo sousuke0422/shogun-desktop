@@ -14,11 +14,15 @@ hidden = ["Azure Cloud Shell"]
 # default = "PowerShell"
 
 # Your own profiles. They lead the menu, before the wt ones. command is argv
-# (command[0] is the program); dir is an optional starting directory.
+# (command[0] is the program); dir is an optional starting directory;
+# theme is a per-profile color scheme (a wt scheme name, resolved like
+# [theme] wt_scheme) so tabs from different profiles get different colors.
+# Imported wt profiles carry their own colorScheme automatically.
 # [[profiles.list]]
 # name = "Dev PowerShell"
 # command = ["pwsh.exe", "-NoLogo"]
 # dir = "C:\\work"
+# theme = "Ubuntu"
 
 # [[profiles.list]]
 # name = "Arch (WSL)"

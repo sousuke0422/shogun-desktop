@@ -63,6 +63,11 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
   カラースキームを名前で取り込む（wt の settings.json ＋ Ubuntu 等が置く
   Fragments dir が源・`wt_schemes.rs`）。インライン `#RRGGBB` 指定はスキーム
   より優先。テーマ設定時はパネル背景もスキーム背景に追従（chrome は不変）
+- **プロファイルごとのテーマ**: `[[profiles.list]]` の `theme = "<scheme>"`
+  で、そのプロファイルから開いたタブがそのスキームを纏う（wt import
+  プロファイルは自身の `colorScheme`／`profiles.defaults` を自動継承）。
+  rikka はアクティブタブのみ描画するため、タブ切替で engine のパレットを
+  載せ替え、**同一ウィンドウ内でタブごとに違う配色**が成立する
 - **UI の方向性 = Files (files.community) 系のソフト Fluent**: 低コントラストの
   レイヤ面（白 8〜12% オーバーレイ）・角丸ピルタブ＋hover・アクセントは
   アクティブタブ下の 2px バーのみ・ヘアライン境界。

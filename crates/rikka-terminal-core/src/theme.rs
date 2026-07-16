@@ -72,10 +72,24 @@ pub const DEFAULT: Palette = Palette {
 
 static PALETTE: RwLock<Option<Palette>> = RwLock::new(None);
 
-/// Install a palette process-wide (startup, from config). Takes effect on the
-/// next frame.
+/// Install a palette process-wide. Takes effect on the next frame. The
+/// embedder swaps this per active tab (rikka renders only the active tab, so
+/// one global palette suffices for per-tab theming).
 pub fn set_palette(p: Palette) {
     *PALETTE.write() = Some(p);
+}
+
+/// Drop any override, reverting to the built-in [`DEFAULT`] — the active tab
+/// carries no theme and no global one is configured.
+pub fn clear_palette() {
+    *PALETTE.write() = None;
+}
+
+/// Whether a palette override is currently installed (vs. the built-in
+/// default). The embedder keys the pane surround color on this so an
+/// unthemed session keeps the chrome's own fill.
+pub fn is_overridden() -> bool {
+    PALETTE.read().is_some()
 }
 
 /// The active palette (override, or the built-in default).
@@ -114,4 +128,34 @@ pub fn ansi(idx: u8) -> Rgb {
         .read()
         .as_ref()
         .map_or(DEFAULT.ansi[i], |p| p.ansi[i])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The primitive the per-tab theming rests on: installing a palette makes
+    /// the accessors and `is_overridden` follow it, and clearing reverts to
+    /// the built-in default. (Serialized: one global, shared across tests.)
+    #[test]
+    fn set_and_clear_swap_the_active_palette() {
+        let mut ubuntu = DEFAULT;
+        ubuntu.background = Rgb::hex(0x300A24);
+        ubuntu.ansi[1] = Rgb::hex(0xAABBCC);
+
+        clear_palette();
+        assert!(!is_overridden());
+        assert_eq!(background(), DEFAULT.background);
+
+        set_palette(ubuntu.clone());
+        assert!(is_overridden());
+        assert_eq!(background(), Rgb::hex(0x300A24));
+        assert_eq!(ansi(1), Rgb::hex(0xAABBCC));
+
+        // Swapping back to the config/base (here: default) reverts every read.
+        clear_palette();
+        assert!(!is_overridden());
+        assert_eq!(background(), DEFAULT.background);
+        assert_eq!(ansi(1), DEFAULT.ansi[1]);
+    }
 }

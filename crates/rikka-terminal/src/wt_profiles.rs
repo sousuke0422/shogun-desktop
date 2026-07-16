@@ -24,6 +24,9 @@ pub struct WtProfile {
     pub argv: Vec<String>,
     /// `startingDirectory` if the profile set one.
     pub dir: Option<String>,
+    /// wt's `colorScheme` — a scheme name resolved through `wt_schemes`, so a
+    /// tab opened from this profile wears that palette (per-tab theming).
+    pub color_scheme: Option<String>,
 }
 
 /// wt settings.json locations, most canonical first (Store package, then
@@ -77,6 +80,14 @@ pub fn parse(raw: &str) -> (Vec<WtProfile>, Option<String>) {
         .and_then(|l| l.as_array())
         .cloned()
         .unwrap_or_default();
+    // wt applies `profiles.defaults` to every profile; a profile's own
+    // `colorScheme` overrides it. Honor the same inheritance for theming.
+    let default_scheme = root
+        .get("profiles")
+        .and_then(|p| p.get("defaults"))
+        .and_then(|d| d.get("colorScheme"))
+        .and_then(|s| s.as_str())
+        .map(str::to_string);
 
     let mut out = Vec::new();
     for pr in &list {
@@ -110,11 +121,17 @@ pub fn parse(raw: &str) -> (Vec<WtProfile>, Option<String>) {
         if argv.is_empty() {
             continue;
         }
+        let color_scheme = pr
+            .get("colorScheme")
+            .and_then(|s| s.as_str())
+            .map(str::to_string)
+            .or_else(|| default_scheme.clone());
         out.push(WtProfile {
             name: name.to_string(),
             guid,
             argv,
             dir,
+            color_scheme,
         });
     }
     (out, default)
@@ -238,6 +255,24 @@ mod tests {
             default.as_deref(),
             Some("{574e775e-4f2a-5b96-ac1e-a2962a402336}")
         );
+    }
+
+    #[test]
+    fn color_scheme_reads_per_profile_and_inherits_defaults() {
+        let raw = r#"{
+            "profiles": {
+                "defaults": { "colorScheme": "Campbell" },
+                "list": [
+                    { "name": "A", "commandline": "a.exe", "colorScheme": "Ubuntu" },
+                    { "name": "B", "commandline": "b.exe" }
+                ]
+            }
+        }"#;
+        let (profs, _) = parse(raw);
+        let by = |n: &str| profs.iter().find(|p| p.name == n).unwrap();
+        // Own colorScheme wins; otherwise profiles.defaults is inherited.
+        assert_eq!(by("A").color_scheme.as_deref(), Some("Ubuntu"));
+        assert_eq!(by("B").color_scheme.as_deref(), Some("Campbell"));
     }
 
     #[test]

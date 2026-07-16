@@ -53,6 +53,9 @@ pub struct TabSpec {
     /// Accepted for compatibility — sessions already freeze-and-stay today;
     /// becomes meaningful once exit-closes-tab lands.
     pub hold: bool,
+    /// Color-scheme name for this tab (from its profile's `colorScheme`);
+    /// resolved through `wt_schemes` at tab creation for per-tab theming.
+    pub color_scheme: Option<String>,
 }
 
 /// Internal: an OS default-terminal handoff riding in this launch (the cold
@@ -330,6 +333,7 @@ pub fn expand_dir_tabs(tabs: Vec<TabSpec>) -> Vec<TabSpec> {
                     title: spec.title.clone(),
                     cmdline: Vec::new(),
                     hold: spec.hold,
+                    color_scheme: spec.color_scheme.clone(),
                 })
                 .collect()
         })
