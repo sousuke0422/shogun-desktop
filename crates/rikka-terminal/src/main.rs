@@ -1077,6 +1077,12 @@ impl Render for TabsWindow {
         // container measures its children against infinite space, so
         // taffy would never shrink them.
         let tab_w = ((avail - plus_w) / self.tabs.len().max(1) as f32).clamp(100.0, 240.0);
+        // Left edge of the profile ⌄ (it sits after the tabs and the 32px
+        // [+]), for dropping the menu under it instead of the strip's left
+        // corner. Clamped so the 200px menu stays on-screen; the scroll case
+        // (⌄ scrolled to the right end) lands near the clamp, close enough.
+        let chevron_x = 8.0 + self.tabs.len() as f32 * tab_w + 32.0;
+        let menu_left = chevron_x.clamp(8.0, (vp.width / px(1.) - 208.0).max(8.0));
         let tab_viewport = div()
             .id("tab-viewport")
             .flex_1()
@@ -1110,6 +1116,15 @@ impl Render for TabsWindow {
                 let title: String = title.chars().take(20).collect();
                 let drag_title = title.clone();
                 let active = ix == active_ix;
+                // Each tab always wears ITS profile's background color, so
+                // tabs stay distinguishable by color even when inactive.
+                // Active = full (merges with the pane, which carries the same
+                // palette); inactive = the same color recessed; unthemed tabs
+                // fall back to the chrome behavior.
+                let prof_rgb = entry
+                    .0
+                    .theme()
+                    .map(|p| (p.background.r, p.background.g, p.background.b));
                 // Recording indicator: session logging is on (Ctrl+Shift+L).
                 let rec_dot = entry.0.session.logging_active().then(|| {
                     div()
@@ -1143,13 +1158,18 @@ impl Render for TabsWindow {
                     .rounded_tl(px(8.))
                     .rounded_tr(px(8.))
                     .text_size(px(12.))
-                    .map(|t| {
-                        if active {
-                            t.bg(pane_fill()).text_color(rgb(TEXT_PRIMARY))
-                        } else {
-                            t.text_color(gpui::rgba(TEXT_SECONDARY))
-                                .hover(|t| t.bg(gpui::rgba(TAB_HOVER)))
-                        }
+                    .map(|t| match (active, prof_rgb) {
+                        (true, Some((r, g, b))) => t
+                            .bg(rgb(u32::from_be_bytes([0, r, g, b])))
+                            .text_color(rgb(TEXT_PRIMARY)),
+                        (true, None) => t.bg(pane_fill()).text_color(rgb(TEXT_PRIMARY)),
+                        (false, Some((r, g, b))) => t
+                            .bg(gpui::rgba(u32::from_be_bytes([r, g, b, 0x99])))
+                            .text_color(rgb(TEXT_PRIMARY))
+                            .hover(|t| t.bg(gpui::rgba(u32::from_be_bytes([r, g, b, 0xCC])))),
+                        (false, None) => t
+                            .text_color(gpui::rgba(TEXT_SECONDARY))
+                            .hover(|t| t.bg(gpui::rgba(TAB_HOVER))),
                     })
                     .children(rec_dot)
                     .child(
@@ -1618,7 +1638,7 @@ impl Render for TabsWindow {
                     div()
                         .absolute()
                         .top(px(TAB_STRIP_H))
-                        .left(px(8.))
+                        .left(px(menu_left))
                         .flex()
                         .flex_col()
                         .min_w(px(200.))
