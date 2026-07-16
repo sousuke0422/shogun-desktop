@@ -34,6 +34,8 @@ pub struct Config {
     pub logging: LoggingSection,
     #[serde(default)]
     pub keys: KeysSection,
+    #[serde(default)]
+    pub theme: ThemeSection,
 }
 
 /// ```toml
@@ -102,6 +104,36 @@ pub struct LoggingSection {
 /// paste = "ctrl+shift+v"
 /// cycle_back = "ctrl+shift+tab"
 /// ```
+/// Terminal color palette (applied in `keymap`-style at startup; the resolver
+/// lives in `wt_schemes` + engine `theme`).
+///
+/// ```toml
+/// [theme]
+/// wt_scheme = "Ubuntu"       # import a Windows Terminal scheme BY NAME
+///                            # (from wt's settings.json + fragment dirs)
+/// # inline overrides win over the imported scheme; each is "#RRGGBB":
+/// background = "#300A24"
+/// foreground = "#EEEEEC"
+/// selection = "#B5D5FF"
+/// # ansi = [16 × "#RRGGBB"]  # black..white, brightBlack..brightWhite
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ThemeSection {
+    /// A Windows Terminal color scheme to import by name (compat mode).
+    #[serde(default)]
+    pub wt_scheme: Option<String>,
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default)]
+    pub foreground: Option<String>,
+    #[serde(default)]
+    pub selection: Option<String>,
+    /// The 16 ANSI colors; when present must hold exactly 16 `#RRGGBB`
+    /// entries (black..white, brightBlack..brightWhite).
+    #[serde(default)]
+    pub ansi: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct KeysSection {
     #[serde(default)]
@@ -286,6 +318,7 @@ mod tests {
             terminal: TerminalSection::default(),
             logging: LoggingSection::default(),
             keys: KeysSection::default(),
+            theme: ThemeSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: true,
                 hidden: vec!["Ubuntu".into(), "{c}".into()],
@@ -306,6 +339,7 @@ mod tests {
             terminal: TerminalSection::default(),
             logging: LoggingSection::default(),
             keys: KeysSection::default(),
+            theme: ThemeSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: true,
                 hidden: vec![],
@@ -324,6 +358,7 @@ mod tests {
             terminal: TerminalSection::default(),
             logging: LoggingSection::default(),
             keys: KeysSection::default(),
+            theme: ThemeSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: false,
                 ..Default::default()

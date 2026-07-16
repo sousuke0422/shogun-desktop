@@ -286,7 +286,7 @@ mod tests {
 
 /// Strip JSONC comments and trailing commas so serde_json can parse wt's
 /// settings (which allows both). String contents are preserved.
-fn strip_jsonc(raw: &str) -> String {
+pub(crate) fn strip_jsonc(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let b = raw.as_bytes();
     let mut i = 0;

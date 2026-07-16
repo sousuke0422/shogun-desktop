@@ -58,6 +58,11 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
   `log_input = true` の明示オプトイン（実装: `src/session_log.rs`・
   tee 本体はエンジン `pty_session.rs`/`lib.rs::send_bytes`）
 - フォントは Consolas（システム解決・CJK は DirectWrite fallback 任せ）
+- **配色テーマ**: config の `[theme]` で 16 色パレット＋背景/前景/選択色を
+  差し替え。**wt 互換モード** `wt_scheme = "Ubuntu"` は Windows Terminal の
+  カラースキームを名前で取り込む（wt の settings.json ＋ Ubuntu 等が置く
+  Fragments dir が源・`wt_schemes.rs`）。インライン `#RRGGBB` 指定はスキーム
+  より優先。テーマ設定時はパネル背景もスキーム背景に追従（chrome は不変）
 - **UI の方向性 = Files (files.community) 系のソフト Fluent**: 低コントラストの
   レイヤ面（白 8〜12% オーバーレイ）・角丸ピルタブ＋hover・アクセントは
   アクティブタブ下の 2px バーのみ・ヘアライン境界。

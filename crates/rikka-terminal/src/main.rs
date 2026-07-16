@@ -31,6 +31,7 @@ mod session_log;
 mod tab_move;
 mod tsf;
 mod wt_profiles;
+mod wt_schemes;
 
 use std::io::{Read, Write};
 use std::sync::{Arc, atomic::Ordering};
@@ -95,6 +96,10 @@ gpui::actions!(rikka_terminal, [TerminalCopy, TerminalPaste]);
 static FONT_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static ACRYLIC_CFG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static SCROLLBACK_CFG: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+/// The pane surround color when a `[theme]` sets one — so the themed
+/// background (e.g. Ubuntu's aubergine) is what shows behind the grid, not
+/// the WinUI tertiary fill. `None` = no theme configured, keep `PANE_BG`.
+static PANE_BG_OVERRIDE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
 fn apply_appearance(cfg: &config::Config) {
     if let Some(size) = cfg.appearance.font_size {
@@ -108,6 +113,66 @@ fn apply_appearance(cfg: &config::Config) {
     }
     let _ = ACRYLIC_CFG.set(cfg.appearance.acrylic.unwrap_or(false));
     let _ = SCROLLBACK_CFG.set(cfg.terminal.scrollback.map(|n| n as usize));
+}
+
+/// Resolve `[theme]` into a palette and install it engine-wide. Order:
+/// start from the built-in default, fold a `wt_scheme` import over it (compat
+/// mode), then apply inline `#RRGGBB` overrides last so they always win. A
+/// section with none of these set leaves the built-in palette untouched.
+fn apply_theme(cfg: &config::Config) {
+    use rikka_terminal_core::theme::{self, Rgb};
+    let t = &cfg.theme;
+    if t.wt_scheme.is_none()
+        && t.background.is_none()
+        && t.foreground.is_none()
+        && t.selection.is_none()
+        && t.ansi.is_none()
+    {
+        return;
+    }
+    let parse = |s: &str| -> Option<Rgb> {
+        let h = s.strip_prefix('#').unwrap_or(s);
+        (h.len() == 6)
+            .then(|| u32::from_str_radix(h, 16).ok())
+            .flatten()
+            .map(|v| Rgb::new((v >> 16) as u8, (v >> 8) as u8, v as u8))
+    };
+    let mut palette = theme::DEFAULT;
+    if let Some(name) = &t.wt_scheme {
+        match wt_schemes::palette_for(name, palette.clone()) {
+            Some(p) => palette = p,
+            None => log::warn!("[theme] wt_scheme {name:?} not found in wt settings/fragments"),
+        }
+    }
+    let apply = |slot: &mut Rgb, v: &Option<String>| {
+        if let Some(rgb) = v.as_deref().and_then(parse) {
+            *slot = rgb;
+        }
+    };
+    apply(&mut palette.background, &t.background);
+    apply(&mut palette.foreground, &t.foreground);
+    apply(&mut palette.selection, &t.selection);
+    if let Some(list) = &t.ansi {
+        if list.len() == 16 {
+            for (slot, v) in palette.ansi.iter_mut().zip(list) {
+                if let Some(rgb) = parse(v) {
+                    *slot = rgb;
+                }
+            }
+        } else {
+            log::warn!(
+                "[theme] ansi must have exactly 16 entries, got {}",
+                list.len()
+            );
+        }
+    }
+    // The pane surround adopts the themed background, so the grid sits on
+    // the scheme's color (and the selected tab, which shares pane_fill,
+    // stays merged). Only set when a theme is active — no theme leaves the
+    // default WinUI pane fill untouched.
+    let bg = palette.background;
+    let _ = PANE_BG_OVERRIDE.set(u32::from_be_bytes([0, bg.r, bg.g, bg.b]));
+    theme::set_palette(palette);
 }
 
 /// The grid font: configured, or the classic default.
@@ -145,10 +210,12 @@ fn chrome_fill() -> gpui::Rgba {
 /// Pane surround fill (also the selected tab, which merges with it): solid,
 /// or a 78% tint over acrylic.
 fn pane_fill() -> gpui::Rgba {
+    let base = PANE_BG_OVERRIDE.get().copied().unwrap_or(PANE_BG);
     if acrylic() {
-        gpui::rgba(0x282828C8)
+        // Same 0xC8 (78%) tint over acrylic, on the themed (or default) base.
+        gpui::rgba((base << 8) | 0xC8)
     } else {
-        rgb(PANE_BG)
+        rgb(base)
     }
 }
 
@@ -2205,6 +2272,7 @@ fn main() {
         let (wt, wt_default) = wt_profiles::discover();
         let cfg = config::Config::load();
         apply_appearance(&cfg);
+        apply_theme(&cfg);
         session_log::init(cfg.logging.clone());
         keymap::init(&cfg.keys);
         let menu = cfg.build_menu(wt, wt_default);

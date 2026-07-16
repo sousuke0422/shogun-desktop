@@ -20,14 +20,16 @@ pub const CELL_W: f32 = 7.8;
 /// Measured advances (HAdvanceWidth / UPM × 13):
 ///   Moralerspace Neon HW : ASCII 6.825 px  → use 7.8 (empirical, adds breathing room)
 ///   Cica                  : ASCII 6.500 px  → use 6.5 (exact fit)
-/// Engine default background (#1A1A1A) and foreground (#E8DCC8) — the
-/// fallbacks for cells without explicit colors. Values match the
-/// shogun-desktop theme (shikkoku / zouge).
+/// Engine default background and foreground — the fallbacks for cells
+/// without explicit colors. From the active [`crate::theme`] palette
+/// (built-in default: shikkoku #1A1A1A / zouge #E8DCC8).
 pub fn default_bg() -> gpui::Rgba {
-    gpui::rgb(0x1A1A1A)
+    let c = crate::theme::background();
+    gpui::rgb(u32::from_be_bytes([0, c.r, c.g, c.b]))
 }
 pub fn default_fg() -> gpui::Rgba {
-    gpui::rgb(0xE8DCC8)
+    let c = crate::theme::foreground();
+    gpui::rgb(u32::from_be_bytes([0, c.r, c.g, c.b]))
 }
 
 pub fn cell_width_for_font(font: &str) -> f32 {
@@ -164,7 +166,7 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
     }
     if run.is_cursor {
         let cursor_bg = fg;
-        let cursor_fg = bg.unwrap_or_else(|| rgba(0x1e1e1eff));
+        let cursor_fg = bg.unwrap_or_else(default_bg);
         (cursor_fg, Some(cursor_bg))
     } else {
         (fg, bg)
@@ -802,10 +804,6 @@ fn paint_box_char(
 /// the active font via [`crate::window::measure_cell_metrics`]
 /// (`cw` = `ch_advance`; `ch` = `font_size × 1.5`).
 /// Fall back to [`CELL_W`] / hardcoded `20.0` when `TextSystem` is unavailable.
-/// Selection highlight color: translucent steel blue painted over the row's
-/// ink, so the selected text stays legible underneath.
-const SELECTION_RGBA: u32 = 0x3465a480;
-
 /// Ctrl-hover underline for OSC 8 hyperlinks: opaque accent blue.
 const LINK_HOVER_RGBA: u32 = 0x58a6ffff;
 
@@ -1327,12 +1325,16 @@ pub fn render_grid(
                     }
 
                     if let Some((c0, c1)) = sel_cols {
+                        let s = crate::theme::selection();
+                        // Painted translucent (alpha 0x80) over the row's ink
+                        // so the selected text stays legible underneath.
+                        let sel = rgba(u32::from_be_bytes([s.r, s.g, s.b, 0x80]));
                         window.paint_quad(fill(
                             Bounds {
                                 origin: point(px(ox + c0 as f32 * cw), px(oy)),
                                 size: size(px((c1 - c0) as f32 * cw), px(ch)),
                             },
-                            rgba(SELECTION_RGBA),
+                            sel,
                         ));
                     }
 

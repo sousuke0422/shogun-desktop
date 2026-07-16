@@ -10,6 +10,7 @@ pub mod pty_session;
 pub mod renderer;
 pub mod selection;
 pub mod sixel;
+pub mod theme;
 pub mod winops;
 pub mod xtversion;
 
@@ -1415,29 +1416,33 @@ fn resolve_color(
     }
 }
 
-/// xterm palette fallback when the term color table has no entry yet.
+/// Palette fallback for the 16 ANSI colors when the term color table has no
+/// entry yet (an app's OSC 4 override still wins — see `resolve_color`). The
+/// values come from the active [`theme`] palette, so a configured/wt-imported
+/// theme recolors named-color text; the built-in default is Tango.
 fn fallback_named_color(named: alacritty_terminal::vte::ansi::NamedColor) -> Option<ResolvedColor> {
     use alacritty_terminal::vte::ansi::NamedColor;
-    let (r, g, b) = match named {
-        NamedColor::Black => (0x1e, 0x1e, 0x1e),
-        NamedColor::Red => (0xcc, 0x00, 0x00),
-        NamedColor::Green => (0x4e, 0x9a, 0x06),
-        NamedColor::Yellow => (0xc4, 0xa0, 0x00),
-        NamedColor::Blue => (0x34, 0x65, 0xa4),
-        NamedColor::Magenta => (0x75, 0x50, 0x7b),
-        NamedColor::Cyan => (0x06, 0x98, 0x9a),
-        NamedColor::White => (0xd3, 0xd7, 0xcf),
-        NamedColor::BrightBlack => (0x55, 0x57, 0x53),
-        NamedColor::BrightRed => (0xef, 0x29, 0x29),
-        NamedColor::BrightGreen => (0x8a, 0xe2, 0x34),
-        NamedColor::BrightYellow => (0xfc, 0xe9, 0x4f),
-        NamedColor::BrightBlue => (0x72, 0x9f, 0xcf),
-        NamedColor::BrightMagenta => (0xad, 0x7f, 0xa8),
-        NamedColor::BrightCyan => (0x34, 0xe2, 0xe2),
-        NamedColor::BrightWhite => (0xee, 0xee, 0xec),
+    let idx: u8 = match named {
+        NamedColor::Black => 0,
+        NamedColor::Red => 1,
+        NamedColor::Green => 2,
+        NamedColor::Yellow => 3,
+        NamedColor::Blue => 4,
+        NamedColor::Magenta => 5,
+        NamedColor::Cyan => 6,
+        NamedColor::White => 7,
+        NamedColor::BrightBlack => 8,
+        NamedColor::BrightRed => 9,
+        NamedColor::BrightGreen => 10,
+        NamedColor::BrightYellow => 11,
+        NamedColor::BrightBlue => 12,
+        NamedColor::BrightMagenta => 13,
+        NamedColor::BrightCyan => 14,
+        NamedColor::BrightWhite => 15,
         _ => return None,
     };
-    Some(ResolvedColor::Rgb(r, g, b))
+    let c = crate::theme::ansi(idx);
+    Some(ResolvedColor::Rgb(c.r, c.g, c.b))
 }
 
 fn fallback_indexed_color(idx: u8) -> Option<ResolvedColor> {

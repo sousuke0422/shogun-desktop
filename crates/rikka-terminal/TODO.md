@@ -62,8 +62,12 @@
       再割当可能（keymap.rs・"mod+mod+key" 形式・typo は既定維持＋warn）。
       固定シノニム（Ctrl+M merge・Ctrl+Tab/PageUp/Down・Insert 系・
       Shift+PageUp/Down）は対象外のまま。残: テーマ/配色設定。
+- [x] ~~テーマ/配色設定~~ — `[theme]` で 16色＋bg/fg/selection 差し替え、
+      **wt 互換モード** `wt_scheme = "Ubuntu"`（wt settings.json ＋ Fragments
+      dir を名前解決・engine `theme` を process-global 化・パネル背景も追従）。
+      実機で Ubuntu スキーム適用を確認。残: 内蔵スキーム（Campbell 等・wt に
+      ファイルが無い分）・OSC 4/10/11 クエリへのテーマ値応答・ライブリロード。
 - [ ] フォント同梱（Cascadia 等）。
-- [ ] テーマ/配色設定（config.toml でパレット差し替え）。
 
 ## セキュリティ
 

@@ -64,3 +64,20 @@ hidden = ["Azure Cloud Shell"]
 # copy = "ctrl+shift+c"
 # paste = "ctrl+shift+v"
 # cycle_back = "ctrl+shift+tab"
+
+[theme]
+# Terminal color palette. Import a Windows Terminal color scheme BY NAME
+# (compat mode) — resolved from wt's settings.json AND the fragment dirs
+# where vendors like Ubuntu drop schemes:
+# wt_scheme = "Ubuntu"
+# Inline overrides win over the imported scheme; each is "#RRGGBB":
+# background = "#300A24"
+# foreground = "#EEEEEC"
+# selection = "#B5D5FF"
+# The 16 ANSI colors (black..white, then brightBlack..brightWhite):
+# ansi = [
+#   "#2E3436", "#CC0000", "#4E9A06", "#C4A000",
+#   "#3465A4", "#75507B", "#06989A", "#D3D7CF",
+#   "#555753", "#EF2929", "#8AE234", "#FCE94F",
+#   "#729FCF", "#AD7FA8", "#34E2E2", "#EEEEEC",
+# ]
