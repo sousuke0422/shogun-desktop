@@ -11,6 +11,7 @@
 //! Ctrl+Shift+C/V (and Ctrl/Shift+Insert) copy/paste;
 //! Ctrl+Shift+L toggles session logging (● in the tab; see session_log);
 //! Shift+PageUp/PageDown pages the scrollback.
+//! The Ctrl+Shift chords are reassignable via `[keys]` (keymap.rs).
 
 // Release builds are GUI-subsystem: no console window tags along (and
 // closing it can no longer kill the app with it). Debug builds keep the
@@ -22,6 +23,7 @@ mod attach;
 mod cli;
 mod config;
 mod hub;
+mod keymap;
 #[cfg(windows)]
 mod pty_local;
 mod session_log;
@@ -484,6 +486,46 @@ impl TabsWindow {
 
     fn active_session(&self) -> Option<&TerminalSession> {
         self.tabs.get(self.active).map(|e| &e.0.session)
+    }
+
+    /// Run one `[keys]` action — the single dispatch point for the
+    /// configurable chords (keymap.rs).
+    fn perform(&mut self, action: keymap::Action, window: &mut Window, cx: &mut Context<Self>) {
+        use keymap::Action::*;
+        match action {
+            NewTab => self.new_tab(cx),
+            CloseTab => self.close_active(window, cx),
+            DetachTab => self.detach_active(cx),
+            #[cfg(windows)]
+            EjectTab => self.eject_active(window, cx),
+            #[cfg(windows)]
+            MoveTab => self.move_active_to_other_window(window, cx),
+            // No cross-process moves off Windows (yet) — degrade to the
+            // in-process split.
+            #[cfg(not(windows))]
+            EjectTab => self.detach_active(cx),
+            #[cfg(not(windows))]
+            MoveTab => {}
+            MergeAll => self.merge_all(cx),
+            // Session logging toggle — the ● in the tab is the feedback,
+            // so redraw right away.
+            ToggleLogging => {
+                if let Some(s) = self.active_session() {
+                    session_log::toggle(s);
+                }
+                cx.notify();
+            }
+            Copy => selection::copy_to_clipboard(&self.selection, self.active_session(), cx),
+            Paste => {
+                if let Some(item) = cx.read_from_clipboard()
+                    && let Some(text) = item.text()
+                    && let Some(s) = self.active_session()
+                {
+                    s.paste(&text);
+                }
+            }
+            CycleBack => self.cycle(false, cx),
+        }
     }
 
     /// Take ownership of a tab: point its driver's waker at this window and
@@ -1336,78 +1378,20 @@ impl Render for TabsWindow {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
                 let m = &ks.modifiers;
-                // ── tab management chords ─────────────────────────────
-                if m.control && m.shift {
-                    let handled = match ks.key.as_str() {
-                        "t" => {
-                            this.new_tab(cx);
-                            true
-                        }
-                        "w" => {
-                            this.close_active(window, cx);
-                            true
-                        }
-                        "d" => {
-                            this.detach_active(cx);
-                            true
-                        }
-                        // Cross-process moves (Windows; IPC.md tab moves):
-                        // E(ject) = detach into an own OS process,
-                        // X(fer) = move into another window process.
-                        #[cfg(windows)]
-                        "e" => {
-                            this.eject_active(window, cx);
-                            true
-                        }
-                        #[cfg(windows)]
-                        "x" => {
-                            this.move_active_to_other_window(window, cx);
-                            true
-                        }
-                        // NOTE: gpui-Windows never delivers Ctrl+M (the
-                        // ^M = CR legacy swallows it) — "a" (attach-all) is
-                        // the real binding, "m" kept for platforms where it
-                        // arrives.
-                        "m" | "a" => {
-                            this.merge_all(cx);
-                            true
-                        }
-                        // Session logging toggle — the ● in the tab is the
-                        // feedback, so redraw right away.
-                        "l" => {
-                            if let Some(s) = this.active_session() {
-                                session_log::toggle(s);
-                            }
-                            cx.notify();
-                            true
-                        }
-                        "c" => {
-                            selection::copy_to_clipboard(
-                                &this.selection,
-                                this.active_session(),
-                                cx,
-                            );
-                            true
-                        }
-                        "v" => {
-                            if let Some(item) = cx.read_from_clipboard()
-                                && let Some(text) = item.text()
-                                && let Some(s) = this.active_session()
-                            {
-                                s.paste(&text);
-                            }
-                            true
-                        }
-                        "tab" => {
-                            this.cycle(false, cx);
-                            true
-                        }
-                        _ => false,
-                    };
-                    if handled {
-                        cx.stop_propagation();
-                        return;
-                    }
+                // ── tab management chords (defaults Ctrl+Shift+…, each
+                // reassignable through `[keys]` — see keymap.rs) ────────
+                if let Some(action) = keymap::resolve(m, ks.key.as_str()) {
+                    this.perform(action, window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                // Hardwired merge synonym: gpui-Windows never delivers
+                // Ctrl+M (the ^M = CR legacy swallows it) — "a" is the real
+                // binding, "m" kept for platforms where it arrives.
+                if m.control && m.shift && ks.key == "m" {
+                    this.merge_all(cx);
+                    cx.stop_propagation();
+                    return;
                 }
                 if m.control && !m.shift && (ks.key == "tab" || ks.key == "pagedown") {
                     this.cycle(true, cx);
@@ -2205,6 +2189,7 @@ fn main() {
         let cfg = config::Config::load();
         apply_appearance(&cfg);
         session_log::init(cfg.logging.clone());
+        keymap::init(&cfg.keys);
         let menu = cfg.build_menu(wt, wt_default);
         hub::init(cx, menu);
         // A cold-start handoff rides in this launch (IPC.md "attach cold"):

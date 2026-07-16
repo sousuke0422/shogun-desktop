@@ -32,6 +32,8 @@ pub struct Config {
     pub terminal: TerminalSection,
     #[serde(default)]
     pub logging: LoggingSection,
+    #[serde(default)]
+    pub keys: KeysSection,
 }
 
 /// ```toml
@@ -82,6 +84,46 @@ pub struct LoggingSection {
     pub log_input: Option<bool>,
     #[serde(default)]
     pub auto_start: Option<bool>,
+}
+
+/// Chord reassignment for the tab-management keys (parser and defaults in
+/// `keymap.rs`; unset = the built-in Ctrl+Shift chord).
+///
+/// ```toml
+/// [keys]
+/// new_tab = "ctrl+shift+t"     # value shape: "mod+mod+key",
+/// close_tab = "ctrl+shift+w"   # mods: ctrl / shift / alt
+/// detach_tab = "ctrl+shift+d"
+/// eject_tab = "ctrl+shift+e"
+/// move_tab = "ctrl+shift+x"
+/// merge_all = "ctrl+shift+a"
+/// toggle_logging = "ctrl+shift+l"
+/// copy = "ctrl+shift+c"
+/// paste = "ctrl+shift+v"
+/// cycle_back = "ctrl+shift+tab"
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct KeysSection {
+    #[serde(default)]
+    pub new_tab: Option<String>,
+    #[serde(default)]
+    pub close_tab: Option<String>,
+    #[serde(default)]
+    pub detach_tab: Option<String>,
+    #[serde(default)]
+    pub eject_tab: Option<String>,
+    #[serde(default)]
+    pub move_tab: Option<String>,
+    #[serde(default)]
+    pub merge_all: Option<String>,
+    #[serde(default)]
+    pub toggle_logging: Option<String>,
+    #[serde(default)]
+    pub copy: Option<String>,
+    #[serde(default)]
+    pub paste: Option<String>,
+    #[serde(default)]
+    pub cycle_back: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -243,6 +285,7 @@ mod tests {
             appearance: AppearanceSection::default(),
             terminal: TerminalSection::default(),
             logging: LoggingSection::default(),
+            keys: KeysSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: true,
                 hidden: vec!["Ubuntu".into(), "{c}".into()],
@@ -262,6 +305,7 @@ mod tests {
             appearance: AppearanceSection::default(),
             terminal: TerminalSection::default(),
             logging: LoggingSection::default(),
+            keys: KeysSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: true,
                 hidden: vec![],
@@ -279,6 +323,7 @@ mod tests {
             appearance: AppearanceSection::default(),
             terminal: TerminalSection::default(),
             logging: LoggingSection::default(),
+            keys: KeysSection::default(),
             profiles: ProfilesSection {
                 use_windows_terminal: false,
                 ..Default::default()

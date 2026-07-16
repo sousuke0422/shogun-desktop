@@ -32,6 +32,7 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
 
 - **タブ**: Ctrl+Shift+T 新規 / W 閉じる / D 新窓へ分離 / A 全窓統合、
   Ctrl+PageUp/PageDown（届く環境では Ctrl+Tab も）で循環、クリックで切替。
+  Ctrl+Shift 系チョードは config の `[keys]` で再割当可（keymap.rs）。
   タブ=窓非依存セッション（hub.rs）: 分離結合は UI スレッド上の同期 Vec 移動で、
   PTY/parse スレッドは移送を知らない — wt がクラッシュする「ライブコントロールの
   窓間移送」という失敗クラスが構造的に存在しない。ガチャ耐性は

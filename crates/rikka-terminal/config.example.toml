@@ -48,3 +48,19 @@ hidden = ["Azure Cloud Shell"]
 # log_input = true
 # Start logging on every new tab automatically. Default: off.
 # auto_start = true
+
+[keys]
+# Reassign the tab-management chords. Value shape: "mod+mod+key" with mods
+# ctrl / shift / alt and gpui's lowercase key names (t, tab, f5, ...).
+# Unset entries keep the built-in Ctrl+Shift chord. A typo keeps the
+# default (and logs a warning) rather than unbinding the action.
+# new_tab = "ctrl+shift+t"
+# close_tab = "ctrl+shift+w"
+# detach_tab = "ctrl+shift+d"
+# eject_tab = "ctrl+shift+e"
+# move_tab = "ctrl+shift+x"
+# merge_all = "ctrl+shift+a"
+# toggle_logging = "ctrl+shift+l"
+# copy = "ctrl+shift+c"
+# paste = "ctrl+shift+v"
+# cycle_back = "ctrl+shift+tab"

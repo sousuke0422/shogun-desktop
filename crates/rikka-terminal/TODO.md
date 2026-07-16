@@ -58,8 +58,12 @@
       表示＋`[logging]` config（auto_start / directory / log_input
       オプトイン）。出力は PTY 生バイト tee（src/session_log.rs）。
       実窓スモーク済（auto_start でログ生成・●表示・エスケープ列込み記録）。
-- [ ] キーバインド設定（config.toml で chord の再割当）。
+- [x] ~~キーバインド設定~~ — `[keys]` で Ctrl+Shift 系 10 アクションを
+      再割当可能（keymap.rs・"mod+mod+key" 形式・typo は既定維持＋warn）。
+      固定シノニム（Ctrl+M merge・Ctrl+Tab/PageUp/Down・Insert 系・
+      Shift+PageUp/Down）は対象外のまま。残: テーマ/配色設定。
 - [ ] フォント同梱（Cascadia 等）。
+- [ ] テーマ/配色設定（config.toml でパレット差し替え）。
 
 ## 将来構想
 
