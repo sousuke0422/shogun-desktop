@@ -58,6 +58,11 @@ shogun-desktop（SSH 前提のエージェント操作卓）から抽出した�
   `log_input = true` の明示オプトイン（実装: `src/session_log.rs`・
   tee 本体はエンジン `pty_session.rs`/`lib.rs::send_bytes`）
 - フォントは Consolas（システム解決・CJK は DirectWrite fallback 任せ）
+- **spawn 環境**: `TERM`（既定 `xterm-256color`）＋ `COLORTERM=truecolor` を子に
+  渡す（konsole/alacritty 同様・btop 等のクロスプラットフォーム TUI が色/機能を
+  検出する）。config `[terminal] term`/`identity` で変更可。`identity="ghostty"`
+  で XTVERSION/TERM_PROGRAM を詐称できるが既定は honest（ConPTY 越しの詐称は
+  conhost に剥がされる機能を誘発するため）
 - **配色テーマ**: config の `[theme]` で 16 色パレット＋背景/前景/選択色を
   差し替え。**wt 互換モード** `wt_scheme = "Ubuntu"` は Windows Terminal の
   カラースキームを名前で取り込む（wt の settings.json ＋ Ubuntu 等が置く

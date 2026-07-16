@@ -40,6 +40,13 @@ hidden = ["Azure Cloud Shell"]
 [terminal]
 # Scrollback history lines per tab (default: 10000).
 # scrollback = 50000
+# TERM for spawned shells (default: xterm-256color) — what konsole/alacritty
+# set; cross-platform TUIs like btop read it for color/capability detection.
+# term = "xterm-256color"
+# XTVERSION + TERM_PROGRAM identity: "honest" (rikka-terminal; default) or
+# "ghostty" (masquerade so emulator-sniffing apps enable kitty features).
+# Keep honest over ConPTY — a spoof invites conhost-stripped protocols.
+# identity = "honest"
 
 [logging]
 # Tera Term-style session logging, toggled per tab with Ctrl+Shift+L

@@ -73,6 +73,13 @@
       載せ替え（アクティブタブのみ描画ゆえ global 1枚で成立）。同一窓の2タブで
       Ubuntu/Plain 切替=配色入替を実機実証。**残: タブ移送で wire に palette を
       載せてない**ので、別窓へ移すと移送先の既定テーマに戻る（v1 制限）。
+- [x] ~~TERM/COLORTERM 未設定~~ — spawn 時に `TERM=xterm-256color`＋
+      `COLORTERM=truecolor` を注入（konsole/alacritty 同様・btop 等が色検出）。
+      config `[terminal] term`/`identity` で変更可。`identity="ghostty"` で
+      XTVERSION/TERM_PROGRAM 詐称（既定 honest・ConPTY 越しは封印）。実機で
+      子に `TERM`/`COLORTERM` が届くのを確認。**マルチプラットフォーム化の
+      布石** — SD の TermName/TerminalIdentity 相当を rikka にも移植済み。
+      残: rikka 独自 terminfo（xterm-rikka）配布と SSH 経路の詐称活用。
 - [ ] フォント同梱（Cascadia 等）。
 
 ## セキュリティ
