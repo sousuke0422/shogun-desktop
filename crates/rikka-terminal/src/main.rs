@@ -226,11 +226,10 @@ fn spawn_local_shell(
         resizer,
         &xtversion::engine_identity(),
     )?;
-    // portable-pty on Windows is ConPTY underneath — same conhost reflow.
+    // portable-pty on Windows is ConPTY underneath — same conhost reflow
+    // and no kitty-keyboard advertisement (mark_conpty docs).
     #[cfg(windows)]
-    session
-        .conpty_resize_semantics
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    session.mark_conpty();
     Ok(session)
 }
 

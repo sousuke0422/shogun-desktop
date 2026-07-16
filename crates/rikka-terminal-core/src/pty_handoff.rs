@@ -400,11 +400,9 @@ pub fn build_handoff_session_with_preface(
         xtversion_identity,
         preface,
     )?;
-    // This session IS a ConPTY: reflow like conhost or drift (see the
-    // field's docs in lib.rs).
-    session
-        .conpty_resize_semantics
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // This session IS a ConPTY: reflow like conhost or drift, and don't
+    // advertise kitty keyboard (see mark_conpty's docs in lib.rs).
+    session.mark_conpty();
     *session.transfer.lock() = Some(transfer);
     Ok(session)
 }

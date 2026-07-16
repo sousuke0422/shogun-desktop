@@ -538,6 +538,155 @@ mod tests {
         drop(client);
     }
 
+    /// Diagnostic probe (not a test): REAL yazi under the vendored conpty,
+    /// quit with `q` — does the main screen come back (`?1049l`)?
+    /// Root cause of the 2026-07-16 stuck-alt-screen bug, established by
+    /// this probe's variant bisection: answering yazi's kitty keyboard
+    /// query (`CSI ? u` → `?0u`) makes yazi use the protocol's push/pop,
+    /// and OpenConsole 1.24.2605.12001 then swallows the tail of the exit
+    /// restore burst — `?1049l` never reaches the terminal (wt is immune
+    /// because it never answers the query). The engine fix: `mark_conpty`
+    /// disables the advertisement, so "no ?u reply" is rikka's shipping
+    /// behavior and must show `1049l=true`.
+    /// Needs yazi installed. Run with
+    /// `cargo test alt_exit_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn alt_exit_probe() {
+        use std::io::{Read as _, Write as _};
+
+        for (label, u_reply) in [
+            // The very first conhost of a run dies at startup whatever the
+            // variant (cold-start flake) — burn it on a warmup.
+            ("warmup (ignore)", false),
+            ("no ?u reply (the fix) — expect 1049l=true", false),
+            ("?0u reply (the bug) — conhost eats the teardown", true),
+        ] {
+            let _serial = conhost_serial();
+            let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
+            let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
+            let (their_input, mut our_input) = std::io::pipe().unwrap();
+            let (our_output, their_output) = std::io::pipe().unwrap();
+            let mut hpcon: Hpcon = std::ptr::null_mut();
+            unsafe {
+                (dll.create)(
+                    Coord { x: 80, y: 24 },
+                    HANDLE(their_input.as_raw_handle()),
+                    HANDLE(their_output.as_raw_handle()),
+                    0,
+                    &mut hpcon,
+                )
+            }
+            .ok()
+            .unwrap();
+            drop((their_input, their_output));
+            // Answer the DA1 query conhost sends at startup (the engine
+            // answers `?6c`). The reply can sit in the input pipe ahead of
+            // the request — the input state machine parses it on arrival.
+            our_input.write_all(b"\x1b[?6c").unwrap();
+            // INTERACTIVE pwsh, driven by "typing" into the input pipe —
+            // the live failure has an interactive shell (PSReadLine's
+            // console-API traffic keeps conhost in its rendering mode)
+            // hosting the TUI child; -Command runs put conhost in a pure
+            // streaming mode that forwards everything and hides the bug.
+            let client = launch_client(
+                hpcon,
+                "pwsh.exe",
+                &["-NoProfile".into(), "-NoLogo".into()],
+                None,
+            )
+            .unwrap();
+            unsafe { (dll.release)(hpcon) }.ok().unwrap();
+            unsafe { (dll.close)(hpcon) };
+
+            let mut bytes = Vec::new();
+            let mut out: std::fs::File = OwnedHandle::from(our_output).into();
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 65536];
+                while let Ok(n) = out.read(&mut buf) {
+                    if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            });
+            // Let the prompt come up, then "type" the yazi launch.
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            // Real yazi, driven like a user: launch, let it draw, quit.
+            let yazi = if std::path::Path::new(r"C:\Users\aki\scoop\shims\yazi.exe").exists() {
+                r"& 'C:\Users\aki\scoop\shims\yazi.exe'"
+            } else {
+                "yazi"
+            };
+            let _ = our_input.write_all(format!("{yazi}\r").as_bytes());
+            let mut sent_q = false;
+            let mut q_at: Option<std::time::Instant> = None;
+            let mut answered = std::collections::HashSet::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+            while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+                match rx.recv_timeout(left.min(std::time::Duration::from_millis(400))) {
+                    Ok(chunk) => bytes.extend(chunk),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(_) => break,
+                }
+                // Answer yazi's runtime detection queries the way the live
+                // engine does; only the kitty keyboard reply is the
+                // variant under test.
+                let mut pairs: Vec<(&[u8], &[u8])> = vec![
+                    (b"\x1b[>q", b"\x1bP>|rikka-terminal 0.1.0\x1b\\"),
+                    (b"\x1b]11;?", b"\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\"),
+                    (b"\x1b[16t", b"\x1b[6;20;10t"),
+                    (b"\x1b[0c", b"\x1b[?6c"),
+                    (b"\x1b_Gi=31", b"\x1b_Gi=31;OK\x1b\\"),
+                ];
+                if u_reply {
+                    pairs.push((b"\x1b[?u", b"\x1b[?0u"));
+                }
+                for (query, reply) in pairs {
+                    if !answered.contains(query) && bytes.windows(query.len()).any(|w| w == query) {
+                        let _ = our_input.write_all(reply);
+                        answered.insert(query);
+                    }
+                }
+                if !sent_q && bytes.windows(8).any(|w| w == b"\x1b[?1049h") {
+                    // Give yazi a beat to settle, then quit it.
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    while let Ok(chunk) = rx.try_recv() {
+                        bytes.extend(chunk);
+                    }
+                    let _ = our_input.write_all(b"q");
+                    sent_q = true;
+                    q_at = Some(std::time::Instant::now());
+                    continue;
+                }
+                if sent_q && bytes.windows(8).any(|w| w == b"\x1b[?1049l") {
+                    break; // restored — success shape
+                }
+                // Earlier probe runs proved a single 'q' can be swallowed
+                // (yazi still alive minutes later) — retry every 2s.
+                if let Some(t) = q_at
+                    && t.elapsed() > std::time::Duration::from_secs(2)
+                {
+                    let _ = our_input.write_all(b"q");
+                    q_at = Some(std::time::Instant::now());
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            while let Ok(chunk) = rx.try_recv() {
+                bytes.extend(chunk);
+            }
+            let has = |pat: &[u8]| bytes.windows(pat.len()).any(|w| w == pat);
+            println!(
+                "=== {label}: {} bytes | 1049h={} 1049l={} ===",
+                bytes.len(),
+                has(b"\x1b[?1049h"),
+                has(b"\x1b[?1049l"),
+            );
+            println!("{}\n", String::from_utf8_lossy(&bytes).escape_debug());
+            drop(client);
+        }
+    }
+
     /// Diagnostic probe (not a test): pure-WIDTH storm at fixed height,
     /// through a prompt row long enough to wrap at the narrow sizes.
     /// Any post-storm row drift between conhost's echoes and our grid is

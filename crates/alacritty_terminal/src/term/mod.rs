@@ -646,6 +646,21 @@ impl<T> Term<T> {
         &self.grid
     }
 
+    /// Enable/disable kitty keyboard protocol support at runtime (rikka
+    /// addition) — same semantics as flipping `Config::kitty_keyboard`
+    /// through `set_options` (mode stacks reset, protocol bits dropped).
+    /// Disabled = `CSI ? u` queries go unanswered, like terminals without
+    /// the protocol.
+    pub fn set_kitty_keyboard(&mut self, enabled: bool) {
+        if self.config.kitty_keyboard == enabled {
+            return;
+        }
+        self.config.kitty_keyboard = enabled;
+        self.keyboard_mode_stack = Vec::new();
+        self.inactive_keyboard_mode_stack = Vec::new();
+        self.mode.remove(TermMode::KITTY_KEYBOARD_PROTOCOL);
+    }
+
     /// Change the scrollback capacity of a LIVE terminal (rikka addition —
     /// upstream only reads it from the config at construction). Both grids
     /// update; shrinking drops the oldest history rows.

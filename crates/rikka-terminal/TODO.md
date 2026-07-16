@@ -56,9 +56,18 @@
 
 ## 保守メモ
 
+- **ConPTY 越しに kitty keyboard を広告するな**（2026-07-16 yazi 事件）:
+  `CSI ? u` に `?0u` を返すと TUI が push/pop を使い、OpenConsole 1.24 が
+  終了 restore burst の途中から丸呑み → `?1049l` が届かず alt screen 残留。
+  そもそも client の push は conhost に食われて端末へ届かない（プロトコルは
+  ConPTY 経由では機能しない）。恒久対処 = `mark_conpty()`（conpty reflow
+  semantics + kitty keyboard 無効化を一元化）。証跡 probe = `alt_exit_probe`
+  （fix変種=1049l 到達 / bug変種=丸呑み を対で記録）。wt が無事なのは
+  wt 自身が `? u` に答えないから。SSH セッションは従来どおり広告する。
 - 診断 probe（`#[ignore]`・`--nocapture` で実行）は残置:
   `width_semantics_probe` / `vertical_grow_probe` / `width_reflow_probe` /
-  `conpty_resize_probe`。conhost の挙動疑義はまずこれで実測せよ。
+  `conpty_resize_probe` / `alt_exit_probe`（要 yazi）。
+  conhost の挙動疑義はまずこれで実測せよ。
 - conhost spawn 系テストは `conhost_serial()` mutex で直列化必須
   （並列 cold start は deadline をいくら延ばしても飢える）。
 - 背面窓の実機 E2E: `PostMessage(WM_CHAR/WM_KEYDOWN)` + `SetWindowPos` +

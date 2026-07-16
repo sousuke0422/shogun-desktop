@@ -266,6 +266,22 @@ impl TerminalSession {
         self.term.lock().set_scrolling_history(lines);
     }
 
+    /// Mark this session as ConPTY-backed. Two consequences:
+    /// - width resizes reflow like conhost's `TextBuffer::Reflow`
+    ///   (`conpty_resize_semantics`, see that field's docs), and
+    /// - the kitty keyboard protocol is NOT advertised (`CSI ? u` goes
+    ///   unanswered, like wt): conhost never forwards the client's
+    ///   push/pop to us, so the protocol cannot work through it anyway —
+    ///   and OpenConsole 1.24 mis-parses the pop inside an exiting TUI's
+    ///   restore burst and swallows everything after it, INCLUDING the
+    ///   `?1049l` alt-screen exit. Advertising it left the tab stuck on
+    ///   the alt screen after quitting yazi (2026-07-16); see
+    ///   `pty_local::tests::alt_exit_probe` for the live evidence.
+    pub fn mark_conpty(&self) {
+        self.conpty_resize_semantics.store(true, Ordering::Relaxed);
+        self.term.lock().set_kitty_keyboard(false);
+    }
+
     /// Start/replace session logging (Tera Term-style): `output` receives
     /// every raw PTY byte (VT sequences included) from the reader thread;
     /// `input` receives what the USER sends (keys, IME commits, pastes —

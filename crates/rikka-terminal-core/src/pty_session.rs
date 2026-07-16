@@ -702,6 +702,63 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// ConPTY-marked sessions must NOT answer the kitty keyboard query
+    /// (`CSI ? u`): conhost never forwards the client's push/pop to the
+    /// terminal (the protocol cannot work through it), and OpenConsole
+    /// 1.24 swallows an exiting TUI's restore burst — including the
+    /// `?1049l` alt-screen exit — once the client uses the protocol our
+    /// answer advertised (yazi's quit left the tab stuck on the alt
+    /// screen, 2026-07-16). Direct sessions (SSH) keep answering.
+    #[test]
+    fn conpty_sessions_do_not_advertise_kitty_keyboard() {
+        struct Cap(Arc<FairMutex<Vec<u8>>>);
+        impl Write for Cap {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        struct Gated(std::sync::mpsc::Receiver<Vec<u8>>);
+        impl Read for Gated {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.0.recv() {
+                    Ok(b) => {
+                        let n = b.len().min(buf.len());
+                        buf[..n].copy_from_slice(&b[..n]);
+                        Ok(n)
+                    }
+                    Err(_) => Ok(0),
+                }
+            }
+        }
+        for (conpty, expect_reply) in [(false, true), (true, false)] {
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+            let out = Arc::new(FairMutex::new(Vec::new()));
+            let writer: Arc<FairMutex<Box<dyn Write + Send>>> =
+                Arc::new(FairMutex::new(Box::new(Cap(Arc::clone(&out)))));
+            let session = build_terminal_session(
+                20,
+                5,
+                Box::new(Gated(rx)),
+                writer,
+                Arc::new(crate::NoopResizer),
+                "test-terminal 0.0",
+            )
+            .unwrap();
+            if conpty {
+                session.mark_conpty();
+            }
+            tx.send(b"\x1b[?u".to_vec()).unwrap();
+            drop(tx);
+            wait_for_eof(&session);
+            let replied = out.lock().windows(5).any(|w| w == b"\x1b[?0u");
+            assert_eq!(replied, expect_reply, "conpty={conpty}");
+        }
+    }
+
     /// CSI ? 2026: bytes inside BSU/ESU are buffered by the vte Processor and
     /// applied atomically when ESU arrives.
     #[test]
