@@ -35,8 +35,11 @@
 
 ## UI / UX
 
-- [ ] **「window not found」ログノイズ** — 窓 close 後に gpui 内部が dead
-      handle を叩く ERROR ログ（実害なし）。出所特定して黙らせる。
+- [x] ~~「window not found」ログノイズ~~ — 出所特定済: gpui の platform
+      callback（frame/activation/hover/input）が窓 close と競走し、in-flight
+      分が毎回 `log_err()` で ERROR を吐く（1日で72行）。vendored gpui は
+      触らず、自前 FileLogger 側で「target=gpui かつ message 完全一致」だけ
+      落とす（`is_benign_log_noise`・ユニットテスト付き・実窓で増加停止確認）。
 - [x] ~~タブ strip の空白部への drop = 末尾移動~~ — 実装済（タブ上 drop は
       子が consume するため空白部のみ末尾移動・誤爆なし）。
 - [x] ~~drag-merge の挿入位置~~ — drop 点のスクリーン座標を wire

@@ -792,6 +792,17 @@ fn side_of(right: bool) -> alacritty_terminal::index::Side {
     }
 }
 
+/// A log record that is pure teardown noise, dropped by the file logger.
+/// gpui's platform callbacks (frame request, activation, hover, input)
+/// race the window's removal: every callback still in flight when a
+/// window closes reports `window not found` at ERROR through `log_err()`.
+/// Expected on every single close, actionable never — 72 lines in one
+/// day's log. Matched exactly (target + full message) so any OTHER gpui
+/// error still lands.
+fn is_benign_log_noise(target: &str, message: &str) -> bool {
+    target.starts_with("gpui") && message == "window not found"
+}
+
 /// Minimal warn+ file logger: `%TEMP%/shogun-tsf/{app}.log`. The GUI shells
 /// never initialize a `log` logger, so everything gpui reports through
 /// `log_err()` / `log::error!` has been silently discarded since day one —
@@ -810,6 +821,9 @@ pub fn install_file_logger(app: &str) {
         }
         fn log(&self, record: &log::Record) {
             if !self.enabled(record.metadata()) {
+                return;
+            }
+            if is_benign_log_noise(record.target(), &record.args().to_string()) {
                 return;
             }
             let _guard = self.lock.lock();
@@ -2531,5 +2545,17 @@ mod tests {
             sel.update(Point::new(Line(2), Column(9)), Side::Right);
         }
         let _ = term.selection_to_string();
+    }
+
+    /// The file logger drops exactly gpui's post-close callback noise and
+    /// nothing else — a different message or another crate's identical
+    /// message must still land in the log.
+    #[test]
+    fn log_noise_filter_is_exact() {
+        assert!(is_benign_log_noise("gpui", "window not found"));
+        assert!(is_benign_log_noise("gpui::window", "window not found"));
+        assert!(!is_benign_log_noise("gpui", "window not found: extra"));
+        assert!(!is_benign_log_noise("gpui", "root view not found"));
+        assert!(!is_benign_log_noise("rikka_terminal", "window not found"));
     }
 }
