@@ -451,6 +451,25 @@ fn create_tab(cx: &mut App) -> Option<TabEntry> {
     create_tab_spec(cx, &spec)
 }
 
+/// Render a resolved icon (a raster program icon or a tinted distro glyph) with
+/// a trailing margin — shared by the tab strip and the new-tab dropdown.
+fn icon_element(icon: tab_icon::TabIcon, margin_right: f32) -> gpui::AnyElement {
+    let inner: gpui::AnyElement = match icon {
+        tab_icon::TabIcon::Image(data) => gpui::img(data).w(px(16.)).h(px(16.)).into_any_element(),
+        tab_icon::TabIcon::Glyph { text, tint } => div()
+            .font_family(tab_icon::FONT_LOGOS)
+            .text_size(px(14.))
+            .text_color(rgb(tint))
+            .child(text)
+            .into_any_element(),
+    };
+    div()
+        .flex_shrink_0()
+        .mr(px(margin_right))
+        .child(inner)
+        .into_any_element()
+}
+
 /// Tab from a CLI spec (wt semantics): an explicit commandline replaces the
 /// shell entirely; `-p` narrows the shell to one candidate; `--title` seeds
 /// the tab title until the application's OSC 0/2 takes over.
@@ -1138,14 +1157,15 @@ impl Render for TabsWindow {
         // New-tab profile menu (wt profiles, config-filtered). >1 profile
         // shows the dropdown chevron next to [+]; the list is rendered below
         // the strip when open.
-        let profiles: Vec<(usize, String)> = cx
-            .global::<hub::ProfileMenu>()
-            .0
-            .profiles
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (i, p.name.clone()))
-            .collect();
+        let profiles: Vec<(usize, String, Option<tab_icon::TabIcon>)> = {
+            let menu = &cx.global::<hub::ProfileMenu>().0;
+            let icons = &cx.global::<hub::ProfileIcons>().0;
+            menu.profiles
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (i, p.name.clone(), icons.get(i).cloned().flatten()))
+                .collect()
+        };
         let has_profile_menu = profiles.len() > 1;
         // Firefox-style tab overflow: tabs shrink to a 100px floor, then
         // scroll (caption buttons stay pinned) once even the floored tabs
@@ -1218,22 +1238,7 @@ impl Render for TabsWindow {
                 });
                 // Shell icon (the program's own exe icon, or a bundled distro
                 // glyph), leftmost like wt. `None` = unadorned.
-                let icon_el = entry.0.icon().map(|ic| match ic {
-                    tab_icon::TabIcon::Image(data) => gpui::img(data)
-                        .w(px(16.))
-                        .h(px(16.))
-                        .mr(px(6.))
-                        .flex_shrink_0()
-                        .into_any_element(),
-                    tab_icon::TabIcon::Glyph { text, tint } => div()
-                        .mr(px(6.))
-                        .flex_shrink_0()
-                        .font_family(tab_icon::FONT_LOGOS)
-                        .text_size(px(14.))
-                        .text_color(rgb(tint))
-                        .child(text)
-                        .into_any_element(),
-                });
+                let icon_el = entry.0.icon().map(|ic| icon_element(ic, 6.));
                 // Separator to the left of this tab — hidden next to the
                 // selected tab, whose silhouette does the separating.
                 let sep = (ix > 0 && !active && ix - 1 != active_ix).then(|| {
@@ -1749,9 +1754,12 @@ impl Render for TabsWindow {
                         .bg(rgb(CHROME_BG))
                         .border_1()
                         .border_color(gpui::rgba(DIVIDER))
-                        .children(profiles.into_iter().map(|(idx, name)| {
+                        .children(profiles.into_iter().map(|(idx, name, icon)| {
                             div()
                                 .id(("profile", idx))
+                                .flex()
+                                .flex_row()
+                                .items_center()
                                 .px(px(12.))
                                 .py(px(6.))
                                 .text_size(px(13.))
@@ -1759,6 +1767,7 @@ impl Render for TabsWindow {
                                 .hover(|t| {
                                     t.bg(gpui::rgba(TAB_HOVER)).text_color(rgb(TEXT_PRIMARY))
                                 })
+                                .children(icon.map(|ic| icon_element(ic, 8.)))
                                 .child(name)
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _win, cx| {
                                     cx.stop_propagation();
@@ -2453,7 +2462,21 @@ fn main() {
         session_log::init(cfg.logging.clone());
         keymap::init(&cfg.keys);
         let menu = cfg.build_menu(wt, wt_default);
+        // Resolve each new-tab-menu profile's icon once (same resolver the tabs
+        // use), so the dropdown shows the shell/distro icon beside each entry.
+        let profile_icons: Vec<Option<tab_icon::TabIcon>> = menu
+            .profiles
+            .iter()
+            .map(|p| {
+                tab_icon::resolve(
+                    p.argv.first().map(String::as_str).unwrap_or(""),
+                    p.argv.get(1..).unwrap_or(&[]),
+                    Some(&p.name),
+                )
+            })
+            .collect();
         hub::init(cx, menu);
+        cx.set_global(hub::ProfileIcons(profile_icons));
         // A cold-start handoff rides in this launch (IPC.md "attach cold"):
         // adopt the inherited handles as the initial window. On failure fall
         // through to a normal launch — a visible window beats a silent death

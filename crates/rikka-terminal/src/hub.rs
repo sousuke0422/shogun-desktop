@@ -155,6 +155,14 @@ pub struct ProfileMenu(pub crate::config::Menu);
 
 impl Global for ProfileMenu {}
 
+/// Icons for the new-tab dropdown, aligned by index with `ProfileMenu`'s
+/// profiles. Resolved once at startup (exe-icon extraction isn't free, and the
+/// list is static) so the dropdown render is a cheap lookup, not a re-resolve
+/// on every hover repaint.
+pub struct ProfileIcons(pub Vec<Option<crate::tab_icon::TabIcon>>);
+
+impl Global for ProfileIcons {}
+
 pub fn init(cx: &mut App, menu: crate::config::Menu) {
     cx.set_global(WindowRegistry::default());
     cx.set_global(ProfileMenu(menu));
