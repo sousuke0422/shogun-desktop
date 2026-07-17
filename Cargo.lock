@@ -5572,6 +5572,7 @@ dependencies = [
  "futures",
  "gpui",
  "gpui-component",
+ "image",
  "log",
  "parking_lot",
  "portable-pty",
@@ -5621,6 +5622,8 @@ dependencies = [
  "interprocess",
  "serde",
  "serde_json",
+ "widestring",
+ "windows 0.61.3",
 ]
 
 [[package]]

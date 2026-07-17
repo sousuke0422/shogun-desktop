@@ -27,6 +27,7 @@ mod keymap;
 #[cfg(windows)]
 mod pty_local;
 mod session_log;
+mod tab_icon;
 #[cfg(windows)]
 mod tab_move;
 mod tsf;
@@ -466,13 +467,22 @@ fn create_tab_spec(cx: &mut App, spec: &cli::TabSpec) -> Option<TabEntry> {
     } else {
         &[]
     };
-    let session = candidates
-        .iter()
-        .find_map(|program| spawn_local_shell(program, args, spec.dir.as_deref(), 80, 24).ok())?;
+    // Keep the program that actually spawned (the shell search may fall past
+    // pwsh to cmd), so its icon matches the running shell.
+    let (program, session) = candidates.iter().find_map(|program| {
+        spawn_local_shell(program, args, spec.dir.as_deref(), 80, 24)
+            .ok()
+            .map(|s| (program.clone(), s))
+    })?;
     if let Some(t) = &spec.title {
         *session.title.lock() = Some(t.clone());
     }
     let entry = hub::new_tab(cx, session);
+    // Tab icon: the program's own exe icon (Windows) or a bundled distro glyph
+    // (WSL / cross-platform). Resolved once at creation like the palette below.
+    entry
+        .0
+        .set_icon(tab_icon::resolve(&program, args, spec.title.as_deref()));
     // Resolve this profile's color scheme once, at creation (no file IO on
     // the per-tab-switch path); after_tab_change installs it when the tab
     // becomes active.
@@ -1206,6 +1216,24 @@ impl Render for TabsWindow {
                         .text_color(rgb(0xE81123))
                         .child("●")
                 });
+                // Shell icon (the program's own exe icon, or a bundled distro
+                // glyph), leftmost like wt. `None` = unadorned.
+                let icon_el = entry.0.icon().map(|ic| match ic {
+                    tab_icon::TabIcon::Image(data) => gpui::img(data)
+                        .w(px(16.))
+                        .h(px(16.))
+                        .mr(px(6.))
+                        .flex_shrink_0()
+                        .into_any_element(),
+                    tab_icon::TabIcon::Glyph { text, tint } => div()
+                        .mr(px(6.))
+                        .flex_shrink_0()
+                        .font_family(tab_icon::FONT_LOGOS)
+                        .text_size(px(14.))
+                        .text_color(rgb(tint))
+                        .child(text)
+                        .into_any_element(),
+                });
                 // Separator to the left of this tab — hidden next to the
                 // selected tab, whose silhouette does the separating.
                 let sep = (ix > 0 && !active && ix - 1 != active_ix).then(|| {
@@ -1244,6 +1272,7 @@ impl Render for TabsWindow {
                             .text_color(gpui::rgba(TEXT_SECONDARY))
                             .hover(|t| t.bg(gpui::rgba(TAB_HOVER))),
                     })
+                    .children(icon_el)
                     .children(rec_dot)
                     .child(
                         div()
@@ -2406,6 +2435,13 @@ fn main() {
         // its statics and pin the dark theme (the grid brings its own colors).
         gpui_component::init(cx);
         gpui_component::theme::Theme::change(gpui_component::theme::ThemeMode::Dark, None, cx);
+        // Bundled distro-logo font (public domain — see assets/fonts/). Tab
+        // icons that fall back to a glyph render on every platform without a
+        // system icon font. Non-fatal on failure (a missing glyph is tofu, not
+        // a crash).
+        let _ = cx.text_system().add_fonts(vec![std::borrow::Cow::Borrowed(
+            include_bytes!("../assets/fonts/font-logos.ttf").as_slice(),
+        )]);
         // New-tab profiles: wt's list filtered by rikka's config (read once
         // at startup; a broken/absent config or wt just yields an empty menu
         // and the built-in shell search).

@@ -45,6 +45,20 @@ Bundled color emoji font (rendered identically on every OS the app runs on).
   Artwork licensed under CC-BY 4.0 — https://creativecommons.org/licenses/by/4.0/
   Font code licensed under the Apache License, Version 2.0
 
+## Distro Logo Font
+
+Bundled Linux distribution logos for tab icons (assets/fonts/font-logos.ttf),
+rendered as tinted glyphs so WSL/distro tabs are identifiable on every platform
+without depending on a system icon font.
+
+  font-logos (formerly Font Linux)
+  Copyright (c) Lukas W and contributors
+  Source: https://github.com/lukas-w/font-logos
+  Released into the public domain (Unlicense) — see
+  assets/fonts/font-logos.LICENSE
+  The depicted distribution logos are trademarks of their respective projects;
+  shown nominatively to identify the running distribution.
+
 ## Windows TSF Text Store (IME)
 
 The Windows Text Services Framework integration

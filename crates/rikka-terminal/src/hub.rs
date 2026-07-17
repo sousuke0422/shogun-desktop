@@ -41,6 +41,10 @@ pub struct TabSession {
     /// `[theme]` (or the built-in default). Interior-mutable so the tab
     /// factory can attach it without widening `new_tab`'s signature.
     theme: Mutex<Option<rikka_terminal_core::theme::Palette>>,
+    /// This tab's shell icon (extracted exe icon or a distro glyph). Attached
+    /// by the tab factory the same way as `theme`; `None` = no icon. Like the
+    /// palette it does not travel a cross-process tab move (v1).
+    icon: Mutex<Option<crate::tab_icon::TabIcon>>,
     closed: Arc<AtomicBool>,
 }
 
@@ -59,6 +63,16 @@ impl TabSession {
     /// This tab's palette, if it carries one.
     pub fn theme(&self) -> Option<rikka_terminal_core::theme::Palette> {
         self.theme.lock().clone()
+    }
+
+    /// Attach this tab's shell icon (resolved from how the shell was launched).
+    pub fn set_icon(&self, icon: Option<crate::tab_icon::TabIcon>) {
+        *self.icon.lock() = icon;
+    }
+
+    /// This tab's shell icon, if it has one.
+    pub fn icon(&self) -> Option<crate::tab_icon::TabIcon> {
+        self.icon.lock().clone()
     }
 }
 
@@ -84,6 +98,7 @@ pub fn new_tab(cx: &mut App, session: TerminalSession) -> TabEntry {
         session,
         waker: Mutex::new(None),
         theme: Mutex::new(None),
+        icon: Mutex::new(None),
         closed: Arc::clone(&closed),
     });
     let waker_slot = Arc::clone(&tab);
