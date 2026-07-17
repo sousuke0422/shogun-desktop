@@ -89,8 +89,17 @@ pub fn key_to_bytes(keystroke: &Keystroke) -> Vec<u8> {
         }
     };
     match keystroke.key.as_str() {
+        // Alt = ESC prefix (the traditional "meta" encoding), the same
+        // convention the single-char arm below already uses: Alt+Enter → ESC
+        // CR, Alt+Backspace → ESC DEL (readline backward-kill-word),
+        // Alt+Escape → ESC ESC. Without this the fixed-byte control keys drop
+        // Alt entirely, so an app that binds Alt+Enter (e.g. inserting a soft
+        // newline) can't tell it apart from a bare Enter.
+        "enter" if m.alt => b"\x1b\r".to_vec(),
         "enter" => b"\r".to_vec(),
+        "escape" if m.alt => b"\x1b\x1b".to_vec(),
         "escape" => b"\x1b".to_vec(),
+        "backspace" if m.alt => b"\x1b\x7f".to_vec(),
         "backspace" => b"\x7f".to_vec(),
         // Back-tab: Shift+Tab must send CSI Z (used by Claude Code's
         // shift+tab mode cycling), not a plain tab.
@@ -393,6 +402,37 @@ mod tests {
         assert_eq!(key_to_bytes(&ks_mod("x", false, true, false)), b"\x1bx");
         // ctrl+alt+c = ESC + 0x03
         assert_eq!(key_to_bytes(&ks_mod("c", true, true, false)), b"\x1b\x03");
+    }
+
+    #[test]
+    fn alt_control_keys_esc_prefix() {
+        // The fixed-byte control keys must ESC-prefix under Alt too, so apps
+        // that bind Alt+Enter / Alt+Backspace can tell them from the plain key.
+        assert_eq!(
+            key_to_bytes(&ks_mod("enter", false, true, false)),
+            b"\x1b\r"
+        );
+        assert_eq!(
+            key_to_bytes(&ks_mod("backspace", false, true, false)),
+            b"\x1b\x7f"
+        );
+        assert_eq!(
+            key_to_bytes(&ks_mod("escape", false, true, false)),
+            b"\x1b\x1b"
+        );
+        // Unmodified stays bare.
+        assert_eq!(key_to_bytes(&ks("enter")), b"\r");
+    }
+
+    #[test]
+    fn kitty_alt_enter_is_csi_u_13() {
+        // Under the kitty protocol Alt+Enter is CSI 13;3u (mods = 1 + alt bit).
+        assert_eq!(
+            kitty_key_bytes(&ks_mod("enter", false, true, false), false),
+            Some(b"\x1b[13;3u".to_vec())
+        );
+        // Plain Enter keeps its legacy CR in disambiguate-only mode.
+        assert_eq!(kitty_key_bytes(&ks("enter"), false), Some(b"\r".to_vec()));
     }
 
     #[test]
