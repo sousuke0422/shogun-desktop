@@ -91,8 +91,9 @@
       cli.js 同梱）を落として grep するのが確実。バー実装は
       `[" ","▏".."█"]`（旧型・幾何化済）と ▰▱（現行 material 型）の二系統。
       副作用の解も兼ねる: フレーム中 ✳ U+2733 だけ Emoji プロパティ持ちで、
-      Twemoji 同梱側(shogun-desktop)は fallback が裸の U+2733 を食って
-      カラー絵文字化する（VS16 なしの既定は text presentation が正）。
+      Twemoji 同梱の両アプリ（shogun-desktop・rikka とも同梱済 2026-07-18）
+      では fallback が裸の U+2733 を食ってカラー絵文字化する（VS16 なしの
+      既定は text presentation が正）。
       ただし CC 側が回避済みで実害は稀: フレーム列は TERM/platform で3変種
       — `TERM=xterm-ghostty`→✳あり(✽→*)・darwin→✳✽両方・その他(WSL含む)
       →✳を`*`に置換。つまり通常の WSL 運用では ✳ 自体が出ない。出るのは
