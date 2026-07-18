@@ -81,6 +81,15 @@
       布石** — SD の TermName/TerminalIdentity 相当を rikka にも移植済み。
       残: rikka 独自 terminfo（xterm-rikka）配布と SSH 経路の詐称活用。
 - [ ] フォント同梱（Cascadia 等）。
+- [ ] **dingbat スピナー（✢✳✶✻✽）の幾何化** — Claude Code のメインスピナー。
+      compaction バー（▰▱）と braille 全域は幾何化済（engine 共有ゆえ
+      shogun-desktop にも波及・同梱フォント差し替えに免疫）。dingbat は
+      意匠再現（スポーク本数・teardrop 形状）に主観が入るため、見た目の
+      方向性を決めてから。放射スポークは `diag!` 基盤で描ける。
+      調査メモ: Claude Code の UI 文字はネイティブ配布(bun)だと JSC
+      バイトコード化で読めない — npm 旧版 tarball（2.1.100 以前は
+      cli.js 同梱）を落として grep するのが確実。バー実装は
+      `[" ","▏".."█"]`（旧型・幾何化済）と ▰▱（現行 material 型）の二系統。
 
 ## セキュリティ
 
