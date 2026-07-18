@@ -196,6 +196,11 @@ pub struct WindowInfo {
     pub id: u64,
     #[serde(default)]
     pub title: Option<String>,
+    /// Owning process — distinguishes "another window of MY process" (use
+    /// the in-process merge) from a real cross-process target, now that ids
+    /// are per-window rather than per-pid.
+    #[serde(default)]
+    pub pid: u32,
 }
 
 /// A request from a client (`rt` / `rikka-handoff` / a window process) to the
@@ -207,6 +212,13 @@ pub enum Request {
     Spawn(SpawnArgs),
     Attach(AttachArgs),
     RegisterWindow(RegisterWindow),
+    /// Replace ALL of `pid`'s directory entries with `windows` — the
+    /// heartbeat form for per-window addressing: one process, every live
+    /// window, in one atomic swap (closed windows disappear with it).
+    RegisterWindows {
+        pid: u32,
+        windows: Vec<RegisterWindow>,
+    },
     ListWindows,
     /// Ask the monarch for a window's own socket endpoint — the sender then
     /// connects there directly and `attach`es (direct tab-move routing; the

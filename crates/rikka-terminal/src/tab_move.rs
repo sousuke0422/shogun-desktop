@@ -171,19 +171,21 @@ fn push_to_window(
     Ok(())
 }
 
-/// Windows the monarch knows about, minus this process's own.
+/// Windows the monarch knows about, minus this process's own. Entries are
+/// per-window now; `pid` is the ownership test (with the legacy id==pid
+/// fallback for a directory served by an older monarch).
 fn other_windows() -> Result<Vec<ipc::WindowInfo>> {
     let mut conn = ipc::transport::connect(&ipc::transport::endpoint_name())
         .context("connect the monarch (is another window running?)")?;
     conn.send_request(&ipc::Request::ListWindows)?;
     let resp = conn.recv_response()?;
     ensure!(resp.ok, "list_windows: {}", resp.error.unwrap_or_default());
-    let me = u64::from(std::process::id());
+    let me = std::process::id();
     Ok(resp
         .windows
         .unwrap_or_default()
         .into_iter()
-        .filter(|w| w.id != me)
+        .filter(|w| w.pid != me && w.id != u64::from(me))
         .collect())
 }
 

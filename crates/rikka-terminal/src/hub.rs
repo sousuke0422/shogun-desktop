@@ -139,14 +139,50 @@ pub fn new_tab(cx: &mut App, session: TerminalSession) -> TabEntry {
     TabEntry(tab)
 }
 
-/// Registry of live tab windows, for merge-all and cleanup. Windows register
-/// at creation; dead weak handles are pruned on access.
+/// Registry of live tab windows, for merge-all, cleanup, and per-window
+/// addressing. Windows register at creation with a process-unique id; dead
+/// weak handles are pruned on access (which also refreshes the id snapshot
+/// the monarch-heartbeat thread reads).
 #[derive(Default)]
 pub struct WindowRegistry {
-    pub windows: Vec<(AnyWindowHandle, WeakEntity<TabsWindow>)>,
+    pub windows: Vec<(u64, AnyWindowHandle, WeakEntity<TabsWindow>)>,
 }
 
 impl Global for WindowRegistry {}
+
+/// Live window ids, mirrored out of the registry for threads without an App
+/// (the monarch-heartbeat watcher registers these with the directory).
+static LIVE_IDS: parking_lot::Mutex<Vec<u64>> = parking_lot::Mutex::new(Vec::new());
+
+/// Snapshot of this process's live window ids (registration order).
+pub fn live_window_ids() -> Vec<u64> {
+    LIVE_IDS.lock().clone()
+}
+
+/// Allocate a process-unique window id: the pid in the high bits, a
+/// process-local sequence in the low 20. Survives id-vs-pid disambiguation:
+/// [`window_pid`] recovers the owner either way.
+pub fn alloc_window_id() -> u64 {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    (u64::from(std::process::id()) << 20)
+        | (SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xF_FFFF)
+}
+
+/// The pid that owns a window id — handles both the per-window form
+/// (pid << 20 | seq) and the legacy/pid-query form (a bare pid).
+pub fn window_pid(id: u64) -> u32 {
+    if id >> 20 == 0 {
+        id as u32
+    } else {
+        (id >> 20) as u32
+    }
+}
+
+/// Prune dead windows and refresh the heartbeat id mirror.
+fn prune(reg: &mut WindowRegistry) {
+    reg.windows.retain(|(_, _, w)| w.upgrade().is_some());
+    *LIVE_IDS.lock() = reg.windows.iter().map(|(id, _, _)| *id).collect();
+}
 
 /// The new-tab profile menu (wt profiles filtered by rikka's config),
 /// app-global so every window — including ones spun off by detach — shares
@@ -168,10 +204,15 @@ pub fn init(cx: &mut App, menu: crate::config::Menu) {
     cx.set_global(ProfileMenu(menu));
 }
 
-pub fn register_window(cx: &mut App, handle: AnyWindowHandle, entity: WeakEntity<TabsWindow>) {
+pub fn register_window(
+    cx: &mut App,
+    id: u64,
+    handle: AnyWindowHandle,
+    entity: WeakEntity<TabsWindow>,
+) {
     let reg = cx.global_mut::<WindowRegistry>();
-    reg.windows.retain(|(_, w)| w.upgrade().is_some());
-    reg.windows.push((handle, entity));
+    reg.windows.push((id, handle, entity));
+    prune(reg);
 }
 
 /// Live tab windows left after pruning the dead. Used by the release
@@ -179,24 +220,37 @@ pub fn register_window(cx: &mut App, handle: AnyWindowHandle, entity: WeakEntity
 /// weak is already dead inside its own release callback).
 pub fn live_windows(cx: &mut App) -> usize {
     let reg = cx.global_mut::<WindowRegistry>();
-    reg.windows.retain(|(_, w)| w.upgrade().is_some());
+    prune(reg);
     reg.windows.len()
 }
 
-/// Any live window (the first registered still alive), pruning the dead.
-/// Direct tab-move adoption lands here — a window process hosts exactly one.
+/// Any live window (the first registered still alive), pruning the dead —
+/// the adoption fallback when nothing more specific matches.
 pub fn any_window(cx: &mut App) -> Option<WeakEntity<TabsWindow>> {
     let reg = cx.global_mut::<WindowRegistry>();
-    reg.windows.retain(|(_, w)| w.upgrade().is_some());
-    reg.windows.first().map(|(_, w)| w.clone())
+    prune(reg);
+    reg.windows.first().map(|(_, _, w)| w.clone())
+}
+
+/// The live window registered under `id` — the per-window addressing hit.
+pub fn window_by_id(cx: &mut App, id: u64) -> Option<WeakEntity<TabsWindow>> {
+    let reg = cx.global_mut::<WindowRegistry>();
+    prune(reg);
+    reg.windows
+        .iter()
+        .find(|(wid, _, _)| *wid == id)
+        .map(|(_, _, w)| w.clone())
 }
 
 /// Every live tab window with its OS handle, pruning the dead — the
 /// drop-point router walks these to find the window under a drag-merge.
 pub fn all_windows(cx: &mut App) -> Vec<(AnyWindowHandle, WeakEntity<TabsWindow>)> {
     let reg = cx.global_mut::<WindowRegistry>();
-    reg.windows.retain(|(_, w)| w.upgrade().is_some());
-    reg.windows.clone()
+    prune(reg);
+    reg.windows
+        .iter()
+        .map(|(_, h, w)| (*h, w.clone()))
+        .collect()
 }
 
 /// Every live window except `except`, pruning the dead.
@@ -205,10 +259,10 @@ pub fn other_windows(
     except: gpui::EntityId,
 ) -> Vec<(AnyWindowHandle, WeakEntity<TabsWindow>)> {
     let reg = cx.global_mut::<WindowRegistry>();
-    reg.windows.retain(|(_, w)| w.upgrade().is_some());
+    prune(reg);
     reg.windows
         .iter()
-        .filter(|(_, w)| w.entity_id() != except)
-        .cloned()
+        .filter(|(_, _, w)| w.entity_id() != except)
+        .map(|(_, h, w)| (*h, w.clone()))
         .collect()
 }

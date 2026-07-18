@@ -2128,7 +2128,12 @@ fn open_tabs_window_opts(cx: &mut App, initial: Vec<TabEntry>, launch: &cli::Lau
     let Ok(entity) = handle.update(cx, |_, _, cx| cx.entity()) else {
         return;
     };
-    hub::register_window(cx, handle.into(), entity.downgrade());
+    hub::register_window(
+        cx,
+        hub::alloc_window_id(),
+        handle.into(),
+        entity.downgrade(),
+    );
     // Window closed (caption ✕ or last-tab close): stop the surviving tabs'
     // drivers; the sessions drop with the entity and close their PTYs. Quit
     // once no window is left — with the titlebar integrated, the caption ✕
@@ -2293,14 +2298,17 @@ enum Forwarded {
     #[cfg(windows)]
     Attach(Box<TerminalSession>, ipc::StartupInfo, Option<Vec<u32>>),
     /// A tab-move arriving on this window's OWN socket: adopt the session as
-    /// a tab of the window this process hosts (never a new window). The last
-    /// field is the tab's palette in wire form, when one rode the move.
+    /// a tab of a window this process hosts (never a new window). Fields
+    /// after the startup info: the drop point, the tab's wire palette, and
+    /// the addressed target window id (per-window addressing) when the
+    /// sender named one.
     #[cfg(windows)]
     AdoptTab(
         Box<TerminalSession>,
         ipc::StartupInfo,
         Option<(i32, i32)>,
         Option<Vec<u32>>,
+        Option<u64>,
     ),
 }
 
@@ -2321,8 +2329,8 @@ fn pump_forwarded(cx: &mut App, msg: Forwarded) {
             open_attached(cx, *session, startup, palette)
         }
         #[cfg(windows)]
-        Forwarded::AdoptTab(session, startup, drop_at, palette) => {
-            adopt_forwarded(cx, *session, startup, drop_at, palette)
+        Forwarded::AdoptTab(session, startup, drop_at, palette, target) => {
+            adopt_forwarded(cx, *session, startup, drop_at, palette, target)
         }
     }
 }
@@ -2375,11 +2383,20 @@ fn handle_attach(
 struct WindowDirectory(Vec<ipc::RegisterWindow>);
 
 impl WindowDirectory {
+    /// Single-window upsert, keyed by window id (the legacy heartbeat form;
+    /// per-window ids made the pid no longer unique per entry).
     fn register(&mut self, r: ipc::RegisterWindow) {
-        match self.0.iter_mut().find(|w| w.pid == r.pid) {
+        match self.0.iter_mut().find(|w| w.window_id == r.window_id) {
             Some(slot) => *slot = r,
             None => self.0.push(r),
         }
+    }
+
+    /// Replace ALL of `pid`'s entries — the per-window heartbeat: every live
+    /// window in one swap, closed ones disappearing with it.
+    fn register_all(&mut self, pid: u32, windows: Vec<ipc::RegisterWindow>) {
+        self.0.retain(|w| w.pid != pid);
+        self.0.extend(windows.into_iter().filter(|w| w.pid == pid));
     }
 
     fn list(&self) -> Vec<ipc::WindowInfo> {
@@ -2388,17 +2405,28 @@ impl WindowDirectory {
             .map(|w| ipc::WindowInfo {
                 id: w.window_id,
                 title: None,
+                pid: w.pid,
             })
             .collect()
     }
 
-    /// The window's own socket endpoint, for direct tab-move routing. `None`
-    /// when the id is unknown or the window registered without a socket
-    /// (its bind failed — it cannot receive moves).
+    /// The window's own socket endpoint, for direct tab-move routing. An
+    /// exact window-id match wins; a bare-pid query (the drag-merge sender
+    /// only knows the pid under the cursor) matches any of that process's
+    /// windows — they share one socket, and the receiver routes by drop
+    /// point. `None` when unknown or registered without a socket (its bind
+    /// failed — it cannot receive moves).
     fn resolve(&self, window_id: u64) -> Option<String> {
         self.0
             .iter()
             .find(|w| w.window_id == window_id && !w.endpoint.is_empty())
+            .or_else(|| {
+                u32::try_from(window_id).ok().and_then(|pid| {
+                    self.0
+                        .iter()
+                        .find(|w| w.pid == pid && !w.endpoint.is_empty())
+                })
+            })
             .map(|w| w.endpoint.clone())
     }
 }
@@ -2414,27 +2442,6 @@ fn spawn_window_process(s: &ipc::SpawnArgs) -> std::io::Result<()> {
         cmd.current_dir(cwd);
     }
     cmd.spawn().map(drop)
-}
-
-/// Window process: tell the monarch we exist (and where our own socket
-/// listens, for direct tab-move routing), off the UI thread. Fire and
-/// forget — if the monarch died meanwhile, coordination is paused anyway
-/// and this window just keeps running (the isolation guarantee).
-fn register_with_monarch(endpoint: String, window_endpoint: Option<String>) {
-    std::thread::Builder::new()
-        .name("rikka-register".into())
-        .spawn(move || {
-            let Ok(mut conn) = ipc::transport::connect(&endpoint) else {
-                return;
-            };
-            let _ = conn.send_request(&ipc::Request::RegisterWindow(ipc::RegisterWindow {
-                pid: std::process::id(),
-                window_id: u64::from(std::process::id()),
-                endpoint: window_endpoint.unwrap_or_default(),
-            }));
-            let _ = conn.recv_response();
-        })
-        .ok();
 }
 
 /// Monarch side: accept forwarded launches on a background thread. Spawns
@@ -2524,6 +2531,10 @@ fn monarch_accept_loop(
                             directory.lock().register(r);
                             let _ = conn.send_response(&ipc::Response::ok());
                         }
+                        Ok(ipc::Request::RegisterWindows { pid, windows }) => {
+                            directory.lock().register_all(pid, windows);
+                            let _ = conn.send_response(&ipc::Response::ok());
+                        }
                         Ok(ipc::Request::ListWindows) => {
                             let windows = directory.lock().list();
                             let _ = conn.send_response(&ipc::Response {
@@ -2565,35 +2576,52 @@ fn monarch_accept_loop(
 /// after the monarch window closes, instead of stalling until the next cold
 /// start. Losing the race (or a mere blip) needs nothing special: the
 /// heartbeat IS the re-registration with whoever won.
-fn spawn_monarch_watcher(cx: &mut App, endpoint: String, me: ipc::RegisterWindow) {
+fn spawn_monarch_watcher(cx: &mut App, endpoint: String, window_endpoint: Option<String>) {
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
     std::thread::Builder::new()
         .name("rikka-monarch-watch".into())
         .spawn(move || {
+            let pid = std::process::id();
+            let win_endpoint = window_endpoint.unwrap_or_default();
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                // Heartbeat = registration: EVERY live window of this
+                // process (per-window addressing), replacing our previous
+                // set so closed windows drop out. Doubles as the liveness
+                // probe. First beat runs immediately — a fresh window is
+                // addressable before the first 5s tick.
+                let windows: Vec<ipc::RegisterWindow> = hub::live_window_ids()
+                    .into_iter()
+                    .map(|window_id| ipc::RegisterWindow {
+                        pid,
+                        window_id,
+                        endpoint: win_endpoint.clone(),
+                    })
+                    .collect();
                 let alive = ipc::transport::connect(&endpoint)
                     .and_then(|mut conn| {
-                        conn.send_request(&ipc::Request::RegisterWindow(me.clone()))?;
+                        conn.send_request(&ipc::Request::RegisterWindows {
+                            pid,
+                            windows: windows.clone(),
+                        })?;
                         conn.recv_response().map(drop)
                     })
                     .is_ok();
-                if alive {
-                    continue;
-                }
-                match ipc::transport::Monarch::bind(&endpoint) {
-                    Ok(monarch) => {
-                        log::info!("monarch is gone — this window won the re-election");
-                        let directory = Arc::new(FairMutex::new(WindowDirectory::default()));
-                        directory.lock().register(me.clone());
-                        monarch_accept_loop(monarch, tx.clone(), directory);
-                        // The listener died (extremely rare). Fall back to
-                        // heartbeating — maybe another window binds next.
+                if !alive {
+                    match ipc::transport::Monarch::bind(&endpoint) {
+                        Ok(monarch) => {
+                            log::info!("monarch is gone — this window won the re-election");
+                            let directory = Arc::new(FairMutex::new(WindowDirectory::default()));
+                            directory.lock().register_all(pid, windows);
+                            monarch_accept_loop(monarch, tx.clone(), directory);
+                            // The listener died (extremely rare). Fall back
+                            // to heartbeating — maybe another window binds.
+                        }
+                        // Lost the race — the next heartbeat registers with
+                        // the winner.
+                        Err(_) => {}
                     }
-                    // Lost the race — the next heartbeat registers with the
-                    // winner.
-                    Err(_) => {}
                 }
+                std::thread::sleep(std::time::Duration::from_secs(5));
             }
         })
         .ok();
@@ -2664,6 +2692,13 @@ fn adopt_attach(
     peer_pid: u32,
 ) -> Result<()> {
     let drop_at = args.drop_at;
+    // The addressed window, when the sender named one (per-window ids; a
+    // legacy pid-form target resolves to nothing here and falls through to
+    // drop-point / any-window routing in the pump).
+    let target = match args.target {
+        ipc::Target::Window(id) => Some(id),
+        _ => None,
+    };
     let pulled = attach::pull_attach(&args, peer_pid)?;
     let startup = pulled.startup.clone();
     let palette = pulled.palette();
@@ -2673,6 +2708,7 @@ fn adopt_attach(
         startup,
         drop_at,
         palette,
+        target,
     ))
     .map_err(|_| anyhow::anyhow!("window is shutting down"))?;
     Ok(())
@@ -2749,11 +2785,14 @@ fn adopt_forwarded(
     startup: ipc::StartupInfo,
     drop_at: Option<(i32, i32)>,
     palette: Option<Vec<u32>>,
+    target_id: Option<u64>,
 ) {
-    // Prefer the window under the drop point (in-process detach can leave
-    // this process hosting several windows); fall back to any live one.
-    let target = drop_at
-        .and_then(|pt| window_at_screen_point(cx, pt))
+    // Routing, most specific first: the window the sender ADDRESSED
+    // (per-window id), then the window under the drop point (in-process
+    // detach can leave this process hosting several), then any live one.
+    let target = target_id
+        .and_then(|id| hub::window_by_id(cx, id))
+        .or_else(|| drop_at.and_then(|pt| window_at_screen_point(cx, pt)))
         .or_else(|| hub::any_window(cx));
     match target {
         Some(view) => {
@@ -2903,23 +2942,22 @@ fn main() {
         let window_endpoint = spawn_window_accept(cx);
         #[cfg(not(windows))]
         let window_endpoint: Option<String> = None;
-        let me = ipc::RegisterWindow {
-            pid: std::process::id(),
-            window_id: u64::from(std::process::id()),
-            endpoint: window_endpoint.clone().unwrap_or_default(),
-        };
+        // Every role runs the watcher: its immediate first beat registers
+        // this process's windows (per-window ids), later beats keep the
+        // directory fresh, and — for non-monarchs — a dead monarch triggers
+        // the re-election. The monarch heartbeats its own socket, which is
+        // simply how its windows enter its own directory.
         match role {
-            // Monarch: serve forwarded launches, handoffs and registrations.
-            Role::Monarch(monarch) => spawn_ipc_accept(cx, monarch, window_endpoint),
-            // Window process: report in so list/route can see us, then keep
-            // watching the monarch (heartbeat + re-election).
-            Role::WindowProcess => {
-                register_with_monarch(endpoint.clone(), window_endpoint);
-                spawn_monarch_watcher(cx, endpoint, me);
+            // Monarch: additionally serve forwarded launches, handoffs and
+            // registrations.
+            Role::Monarch(monarch) => {
+                spawn_ipc_accept(cx, monarch, window_endpoint.clone());
+                spawn_monarch_watcher(cx, endpoint, window_endpoint);
             }
+            Role::WindowProcess => spawn_monarch_watcher(cx, endpoint, window_endpoint),
             // Standalone lost the original election race entirely — the
             // watcher doubles as its path back into coordination.
-            Role::Standalone => spawn_monarch_watcher(cx, endpoint, me),
+            Role::Standalone => spawn_monarch_watcher(cx, endpoint, window_endpoint),
         }
     });
 }
@@ -2969,18 +3007,26 @@ mod tests {
     }
 
     #[test]
-    fn window_directory_upserts_by_pid_and_lists_ids() {
+    fn window_directory_upserts_by_window_id_and_replaces_per_pid() {
         let reg = |pid: u32, id: u64| ipc::RegisterWindow {
             pid,
             window_id: id,
             endpoint: String::new(),
         };
         let mut dir = WindowDirectory::default();
-        dir.register(reg(100, 100));
+        // Single-shot upsert keys on the WINDOW id: one pid, two windows.
+        dir.register(reg(100, (100 << 20) | 0));
+        dir.register(reg(100, (100 << 20) | 1));
         dir.register(reg(200, 200));
-        dir.register(reg(100, 101)); // re-registration replaces, no duplicate
+        dir.register(reg(100, (100 << 20) | 1)); // same id → replaced, no dupe
         let ids: Vec<u64> = dir.list().iter().map(|w| w.id).collect();
-        assert_eq!(ids, vec![101, 200]);
+        assert_eq!(ids, vec![(100 << 20), (100 << 20) | 1, 200]);
+
+        // The heartbeat form replaces the pid's whole set — closed windows
+        // drop out; other pids stay.
+        dir.register_all(100, vec![reg(100, (100 << 20) | 2)]);
+        let ids: Vec<u64> = dir.list().iter().map(|w| w.id).collect();
+        assert_eq!(ids, vec![200, (100 << 20) | 2]);
     }
 
     #[test]
@@ -2988,16 +3034,23 @@ mod tests {
         let mut dir = WindowDirectory::default();
         dir.register(ipc::RegisterWindow {
             pid: 1,
-            window_id: 1,
+            window_id: (1 << 20) | 3,
             endpoint: "ep-one".into(),
         });
         dir.register(ipc::RegisterWindow {
             pid: 2,
-            window_id: 2,
+            window_id: 2 << 20,
             endpoint: String::new(),
         });
+        // Exact per-window id…
+        assert_eq!(dir.resolve((1 << 20) | 3).as_deref(), Some("ep-one"));
+        // …and the bare-pid form (a drag-merge sender only knows the pid).
         assert_eq!(dir.resolve(1).as_deref(), Some("ep-one"));
-        assert_eq!(dir.resolve(2), None, "endpointless windows are unreachable");
+        assert_eq!(
+            dir.resolve(2 << 20),
+            None,
+            "endpointless windows are unreachable"
+        );
         assert_eq!(dir.resolve(9), None, "unknown ids resolve to nothing");
     }
 
@@ -3036,11 +3089,13 @@ mod tests {
         assert!(resp.ok, "adopt must succeed: {:?}", resp.error);
 
         match rx.try_recv().expect("one pumped message") {
-            Forwarded::AdoptTab(session, startup, _, palette) => {
+            Forwarded::AdoptTab(session, startup, _, palette, target) => {
                 assert_eq!(startup.title.as_deref(), Some("moved"));
                 assert_eq!(session.title.lock().as_deref(), Some("moved"));
                 // No palette was sent — none must arrive (old-sender compat).
                 assert_eq!(palette, None);
+                // Target::Window rode the wire into the routing slot.
+                assert_eq!(target, Some(u64::from(std::process::id())));
             }
             _ => panic!("expected exactly one AdoptTab"),
         }
@@ -3221,7 +3276,7 @@ mod tests {
         .expect("send the live tab");
 
         let received = match rx.try_recv().expect("one pumped message") {
-            Forwarded::AdoptTab(session, startup, drop_at, palette) => {
+            Forwarded::AdoptTab(session, startup, drop_at, palette, _) => {
                 assert_eq!(startup.title.as_deref(), Some("mover"));
                 // The drag-drop point survives the wire — the receiver
                 // inserts at the strip position under it.
