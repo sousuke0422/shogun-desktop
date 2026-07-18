@@ -2458,6 +2458,31 @@ fn spawn_ipc_accept(
                 window_id: u64::from(std::process::id()),
                 endpoint: window_endpoint.unwrap_or_default(),
             });
+            monarch_accept_loop(monarch, tx, directory);
+        })
+        .ok();
+    let async_cx = cx.to_async();
+    async_cx
+        .spawn(async move |cx| {
+            use futures::StreamExt as _;
+            while let Some(msg) = rx.next().await {
+                let _ = cx.update(|cx| pump_forwarded(cx, msg));
+            }
+        })
+        .detach();
+}
+
+/// The monarch's service loop: forwarded launches, handle transfers, and
+/// window-directory queries, until the listener dies. Shared by the original
+/// monarch ([`spawn_ipc_accept`]) and a re-elected one
+/// ([`spawn_monarch_watcher`]).
+fn monarch_accept_loop(
+    monarch: ipc::transport::Monarch,
+    tx: futures::channel::mpsc::UnboundedSender<Forwarded>,
+    directory: Arc<FairMutex<WindowDirectory>>,
+) {
+    {
+        {
             loop {
                 let Ok(mut conn) = monarch.accept() else {
                     break;
@@ -2527,6 +2552,48 @@ fn spawn_ipc_accept(
                         Err(_) => {} // client hung up before sending a frame
                     })
                     .ok();
+            }
+        }
+    }
+}
+
+/// Window-process side of monarch re-election: heartbeat the monarch with
+/// our idempotent (upserting) registration every few seconds; when it stops
+/// answering, race to bind its socket. The winner starts serving
+/// coordination itself — with a fresh directory that every other window's
+/// next heartbeat repopulates — so new spawns and tab moves keep working
+/// after the monarch window closes, instead of stalling until the next cold
+/// start. Losing the race (or a mere blip) needs nothing special: the
+/// heartbeat IS the re-registration with whoever won.
+fn spawn_monarch_watcher(cx: &mut App, endpoint: String, me: ipc::RegisterWindow) {
+    let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
+    std::thread::Builder::new()
+        .name("rikka-monarch-watch".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let alive = ipc::transport::connect(&endpoint)
+                    .and_then(|mut conn| {
+                        conn.send_request(&ipc::Request::RegisterWindow(me.clone()))?;
+                        conn.recv_response().map(drop)
+                    })
+                    .is_ok();
+                if alive {
+                    continue;
+                }
+                match ipc::transport::Monarch::bind(&endpoint) {
+                    Ok(monarch) => {
+                        log::info!("monarch is gone — this window won the re-election");
+                        let directory = Arc::new(FairMutex::new(WindowDirectory::default()));
+                        directory.lock().register(me.clone());
+                        monarch_accept_loop(monarch, tx.clone(), directory);
+                        // The listener died (extremely rare). Fall back to
+                        // heartbeating — maybe another window binds next.
+                    }
+                    // Lost the race — the next heartbeat registers with the
+                    // winner.
+                    Err(_) => {}
+                }
             }
         })
         .ok();
@@ -2802,12 +2869,23 @@ fn main() {
         let window_endpoint = spawn_window_accept(cx);
         #[cfg(not(windows))]
         let window_endpoint: Option<String> = None;
+        let me = ipc::RegisterWindow {
+            pid: std::process::id(),
+            window_id: u64::from(std::process::id()),
+            endpoint: window_endpoint.clone().unwrap_or_default(),
+        };
         match role {
             // Monarch: serve forwarded launches, handoffs and registrations.
             Role::Monarch(monarch) => spawn_ipc_accept(cx, monarch, window_endpoint),
-            // Window process: report in so list/route can see us.
-            Role::WindowProcess => register_with_monarch(endpoint, window_endpoint),
-            Role::Standalone => {}
+            // Window process: report in so list/route can see us, then keep
+            // watching the monarch (heartbeat + re-election).
+            Role::WindowProcess => {
+                register_with_monarch(endpoint.clone(), window_endpoint);
+                spawn_monarch_watcher(cx, endpoint, me);
+            }
+            // Standalone lost the original election race entirely — the
+            // watcher doubles as its path back into coordination.
+            Role::Standalone => spawn_monarch_watcher(cx, endpoint, me),
         }
     });
 }
@@ -2933,6 +3011,46 @@ mod tests {
             _ => panic!("expected exactly one AdoptTab"),
         }
         drop(conn);
+        drop(accept); // detach: the loop parks in accept() until process exit
+    }
+
+    /// Monarch re-election: when the monarch dies, a window-side bind wins
+    /// the freed socket and `monarch_accept_loop` serves coordination again —
+    /// a heartbeat registration repopulates the fresh directory and routing
+    /// resolves through it.
+    #[cfg(windows)]
+    #[test]
+    fn re_elected_monarch_serves_after_the_first_dies() {
+        let name = format!("rikka-test-reelect-{}.sock", std::process::id());
+        let first = ipc::transport::Monarch::bind(&name).expect("first monarch binds");
+        drop(first); // the monarch window closes
+
+        // The watcher's bind race: this side wins and starts serving.
+        let winner = ipc::transport::Monarch::bind(&name).expect("re-bind after the monarch died");
+        let (tx, _rx) = futures::channel::mpsc::unbounded::<Forwarded>();
+        let directory = Arc::new(FairMutex::new(WindowDirectory::default()));
+        let accept = {
+            let directory = Arc::clone(&directory);
+            std::thread::spawn(move || monarch_accept_loop(winner, tx, directory))
+        };
+
+        // A surviving window's next heartbeat = RegisterWindow upsert…
+        let mut conn = ipc::transport::connect(&name).expect("connect the re-elected monarch");
+        conn.send_request(&ipc::Request::RegisterWindow(ipc::RegisterWindow {
+            pid: 4242,
+            window_id: 4242,
+            endpoint: "win-4242".into(),
+        }))
+        .unwrap();
+        assert!(conn.recv_response().unwrap().ok);
+
+        // …and routing works again through the fresh directory.
+        let mut conn = ipc::transport::connect(&name).unwrap();
+        conn.send_request(&ipc::Request::ResolveWindow { window: 4242 })
+            .unwrap();
+        let resp = conn.recv_response().unwrap();
+        assert!(resp.ok);
+        assert_eq!(resp.endpoint.as_deref(), Some("win-4242"));
         drop(accept); // detach: the loop parks in accept() until process exit
     }
 

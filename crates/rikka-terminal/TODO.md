@@ -14,9 +14,12 @@
 - [x] ~~OSC 8 ハイパーリンクの搬送~~ — `replay_bytes` がリンク run を
       OSC 8 で再発行（history は行単位で self-contained・id/uri 一致で
       受信側 parser が結合）。roundtrip テストで cell.hyperlink 復元を実証。
-- [ ] **monarch 再選出 v2** — monarch 窓が閉じると新規 spawn/移送の調整が
-      止まる（既存窓は無傷 = 設計どおりの縮退）。次の cold start までの
-      空白を自動再選出で埋める。
+- [x] ~~monarch 再選出 v2~~ — 各窓プロセスが 5 秒毎に heartbeat
+      （idempotent な RegisterWindow upsert = 生存確認と directory 更新を
+      兼ねる）。不達なら bind 競争: 勝者は `monarch_accept_loop` でその場から
+      monarch 業務を開始（空 directory は他窓の次 heartbeat で再充填）、敗者は
+      次 heartbeat で新 monarch に自動再登録。Standalone 窓も watcher 経由で
+      調整系に復帰する。再選出→登録→resolve をユニットテストで実証。
 - [ ] **窓単位 addressing** — 現状 `window_id` = pid 粒度。in-process detach
       （Ctrl+Shift+D）で作った同プロセス複数窓は移送先として個別指定不可
       （in-process merge で代用可）。
