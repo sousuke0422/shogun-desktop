@@ -160,22 +160,13 @@ pub fn live_window_ids() -> Vec<u64> {
 }
 
 /// Allocate a process-unique window id: the pid in the high bits, a
-/// process-local sequence in the low 20. Survives id-vs-pid disambiguation:
-/// [`window_pid`] recovers the owner either way.
+/// process-local sequence in the low 20 (ownership stays recoverable, and a
+/// bare-pid directory query can never collide with another process's ids in
+/// practice).
 pub fn alloc_window_id() -> u64 {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     (u64::from(std::process::id()) << 20)
         | (SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xF_FFFF)
-}
-
-/// The pid that owns a window id — handles both the per-window form
-/// (pid << 20 | seq) and the legacy/pid-query form (a bare pid).
-pub fn window_pid(id: u64) -> u32 {
-    if id >> 20 == 0 {
-        id as u32
-    } else {
-        (id >> 20) as u32
-    }
 }
 
 /// Prune dead windows and refresh the heartbeat id mirror.
