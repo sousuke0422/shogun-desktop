@@ -670,6 +670,18 @@ fn icon_element(icon: tab_icon::TabIcon, margin_right: f32) -> gpui::AnyElement 
         .into_any_element()
 }
 
+/// Starting directory for a tab that didn't specify one: the user's home,
+/// wt-style (wt's default `startingDirectory` is `%USERPROFILE%`). A shell
+/// must never open wherever the host process happened to have its cwd — the
+/// default-terminal and forwarded-monarch paths regularly sit in System32.
+/// Explicit locations (`rt <dir>` / `rt .`, a profile's `dir`) still win.
+fn default_shell_dir() -> Option<String> {
+    let home = std::env::var("USERPROFILE")
+        .ok()
+        .or_else(|| std::env::var("HOME").ok())?;
+    std::path::Path::new(&home).is_dir().then_some(home)
+}
+
 /// Tab from a CLI spec (wt semantics): an explicit commandline replaces the
 /// shell entirely; `-p` narrows the shell to one candidate; `--title` seeds
 /// the tab title until the application's OSC 0/2 takes over.
@@ -686,10 +698,12 @@ fn create_tab_spec(cx: &mut App, spec: &cli::TabSpec) -> Option<TabEntry> {
     } else {
         &[]
     };
+    // No explicit directory → the user's home, never the host process's cwd.
+    let dir = spec.dir.clone().or_else(default_shell_dir);
     // Keep the program that actually spawned (the shell search may fall past
     // pwsh to cmd), so its icon matches the running shell.
     let (program, session) = candidates.iter().find_map(|program| {
-        spawn_local_shell(program, args, spec.dir.as_deref(), 80, 24)
+        spawn_local_shell(program, args, dir.as_deref(), 80, 24)
             .ok()
             .map(|s| (program.clone(), s))
     })?;
