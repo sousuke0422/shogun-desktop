@@ -38,6 +38,8 @@ Windows Terminal project's custom glyph rendering implementation.
 ## Emoji Font
 
 Bundled color emoji font (rendered identically on every OS the app runs on).
+Bundled by both shogun-desktop (assets/fonts/) and RikkaTerminal
+(crates/rikka-terminal/assets/fonts/).
 
   Twemoji Mozilla (Twemoji.Mozilla.ttf, COLRv0/CPAL build)
   Font build: Copyright (c) Mozilla — https://github.com/mozilla/twemoji-colr

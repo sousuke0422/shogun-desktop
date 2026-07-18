@@ -2686,13 +2686,19 @@ fn main() {
         // its statics and pin the dark theme (the grid brings its own colors).
         gpui_component::init(cx);
         gpui_component::theme::Theme::change(gpui_component::theme::ThemeMode::Dark, None, cx);
-        // Bundled distro-logo font (public domain — see assets/fonts/). Tab
-        // icons that fall back to a glyph render on every platform without a
-        // system icon font. Non-fatal on failure (a missing glyph is tofu, not
+        // Bundled fonts (see assets/fonts/ and CREDITS). font-logos: distro
+        // logos for tab icons. Twemoji Mozilla: the engine's terminal_font()
+        // already names it as the emoji fallback for every grid run —
+        // registering it here makes emoji resolve to the same embedded glyphs
+        // on every OS instead of the platform emoji font (same setup as
+        // shogun-desktop). Non-fatal on failure (a missing glyph is tofu, not
         // a crash).
-        let _ = cx.text_system().add_fonts(vec![std::borrow::Cow::Borrowed(
-            include_bytes!("../assets/fonts/font-logos.ttf").as_slice(),
-        )]);
+        let _ = cx.text_system().add_fonts(vec![
+            std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/font-logos.ttf").as_slice()),
+            std::borrow::Cow::Borrowed(
+                include_bytes!("../assets/fonts/Twemoji.Mozilla.ttf").as_slice(),
+            ),
+        ]);
         // New-tab profiles: wt's list filtered by rikka's config (read once
         // at startup; a broken/absent config or wt just yields an empty menu
         // and the built-in shell search).
