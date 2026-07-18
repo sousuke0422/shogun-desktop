@@ -2713,6 +2713,35 @@ fn spawn_window_accept(cx: &mut App) -> Option<String> {
 /// fresh window still beats losing the session. Lookup and adopt run on the
 /// same thread with no await between them, so the entry cannot fall through
 /// the gap.
+/// The tab window under a physical screen point — routes a drag-merge drop
+/// to the window it actually landed on when this process hosts several
+/// (in-process detach). gpui's global window bounds are logical; each
+/// window's own scale factor converts them to the physical pixels the wire
+/// carries.
+#[cfg(windows)]
+fn window_at_screen_point(
+    cx: &mut App,
+    (x, y): (i32, i32),
+) -> Option<gpui::WeakEntity<TabsWindow>> {
+    for (handle, weak) in hub::all_windows(cx) {
+        let hit = cx
+            .update_window(handle, |_, window, _| {
+                let sf = window.scale_factor();
+                let b = window.bounds();
+                let bx = (b.origin.x / px(1.)) * sf;
+                let by = (b.origin.y / px(1.)) * sf;
+                let bw = (b.size.width / px(1.)) * sf;
+                let bh = (b.size.height / px(1.)) * sf;
+                (x as f32) >= bx && (x as f32) < bx + bw && (y as f32) >= by && (y as f32) < by + bh
+            })
+            .unwrap_or(false);
+        if hit {
+            return Some(weak);
+        }
+    }
+    None
+}
+
 #[cfg(windows)]
 fn adopt_forwarded(
     cx: &mut App,
@@ -2721,7 +2750,12 @@ fn adopt_forwarded(
     drop_at: Option<(i32, i32)>,
     palette: Option<Vec<u32>>,
 ) {
-    match hub::any_window(cx) {
+    // Prefer the window under the drop point (in-process detach can leave
+    // this process hosting several windows); fall back to any live one.
+    let target = drop_at
+        .and_then(|pt| window_at_screen_point(cx, pt))
+        .or_else(|| hub::any_window(cx));
+    match target {
         Some(view) => {
             let entry = hub::new_tab(cx, session);
             // The palette that rode the move: the tab keeps its profile

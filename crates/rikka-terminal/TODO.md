@@ -20,9 +20,11 @@
       monarch 業務を開始（空 directory は他窓の次 heartbeat で再充填）、敗者は
       次 heartbeat で新 monarch に自動再登録。Standalone 窓も watcher 経由で
       調整系に復帰する。再選出→登録→resolve をユニットテストで実証。
-- [ ] **窓単位 addressing** — 現状 `window_id` = pid 粒度。in-process detach
-      （Ctrl+Shift+D）で作った同プロセス複数窓は移送先として個別指定不可
-      （in-process merge で代用可）。
+- [ ] **窓単位 addressing** — `window_id` = pid 粒度は残るが、実害の本丸
+      だった **drag-merge の着地窓は解消**: 受け側 pump が drop 座標を各窓の
+      global bounds（×scale factor で物理化）と照合し、実際に落とされた窓へ
+      adopt する（外れ・非 drop 経路は従来どおり any_window）。残: 移送先の
+      明示指名（per-window registration）と `rt -w <id>`。
 - [ ] **`-w <id>` CLI** — `rt -w <id>` は「未対応」エラーのまま
       （cli.rs）。spawn の既存窓ルーティング＋窓 socket の spawn 受理が要る。
 - [ ] **Unix の tab move** — SCM_RIGHTS 版の handle 移送。tear-off /

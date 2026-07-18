@@ -191,6 +191,14 @@ pub fn any_window(cx: &mut App) -> Option<WeakEntity<TabsWindow>> {
     reg.windows.first().map(|(_, w)| w.clone())
 }
 
+/// Every live tab window with its OS handle, pruning the dead — the
+/// drop-point router walks these to find the window under a drag-merge.
+pub fn all_windows(cx: &mut App) -> Vec<(AnyWindowHandle, WeakEntity<TabsWindow>)> {
+    let reg = cx.global_mut::<WindowRegistry>();
+    reg.windows.retain(|(_, w)| w.upgrade().is_some());
+    reg.windows.clone()
+}
+
 /// Every live window except `except`, pruning the dead.
 pub fn other_windows(
     cx: &mut App,
