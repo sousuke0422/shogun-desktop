@@ -108,6 +108,13 @@ pub struct AttachArgs {
     /// (Ctrl+Shift+X moves, CLI attaches, OS handoffs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drop_at: Option<(i32, i32)>,
+    /// The tab's per-profile color palette, riding the move so the tab keeps
+    /// its colors on the far side: 19 packed `0xRRGGBB` values (background,
+    /// foreground, selection, then the 16 ANSI colors) — see the engine's
+    /// `theme::Palette::to_wire`. Absent = the tab wears the receiver's
+    /// default theme (old senders / unthemed tabs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette: Option<Vec<u32>>,
 }
 
 /// Wrap a tab-move screen replay (VT bytes, see core's `replay_bytes`) as

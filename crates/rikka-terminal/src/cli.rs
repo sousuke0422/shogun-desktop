@@ -73,6 +73,9 @@ pub struct AttachSpec {
     /// deleted by the child. Handles ride inheritance; bulk bytes cannot,
     /// hence the file.
     pub state_path: Option<String>,
+    /// `--attach-palette`: the tab's color palette (19 packed 0xRRGGBB — see
+    /// `AttachArgs::palette`), so a detached tab keeps its profile colors.
+    pub palette: Option<Vec<u32>>,
 }
 
 /// Parsed launch request.
@@ -124,6 +127,7 @@ fn parse_attach(s: &str) -> Result<AttachSpec, String> {
         handles,
         title: None,
         state_path: None,
+        palette: None,
     })
 }
 
@@ -132,6 +136,7 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
     let mut launch = Launch::default();
     let mut attach_title: Option<String> = None;
     let mut attach_state: Option<String> = None;
+    let mut attach_palette: Option<Vec<u32>> = None;
 
     // Split into `;`-delimited command groups (wt separates commands with a
     // standalone `;` token; `\;` escapes a literal semicolon positional).
@@ -210,6 +215,14 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
                     "--attach-state" => {
                         it.next();
                         attach_state = Some(value_of(&mut it, "--attach-state")?);
+                    }
+                    "--attach-palette" => {
+                        it.next();
+                        let v = value_of(&mut it, "--attach-palette")?;
+                        let vals: Result<Vec<u32>, _> =
+                            v.split(',').map(|t| u32::from_str_radix(t, 16)).collect();
+                        attach_palette =
+                            Some(vals.map_err(|_| "--attach-palette: 16進CSVが不正".to_string())?);
                     }
                     // Internal (the monarch): window-process mode — see
                     // Launch::window_process.
@@ -295,14 +308,22 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
         launch.tabs.push(spec);
     }
 
-    match (&mut launch.attach, attach_title, attach_state) {
-        (Some(a), title, state) => {
+    match (
+        &mut launch.attach,
+        attach_title,
+        attach_state,
+        attach_palette,
+    ) {
+        (Some(a), title, state, palette) => {
             a.title = title;
             a.state_path = state;
+            a.palette = palette;
         }
-        (None, None, None) => {}
-        (None, _, _) => {
-            return Err("--attach-title/--attach-state は --attach と共に使います".into());
+        (None, None, None, None) => {}
+        (None, _, _, _) => {
+            return Err(
+                "--attach-title/--attach-state/--attach-palette は --attach と共に使います".into(),
+            );
         }
     }
     Ok(launch)

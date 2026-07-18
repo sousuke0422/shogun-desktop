@@ -1127,7 +1127,12 @@ impl TabsWindow {
         {
             let entry = &self.tabs[ix];
             if tab_move::is_transferable(&entry.0.session) {
-                match tab_move::send_tab(&entry.0.session, tab_move::Destination::NewProcess) {
+                let palette = entry.0.theme().map(|p| p.to_wire());
+                match tab_move::send_tab(
+                    &entry.0.session,
+                    palette,
+                    tab_move::Destination::NewProcess,
+                ) {
                     Ok(()) => self.close_at(ix, window, cx),
                     // Quiesce is irreversible — the tab stays, honestly
                     // disconnected; splitting it off would just relocate
@@ -1191,6 +1196,7 @@ impl TabsWindow {
         };
         match tab_move::send_tab(
             &entry.0.session,
+            entry.0.theme().map(|p| p.to_wire()),
             tab_move::Destination::Window {
                 id: u64::from(pid),
                 endpoint,
@@ -1215,7 +1221,10 @@ impl TabsWindow {
         let Some(entry) = self.tabs.get(self.active) else {
             return;
         };
-        match tab_move::move_to_any_other_window(&entry.0.session) {
+        match tab_move::move_to_any_other_window(
+            &entry.0.session,
+            entry.0.theme().map(|p| p.to_wire()),
+        ) {
             Ok(()) => self.close_at(self.active, window, cx),
             Err(e) => {
                 log::warn!("tab move failed: {e:#}");
@@ -2201,6 +2210,7 @@ fn attach_request(a: &cli::AttachSpec, launch: &cli::Launch) -> ipc::AttachArgs 
         elevated: false,
         target: ipc::Target::New,
         drop_at: None,
+        palette: a.palette.clone(),
     }
 }
 
@@ -2243,9 +2253,12 @@ fn open_inherited(cx: &mut App, launch: &cli::Launch) -> bool {
         return false;
     };
     let args = attach_request(a, launch);
-    match attach::local_attach(&args).and_then(attach::LocalAttach::into_session) {
-        Ok(session) => {
-            open_attached(cx, session, args.startup);
+    match attach::local_attach(&args).and_then(|pulled| {
+        let palette = pulled.palette();
+        pulled.into_session().map(|s| (s, palette))
+    }) {
+        Ok((session, palette)) => {
+            open_attached(cx, session, args.startup, palette);
             true
         }
         Err(e) => {
@@ -2271,11 +2284,24 @@ enum Forwarded {
     Spawn(Vec<String>),
     /// An adopted OS handoff: wrap the session in a fresh window.
     #[cfg(windows)]
-    Attach(Box<TerminalSession>, ipc::StartupInfo),
+    Attach(Box<TerminalSession>, ipc::StartupInfo, Option<Vec<u32>>),
     /// A tab-move arriving on this window's OWN socket: adopt the session as
-    /// a tab of the window this process hosts (never a new window).
+    /// a tab of the window this process hosts (never a new window). The last
+    /// field is the tab's palette in wire form, when one rode the move.
     #[cfg(windows)]
-    AdoptTab(Box<TerminalSession>, ipc::StartupInfo, Option<(i32, i32)>),
+    AdoptTab(
+        Box<TerminalSession>,
+        ipc::StartupInfo,
+        Option<(i32, i32)>,
+        Option<Vec<u32>>,
+    ),
+}
+
+/// Decode a wire palette (19 packed 0xRRGGBB) into the engine's type; a
+/// malformed payload fails open (no theme).
+fn wire_theme(p: Option<Vec<u32>>) -> Option<rikka_terminal_core::theme::Palette> {
+    p.as_deref()
+        .and_then(rikka_terminal_core::theme::Palette::from_wire)
 }
 
 /// Apply one IPC-thread message on the gpui thread — shared by the monarch's
@@ -2284,10 +2310,12 @@ fn pump_forwarded(cx: &mut App, msg: Forwarded) {
     match msg {
         Forwarded::Spawn(argv) => open_forwarded(cx, argv),
         #[cfg(windows)]
-        Forwarded::Attach(session, startup) => open_attached(cx, *session, startup),
+        Forwarded::Attach(session, startup, palette) => {
+            open_attached(cx, *session, startup, palette)
+        }
         #[cfg(windows)]
-        Forwarded::AdoptTab(session, startup, drop_at) => {
-            adopt_forwarded(cx, *session, startup, drop_at)
+        Forwarded::AdoptTab(session, startup, drop_at, palette) => {
+            adopt_forwarded(cx, *session, startup, drop_at, palette)
         }
     }
 }
@@ -2315,8 +2343,9 @@ fn handle_attach(
         Err(e) => {
             log::warn!("attach relay failed, adopting in-process: {e:#}");
             let startup = pulled.startup.clone();
+            let palette = pulled.palette();
             let session = pulled.into_session()?;
-            tx.unbounded_send(Forwarded::Attach(Box::new(session), startup))
+            tx.unbounded_send(Forwarded::Attach(Box::new(session), startup, palette))
                 .map_err(|_| anyhow::anyhow!("monarch is shutting down"))?;
             Ok(())
         }
@@ -2563,9 +2592,15 @@ fn adopt_attach(
     let drop_at = args.drop_at;
     let pulled = attach::pull_attach(&args, peer_pid)?;
     let startup = pulled.startup.clone();
+    let palette = pulled.palette();
     let session = pulled.into_session()?;
-    tx.unbounded_send(Forwarded::AdoptTab(Box::new(session), startup, drop_at))
-        .map_err(|_| anyhow::anyhow!("window is shutting down"))?;
+    tx.unbounded_send(Forwarded::AdoptTab(
+        Box::new(session),
+        startup,
+        drop_at,
+        palette,
+    ))
+    .map_err(|_| anyhow::anyhow!("window is shutting down"))?;
     Ok(())
 }
 
@@ -2610,13 +2645,17 @@ fn adopt_forwarded(
     session: TerminalSession,
     startup: ipc::StartupInfo,
     drop_at: Option<(i32, i32)>,
+    palette: Option<Vec<u32>>,
 ) {
     match hub::any_window(cx) {
         Some(view) => {
             let entry = hub::new_tab(cx, session);
+            // The palette that rode the move: the tab keeps its profile
+            // colors on this side instead of falling back to our default.
+            entry.0.set_theme(wire_theme(palette));
             let _ = view.update(cx, |v, cx| v.adopt_dropped(entry, drop_at, cx));
         }
-        None => open_attached(cx, session, startup),
+        None => open_attached(cx, session, startup, palette),
     }
 }
 
@@ -2624,13 +2663,19 @@ fn adopt_forwarded(
 /// auto-tab (IPC.md's windowing rule); the tab title was seeded from the
 /// handoff's startup info when one was carried.
 #[cfg(windows)]
-fn open_attached(cx: &mut App, session: TerminalSession, startup: ipc::StartupInfo) {
+fn open_attached(
+    cx: &mut App,
+    session: TerminalSession,
+    startup: ipc::StartupInfo,
+    palette: Option<Vec<u32>>,
+) {
     let launch = cli::Launch {
         size_cells: (startup.cols >= 2 && startup.rows >= 2)
             .then_some((startup.cols, startup.rows)),
         ..Default::default()
     };
     let entry = hub::new_tab(cx, session);
+    entry.0.set_theme(wire_theme(palette));
     open_tabs_window_opts(cx, vec![entry], &launch);
 }
 
@@ -2872,9 +2917,11 @@ mod tests {
         assert!(resp.ok, "adopt must succeed: {:?}", resp.error);
 
         match rx.try_recv().expect("one pumped message") {
-            Forwarded::AdoptTab(session, startup, _) => {
+            Forwarded::AdoptTab(session, startup, _, palette) => {
                 assert_eq!(startup.title.as_deref(), Some("moved"));
                 assert_eq!(session.title.lock().as_deref(), Some("moved"));
+                // No palette was sent — none must arrive (old-sender compat).
+                assert_eq!(palette, None);
             }
             _ => panic!("expected exactly one AdoptTab"),
         }
@@ -2968,8 +3015,11 @@ mod tests {
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
         let accept = std::thread::spawn(move || window_accept_loop(listener, tx));
 
+        // A distinctive palette rides the move (bg/fg/sel + 16 ANSI).
+        let sent_palette: Vec<u32> = (0..19).map(|i| 0x100000 + i).collect();
         tab_move::send_tab(
             &source,
+            Some(sent_palette.clone()),
             tab_move::Destination::Window {
                 id: 1,
                 endpoint: name,
@@ -2979,11 +3029,13 @@ mod tests {
         .expect("send the live tab");
 
         let received = match rx.try_recv().expect("one pumped message") {
-            Forwarded::AdoptTab(session, startup, drop_at) => {
+            Forwarded::AdoptTab(session, startup, drop_at, palette) => {
                 assert_eq!(startup.title.as_deref(), Some("mover"));
                 // The drag-drop point survives the wire — the receiver
                 // inserts at the strip position under it.
                 assert_eq!(drop_at, Some((123, 45)));
+                // The tab's colors survive too (v1 restriction lifted).
+                assert_eq!(palette, Some(sent_palette));
                 session
             }
             _ => panic!("expected exactly one AdoptTab"),

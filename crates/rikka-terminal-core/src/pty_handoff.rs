@@ -194,13 +194,28 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
         s
     };
     // One cell → text+SGR emitter, shared by the history and screen loops.
+    // `last_link` carries the open OSC 8 hyperlink: transitions re-emit the
+    // link (same id/uri, so the receiver's parser coalesces the spans back
+    // into one logical hyperlink) and `None` closes it — without this a
+    // moved tab's links degrade to plain text.
     let emit_cell = |out: &mut String,
                      last: &mut Option<String>,
+                     last_link: &mut Option<alacritty_terminal::term::cell::Hyperlink>,
                      cell: &alacritty_terminal::term::cell::Cell| {
         // The wide char itself advances the parser two columns; its spacer
         // must not emit anything or the row would overflow.
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
             return;
+        }
+        let link = cell.hyperlink();
+        if *last_link != link {
+            match &link {
+                Some(l) => {
+                    let _ = write!(out, "\x1b]8;id={};{}\x1b\\", l.id(), l.uri());
+                }
+                None => out.push_str("\x1b]8;;\x1b\\"),
+            }
+            *last_link = link;
         }
         let sgr = sgr_of(cell);
         if last.as_ref() != Some(&sgr) {
@@ -248,8 +263,21 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
             let line = Line(-(i as i32));
             let mut row = String::new();
             let mut last: Option<String> = None;
+            // Per-row link state (like the per-row SGR reset): rows can be
+            // dropped from the front of the budget, so each must be
+            // self-contained — a link spanning rows closes at the row edge
+            // and re-opens on the next, which the parser merges by id/uri.
+            let mut last_link = None;
             for col in 0..term.columns() {
-                emit_cell(&mut row, &mut last, &grid[line][Column(col)]);
+                emit_cell(
+                    &mut row,
+                    &mut last,
+                    &mut last_link,
+                    &grid[line][Column(col)],
+                );
+            }
+            if last_link.is_some() {
+                row.push_str("\x1b]8;;\x1b\\");
             }
             let wrapped = grid[line][Column(term.columns() - 1)]
                 .flags
@@ -273,11 +301,20 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
     // A visible screen, absolute CUP per row.
     let paint_screen = |out: &mut String, grid: &CellGrid| {
         let mut last_sgr: Option<String> = None;
+        let mut last_link = None;
         for row in 0..term.screen_lines() {
             let _ = write!(out, "\x1b[{};1H", row + 1);
             for col in 0..term.columns() {
-                emit_cell(out, &mut last_sgr, &grid[Line(row as i32)][Column(col)]);
+                emit_cell(
+                    out,
+                    &mut last_sgr,
+                    &mut last_link,
+                    &grid[Line(row as i32)][Column(col)],
+                );
             }
+        }
+        if last_link.is_some() {
+            out.push_str("\x1b]8;;\x1b\\");
         }
     };
 
@@ -622,6 +659,45 @@ mod transfer_tests {
             b.term.lock().mode().contains(TermMode::BRACKETED_PASTE),
             "mode bits must survive the move"
         );
+    }
+
+    /// OSC 8 hyperlinks must survive the move: the replay re-emits the link
+    /// around each linked run, so the receiver's cells carry the same id/uri
+    /// instead of degrading to plain text.
+    #[test]
+    fn replay_carries_osc8_hyperlinks() {
+        use alacritty_terminal::index::{Column, Line};
+
+        let script =
+            "plain \x1b]8;id=k1;https://example.com/a\x1b\\LINK\x1b]8;;\x1b\\ tail".to_string();
+        let a = crate::pty_session::build_test_session_with_output(40, 5, script.into_bytes());
+        let wait_eof = |s: &TerminalSession| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while s.is_connected() {
+                assert!(std::time::Instant::now() < deadline, "no EOF");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        wait_eof(&a);
+
+        let replay = String::from_utf8(replay_bytes(&a)).unwrap();
+        assert!(
+            replay.contains("\x1b]8;id=k1;https://example.com/a\x1b\\"),
+            "replay must re-open the hyperlink: {replay:?}"
+        );
+        let b = crate::pty_session::build_test_session_with_output(40, 5, replay.into_bytes());
+        wait_eof(&b);
+
+        let term = b.term.lock();
+        let grid = term.grid();
+        // Row 0 = "plain LINK tail": cols 6..=9 carry the link, others none.
+        let link = grid[Line(0)][Column(6)]
+            .hyperlink()
+            .expect("LINK cell must carry a hyperlink after the move");
+        assert_eq!(link.uri(), "https://example.com/a");
+        assert_eq!(link.id(), "k1");
+        assert!(grid[Line(0)][Column(0)].hyperlink().is_none());
+        assert!(grid[Line(0)][Column(11)].hyperlink().is_none());
     }
 
     /// Bytes the reader consumed but the parser has not yet applied — an

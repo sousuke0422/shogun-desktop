@@ -41,6 +41,9 @@ pub struct LocalAttach {
     /// assembled session's parser before any pipe byte — the moved tab
     /// arrives wearing the sender's screen instead of blank.
     state_vt: Option<Vec<u8>>,
+    /// The tab's color palette in wire form (`AttachArgs::palette`) — the
+    /// adopter re-attaches it so the moved tab keeps its profile colors.
+    palette: Option<Vec<u32>>,
 }
 
 /// Duplicate one raw handle value out of `source` into this process.
@@ -125,6 +128,7 @@ fn take(
         shell: acquire(args.handles.shell)?,
         startup: args.startup.clone(),
         state_vt: ipc::vt_from_state(&args.state),
+        palette: args.palette.clone(),
     })
 }
 
@@ -138,6 +142,7 @@ impl LocalAttach {
         kit: TransferKit,
         startup: ipc::StartupInfo,
         state_vt: Option<Vec<u8>>,
+        palette: Option<Vec<u32>>,
     ) -> Result<Self> {
         ensure!(
             kit.keepalive.len() <= 2,
@@ -155,7 +160,14 @@ impl LocalAttach {
             shell: None,
             startup,
             state_vt,
+            palette,
         })
+    }
+
+    /// The palette that rode the attach, if any (read before
+    /// [`Self::into_session`] consumes the attach).
+    pub fn palette(&self) -> Option<Vec<u32>> {
+        self.palette.clone()
     }
 
     /// Assemble the engine session in this process. The startup seeds the
@@ -173,6 +185,7 @@ impl LocalAttach {
             shell,
             startup,
             state_vt,
+            palette: _,
         } = self;
         let cols = if startup.cols >= 2 { startup.cols } else { 80 };
         let rows = if startup.rows >= 2 { startup.rows } else { 24 };
@@ -263,6 +276,15 @@ impl LocalAttach {
             ));
             std::fs::write(&path, vt).context("write tab-move state file")?;
             cmd.arg("--attach-state").arg(&path);
+        }
+        // The tab's palette: 19 hex values (tiny — rides argv, no file).
+        if let Some(p) = &self.palette {
+            let csv = p
+                .iter()
+                .map(|v| format!("{v:06x}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            cmd.arg("--attach-palette").arg(csv);
         }
         // Rust's std spawns with bInheritHandles=TRUE — the transfer.
         cmd.spawn().context("spawn window process for attach")?;

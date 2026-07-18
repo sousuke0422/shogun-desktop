@@ -65,7 +65,11 @@ pub fn is_transferable(session: &TerminalSession) -> bool {
 /// closed window then fails while the tab is still fully alive; only a
 /// failure past the quiesce (spawn/wire errors, both rare and local) costs
 /// the tab.
-pub fn send_tab(session: &TerminalSession, dest: Destination) -> Result<()> {
+pub fn send_tab(
+    session: &TerminalSession,
+    palette: Option<Vec<u32>>,
+    dest: Destination,
+) -> Result<()> {
     // Open the destination first: the receiver starts reading only once
     // the attach frame arrives, so connecting early cannot race our still-
     // running reader — and a dead endpoint aborts a fully-alive tab.
@@ -102,11 +106,13 @@ pub fn send_tab(session: &TerminalSession, dest: Destination) -> Result<()> {
     match (dest, conn) {
         // Inheritance COPIES the handles into the child, so the kit keeps
         // ownership of ours throughout — plain drop semantics on every path.
-        (Destination::NewProcess, _) => LocalAttach::from_transfer(kit, startup, Some(vt))?
-            .relay_to_window_process()
-            .context("relay the detached tab to its window process"),
+        (Destination::NewProcess, _) => {
+            LocalAttach::from_transfer(kit, startup, Some(vt), palette)?
+                .relay_to_window_process()
+                .context("relay the detached tab to its window process")
+        }
         (Destination::Window { id, drop_at, .. }, Some(conn)) => {
-            push_to_window(conn, kit, startup, vt, id, drop_at)
+            push_to_window(conn, kit, startup, vt, palette, id, drop_at)
         }
         (Destination::Window { .. }, None) => unreachable!("window move always connects first"),
     }
@@ -124,6 +130,7 @@ fn push_to_window(
     kit: TransferKit,
     startup: ipc::StartupInfo,
     state_vt: Vec<u8>,
+    palette: Option<Vec<u32>>,
     id: u64,
     drop_at: Option<(i32, i32)>,
 ) -> Result<()> {
@@ -146,6 +153,7 @@ fn push_to_window(
         // Informational: an attach on a window socket always adopts there.
         target: ipc::Target::Window(id),
         drop_at,
+        palette,
     };
     conn.send_request(&ipc::Request::Attach(args))
         .context("send tab-move attach")?;
@@ -195,7 +203,10 @@ pub(crate) fn resolve_window(window: u64) -> Result<String> {
 /// v1 granularity is the process (window_id = pid): windows detached
 /// in-process share a pid and cannot be addressed individually — use the
 /// in-process merge for those.
-pub fn move_to_any_other_window(session: &TerminalSession) -> Result<()> {
+pub fn move_to_any_other_window(
+    session: &TerminalSession,
+    palette: Option<Vec<u32>>,
+) -> Result<()> {
     let others = other_windows()?;
     let target = others
         .first()
@@ -203,6 +214,7 @@ pub fn move_to_any_other_window(session: &TerminalSession) -> Result<()> {
     let endpoint = resolve_window(target.id)?;
     send_tab(
         session,
+        palette,
         Destination::Window {
             id: target.id,
             endpoint,
@@ -243,6 +255,7 @@ mod tests {
 
         let err = send_tab(
             &session,
+            None,
             Destination::Window {
                 id: 9,
                 endpoint: format!("rikka-test-dead-{}.sock", std::process::id()),

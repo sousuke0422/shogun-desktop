@@ -70,6 +70,39 @@ pub const DEFAULT: Palette = Palette {
     ],
 };
 
+impl Palette {
+    /// Wire form for a tab move: `[background, foreground, selection,
+    /// ansi0..ansi15]` as `0xRRGGBB` — 19 plain integers, so the IPC layer
+    /// needs no knowledge of this type.
+    pub fn to_wire(&self) -> Vec<u32> {
+        let pack = |c: Rgb| ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
+        let mut v = Vec::with_capacity(19);
+        v.push(pack(self.background));
+        v.push(pack(self.foreground));
+        v.push(pack(self.selection));
+        v.extend(self.ansi.iter().map(|&c| pack(c)));
+        v
+    }
+
+    /// Inverse of [`Self::to_wire`]. `None` when the payload isn't the
+    /// expected 19 entries (unknown/foreign sender — fail open, no theme).
+    pub fn from_wire(v: &[u32]) -> Option<Self> {
+        if v.len() != 19 {
+            return None;
+        }
+        let mut ansi = [Rgb::new(0, 0, 0); 16];
+        for (slot, &raw) in ansi.iter_mut().zip(&v[3..19]) {
+            *slot = Rgb::hex(raw);
+        }
+        Some(Palette {
+            background: Rgb::hex(v[0]),
+            foreground: Rgb::hex(v[1]),
+            selection: Rgb::hex(v[2]),
+            ansi,
+        })
+    }
+}
+
 static PALETTE: RwLock<Option<Palette>> = RwLock::new(None);
 
 /// Install a palette process-wide. Takes effect on the next frame. The
@@ -157,5 +190,21 @@ mod tests {
         assert!(!is_overridden());
         assert_eq!(background(), DEFAULT.background);
         assert_eq!(ansi(1), DEFAULT.ansi[1]);
+    }
+
+    /// The tab-move wire form: 19 packed 0xRRGGBB values, lossless both ways;
+    /// a malformed length fails open (no theme).
+    #[test]
+    fn palette_wire_roundtrip() {
+        let mut p = DEFAULT;
+        p.background = Rgb::new(0x30, 0x0A, 0x24);
+        p.ansi[15] = Rgb::new(0x01, 0x02, 0x03);
+        let wire = p.to_wire();
+        assert_eq!(wire.len(), 19);
+        assert_eq!(wire[0], 0x300A24);
+        assert_eq!(wire[18], 0x010203);
+        assert_eq!(Palette::from_wire(&wire), Some(p));
+        assert_eq!(Palette::from_wire(&wire[..18]), None);
+        assert_eq!(Palette::from_wire(&[]), None);
     }
 }

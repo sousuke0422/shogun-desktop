@@ -9,8 +9,9 @@
 - [ ] **画像 store の搬送** — 移送すると kitty/sixel 画像は消える
       （placeholder セルは空白化済みで tofu は出ない）。wire にバイナリ添付
       か再転送プロトコルが要る。
-- [ ] **OSC 8 ハイパーリンクの搬送** — 移送でリンクが普通のテキストになる。
-      `replay_bytes` に OSC 8 を織り込めば済む（中規模）。
+- [x] ~~OSC 8 ハイパーリンクの搬送~~ — `replay_bytes` がリンク run を
+      OSC 8 で再発行（history は行単位で self-contained・id/uri 一致で
+      受信側 parser が結合）。roundtrip テストで cell.hyperlink 復元を実証。
 - [ ] **monarch 再選出 v2** — monarch 窓が閉じると新規 spawn/移送の調整が
       止まる（既存窓は無傷 = 設計どおりの縮退）。次の cold start までの
       空白を自動再選出で埋める。
@@ -71,8 +72,10 @@
       `colorScheme`/`profiles.defaults` 継承を honor。タブ生成時に scheme を
       解決して TabSession に保持、`after_tab_change` で engine global へ
       載せ替え（アクティブタブのみ描画ゆえ global 1枚で成立）。同一窓の2タブで
-      Ubuntu/Plain 切替=配色入替を実機実証。**残: タブ移送で wire に palette を
-      載せてない**ので、別窓へ移すと移送先の既定テーマに戻る（v1 制限）。
+      Ubuntu/Plain 切替=配色入替を実機実証。移送も対応済み: palette は
+      `AttachArgs.palette`（19×0xRRGGBB・serde default で後方互換）で wire を
+      渡り、relay 経路は `--attach-palette` CSV。tear-off 実機で Ubuntu 維持を
+      確認（v1 制限解消）。
 - [x] ~~TERM/COLORTERM 未設定~~ — spawn 時に `TERM=xterm-256color`＋
       `COLORTERM=truecolor` を注入（konsole/alacritty 同様・btop 等が色検出）。
       config `[terminal] term`/`identity` で変更可。`identity="ghostty"` で
