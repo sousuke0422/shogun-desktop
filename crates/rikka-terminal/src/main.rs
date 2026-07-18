@@ -30,6 +30,7 @@ mod session_log;
 mod tab_icon;
 #[cfg(windows)]
 mod tab_move;
+mod taskbar_progress;
 mod tsf;
 mod wt_profiles;
 mod wt_schemes;
@@ -449,6 +450,122 @@ fn default_spec(cx: &App) -> cli::TabSpec {
 fn create_tab(cx: &mut App) -> Option<TabEntry> {
     let spec = default_spec(cx);
     create_tab_spec(cx, &spec)
+}
+
+/// Progress for a tab: an explicit OSC 9;4 report when the app sent one,
+/// otherwise inferred from a window-title spinner. The fallback covers agents
+/// that drop OSC 9;4 on some surfaces — Claude Code animates a Braille spinner
+/// in the title and emits no OSC 9;4 inside tmux, so its activity would
+/// otherwise never show. (Same layering as shogun-desktop; the heuristic lives
+/// in `rikka-terminal-agent-integration`. Needs tmux `set-titles on`.)
+fn tab_progress(
+    session: &rikka_terminal_core::TerminalSession,
+) -> Option<(rikka_terminal_core::progress::ProgressState, u8)> {
+    if let Some(explicit) = session.progress.get() {
+        return Some(explicit);
+    }
+    let title = session.title.lock();
+    rikka_terminal_agent_integration::progress_from_title(title.as_deref().unwrap_or("")).map(
+        |_| {
+            (
+                rikka_terminal_core::progress::ProgressState::Indeterminate,
+                0,
+            )
+        },
+    )
+}
+
+/// Pick the more urgent of two progress reports for the shared taskbar button:
+/// Error > Normal (higher percent wins) > Warning > Indeterminate.
+fn taskbar_aggregate(
+    a: Option<(rikka_terminal_core::progress::ProgressState, u8)>,
+    b: Option<(rikka_terminal_core::progress::ProgressState, u8)>,
+) -> Option<(rikka_terminal_core::progress::ProgressState, u8)> {
+    use rikka_terminal_core::progress::ProgressState as S;
+    fn rank(s: S) -> u8 {
+        match s {
+            S::Error => 3,
+            S::Normal => 2,
+            S::Warning => 1,
+            S::Indeterminate => 0,
+        }
+    }
+    match (a, b) {
+        (Some(x), Some(y)) => Some(match rank(x.0).cmp(&rank(y.0)) {
+            std::cmp::Ordering::Greater => x,
+            std::cmp::Ordering::Less => y,
+            std::cmp::Ordering::Equal => {
+                if x.1 >= y.1 {
+                    x
+                } else {
+                    y
+                }
+            }
+        }),
+        (v, None) | (None, v) => v,
+    }
+}
+
+/// Rainbow segments of the animated progress fill (a seamless scrolling
+/// spectrum — each segment is a gradient to the next segment's hue).
+const PROGRESS_RAINBOW_SEGMENTS: usize = 16;
+
+/// A 3px progress bar pinned to the bottom of a (`.relative()`) tab.
+///
+/// Normal fills to the percentage with a scrolling rainbow (static green was
+/// too easy to miss — same ゲーミング仕様 as shogun-desktop); indeterminate is
+/// the full-width rainbow. Error = red and warning = gold stay static so their
+/// semantics read at a glance. `with_animation` only requests frames while the
+/// element renders, so idle windows stay at zero CPU.
+fn render_progress_bar(
+    id: impl Into<gpui::ElementId>,
+    (state, percent): (rikka_terminal_core::progress::ProgressState, u8),
+) -> gpui::AnyElement {
+    use gpui::AnimationExt as _;
+    use rikka_terminal_core::progress::ProgressState;
+
+    let fraction = match state {
+        ProgressState::Normal => percent as f32 / 100.0,
+        ProgressState::Indeterminate => 1.0,
+        // Keep a visible sliver even at 0% so the state itself shows.
+        ProgressState::Error | ProgressState::Warning => (percent as f32 / 100.0).max(0.05),
+    };
+    let fill = div().h_full().w(gpui::relative(fraction.clamp(0.0, 1.0)));
+    let fill: gpui::AnyElement = match state {
+        ProgressState::Error => fill.bg(rgb(0xCC3333)).into_any_element(),
+        ProgressState::Warning => fill.bg(rgb(0xC9A94E)).into_any_element(),
+        ProgressState::Normal | ProgressState::Indeterminate => fill
+            .with_animation(
+                id,
+                gpui::Animation::new(std::time::Duration::from_secs(2)).repeat(),
+                |bar, delta| {
+                    let seg_hue = move |i: usize| {
+                        let hue =
+                            (i as f32 / PROGRESS_RAINBOW_SEGMENTS as f32 - delta).rem_euclid(1.0);
+                        gpui::hsla(hue, 0.75, 0.42, 1.0)
+                    };
+                    bar.child(div().flex().flex_row().size_full().children(
+                        (0..PROGRESS_RAINBOW_SEGMENTS).map(move |i| {
+                            div().flex_1().h_full().bg(gpui::linear_gradient(
+                                90.,
+                                gpui::linear_color_stop(seg_hue(i), 0.),
+                                gpui::linear_color_stop(seg_hue(i + 1), 1.),
+                            ))
+                        }),
+                    ))
+                },
+            )
+            .into_any_element(),
+    };
+    div()
+        .absolute()
+        .bottom_0()
+        .left_0()
+        .right_0()
+        .h(px(3.))
+        .bg(gpui::rgba(0x00000059))
+        .child(fill)
+        .into_any_element()
 }
 
 /// Render a resolved icon (a raster program icon or a tinted distro glyph) with
@@ -1123,6 +1240,18 @@ impl Render for TabsWindow {
             }
         }
 
+        // Every tab's progress, worst-wins, onto this window's taskbar button
+        // (visible while minimized/behind). Deduped inside `update`.
+        let agg = self
+            .tabs
+            .iter()
+            .map(|e| tab_progress(&e.0.session))
+            .fold(None, taskbar_aggregate);
+        taskbar_progress::update(
+            self.applied_title.as_deref().unwrap_or("RikkaTerminal"),
+            agg,
+        );
+
         let (cw, ch) = measure_cell_metrics(&cx.text_system(), mono_font(), window.scale_factor());
 
         // Fit the ACTIVE tab's PTY to the pane (viewport minus strip/padding).
@@ -1239,6 +1368,10 @@ impl Render for TabsWindow {
                 // Shell icon (the program's own exe icon, or a bundled distro
                 // glyph), leftmost like wt. `None` = unadorned.
                 let icon_el = entry.0.icon().map(|ic| icon_element(ic, 6.));
+                // OSC 9;4 (or title-spinner) progress → thin bar along the
+                // tab's bottom edge.
+                let progress_el = tab_progress(&entry.0.session)
+                    .map(|p| render_progress_bar(("tab-progress", ix), p));
                 // Separator to the left of this tab — hidden next to the
                 // selected tab, whose silhouette does the separating.
                 let sep = (ix > 0 && !active && ix - 1 != active_ix).then(|| {
@@ -1255,6 +1388,8 @@ impl Render for TabsWindow {
                     // Equal WinUI TabView width — see `tab_w` above.
                     .w(px(tab_w))
                     .flex_shrink_0()
+                    // Anchor for the absolute-positioned progress bar below.
+                    .relative()
                     .pl(px(8.))
                     .pr(px(4.))
                     .py(px(3.))
@@ -1279,6 +1414,7 @@ impl Render for TabsWindow {
                     })
                     .children(icon_el)
                     .children(rec_dot)
+                    .children(progress_el)
                     .child(
                         div()
                             .flex_1()

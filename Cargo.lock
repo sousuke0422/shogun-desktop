@@ -5576,6 +5576,7 @@ dependencies = [
  "log",
  "parking_lot",
  "portable-pty",
+ "rikka-terminal-agent-integration",
  "rikka-terminal-core",
  "rikka-terminal-gpui-ime",
  "rikka-terminal-ipc",
