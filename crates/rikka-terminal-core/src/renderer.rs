@@ -92,10 +92,29 @@ pub fn with_emoji_fallback<E: gpui::Styled>(mut el: E) -> E {
 ///   U+2500-U+257F  Box Drawing (─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ ═ ║ ╔ ╗ ╚ ╝ …)
 ///   U+2580-U+259F  Block Elements (▀ ▄ █ ▌ ▐ ░ ▒ ▓ …)
 ///   U+25A0         ■ BLACK SQUARE (btop's meter bar; alacritty fills it too)
+///   U+25B0-U+25B1  ▰ ▱ parallelogram bar segments (Claude Code's compaction
+///                  progress bar is "▰▰▰▱▱…" — material style)
+///   U+2800-U+28FF  Braille Patterns (⠋ ⣿ … — TUI spinners and bar charts;
+///                  decoded straight from the codepoint bits, so they render
+///                  identically on every platform with zero font dependency)
 pub(crate) fn is_geom_box_char(c: char) -> bool {
     let cp = c as u32;
-    matches!(cp, 0x2500..=0x259F | 0x25A0)
+    matches!(cp, 0x2500..=0x259F | 0x25A0 | 0x25B0..=0x25B1 | 0x2800..=0x28FF)
 }
+
+/// Braille dot layout: bit *i* of `cp - 0x2800` → (column, row) in the 2×4
+/// grid, per Unicode's dot numbering (dots 1-3 down the left column, 4-6 down
+/// the right, 7-8 across the bottom).
+pub(crate) const BRAILLE_DOTS: [(u8, u8); 8] = [
+    (0, 0),
+    (0, 1),
+    (0, 2),
+    (1, 0),
+    (1, 1),
+    (1, 2),
+    (0, 3),
+    (1, 3),
+];
 
 /// A styled run of consecutive terminal cells with identical visual properties.
 ///
@@ -801,6 +820,59 @@ fn paint_box_char(
         '╳' => {
             diag!(x1, oy, ox, y1);
             diag!(ox, oy, x1, y1);
+        }
+
+        // ── Parallelogram bar segments U+25B0 / U+25B1 ────────────────────────
+        // Claude Code's compaction bar is "▰▰▰▱▱▱…" (material style): ▰ =
+        // filled, ▱ = outlined. A centered band ~half a cell tall, top edge
+        // shifted right, with small side bearings so the segments read as
+        // segments (the design), drawn identically on every platform.
+        '▰' | '▱' => {
+            let inset = cw * 0.08; // side bearing between segments
+            let slant = cw * 0.20; // top edge shifts right by this
+            let bh = (cw * 0.55).min(ch); // band height, ~half the advance
+            let top = oy + ((ch - bh) * 0.5).max(0.0);
+            let bot = top + bh;
+            let pts = [
+                point(px(ox + inset), px(bot)),         // bottom-left
+                point(px(ox + inset + slant), px(top)), // top-left
+                point(px(x1 - inset), px(top)),         // top-right
+                point(px(x1 - inset - slant), px(bot)), // bottom-right
+            ];
+            let mut pb = if c == '▰' {
+                gpui::PathBuilder::fill()
+            } else {
+                gpui::PathBuilder::stroke(px(lw))
+            };
+            pb.add_polygon(&pts, true);
+            if let Ok(p) = pb.build() {
+                window.paint_path(p, fg);
+            }
+        }
+
+        // ── Braille patterns U+2800-U+28FF ────────────────────────────────────
+        // A 2×4 dot grid decoded straight from the codepoint bits — the whole
+        // block is algorithmic, so spinners (Claude Code's ⠋⠙⠹…) and braille
+        // bar charts render pixel-identically on every platform, with none of
+        // the font-metric jitter that made fixed-width braille an upstream fix.
+        c if ('\u{2800}'..='\u{28FF}').contains(&c) => {
+            let bits = c as u32 - 0x2800;
+            let sub_w = cw / 2.0;
+            let sub_h = ch / 4.0;
+            // Dot half-size: scaled from the tighter sub-cell axis so the 2×4
+            // grid keeps clear gaps; floor keeps dots visible at tiny sizes.
+            let r = (sub_w.min(sub_h) * 0.32).max(0.5);
+            for (i, (dc, dr)) in BRAILLE_DOTS.iter().enumerate() {
+                if bits & (1 << i) != 0 {
+                    let dx = ox + (*dc as f32 + 0.5) * sub_w;
+                    let dy = oy + (*dr as f32 + 0.5) * sub_h;
+                    // Round dots, like the font glyphs: a quad with corner
+                    // radius = half-size is a circle.
+                    window.paint_quad(
+                        fill(rect!(dx - r, dy - r, dx + r, dy + r), fg).corner_radii(px(r)),
+                    );
+                }
+            }
         }
 
         _ => return false,
@@ -1777,15 +1849,42 @@ mod tests {
         assert!(is_geom_box_char('\u{259F}')); // U+259F upper limit of the block range
         assert!(is_geom_box_char('■')); // U+25A0 — btop's meter (filled like a block)
         assert!(!is_geom_box_char('\u{25A1}')); // U+25A1 (WHITE SQUARE) stays font-drawn
+        // ▰▱ — Claude Code's compaction bar segments.
+        assert!(is_geom_box_char('▰')); // U+25B0
+        assert!(is_geom_box_char('▱')); // U+25B1
+        assert!(!is_geom_box_char('▲')); // U+25B2 just above stays font-drawn
         assert!(!is_geom_box_char('→'));
         assert!(!is_geom_box_char('a'));
+        // Braille patterns: the whole block is geometric (spinners, bar charts).
+        assert!(is_geom_box_char('\u{2800}')); // blank braille cell
+        assert!(is_geom_box_char('⠋')); // Claude Code spinner frame
+        assert!(is_geom_box_char('⣿')); // all 8 dots
+        assert!(!is_geom_box_char('\u{27FF}')); // just below the block
+        assert!(!is_geom_box_char('\u{2900}')); // just above the block
+    }
+
+    #[test]
+    fn braille_dot_layout_matches_unicode_numbering() {
+        // ⠁ U+2801 = dot 1 only → top-left; ⢀ U+2880 = dot 8 only →
+        // bottom-right; ⠿ U+283F = dots 1-6 → the upper 2×3 grid.
+        assert_eq!(BRAILLE_DOTS[0], (0, 0)); // dot 1
+        assert_eq!(BRAILLE_DOTS[3], (1, 0)); // dot 4
+        assert_eq!(BRAILLE_DOTS[6], (0, 3)); // dot 7
+        assert_eq!(BRAILLE_DOTS[7], (1, 3)); // dot 8
+        // Every dot position is distinct and inside the 2×4 grid.
+        let mut seen = std::collections::HashSet::new();
+        for (c, r) in BRAILLE_DOTS {
+            assert!(c < 2 && r < 4);
+            assert!(seen.insert((c, r)));
+        }
     }
 
     #[test]
     fn arrow_and_diamond_are_not_geom() {
         // Arrows (U+2190-U+21FF) and the geometric shapes past U+25A0
         // (U+25A1-U+25FF) are NOT geometry-rendered — they use the primary
-        // font at 1-cell width. U+25A0 ■ is the lone exception (btop meter).
+        // font at 1-cell width. Exceptions: U+25A0 ■ (btop meter) and
+        // U+25B0/U+25B1 ▰▱ (Claude Code's compaction bar segments).
         assert!(!is_geom_box_char('→')); // U+2192
         assert!(!is_geom_box_char('←')); // U+2190
         assert!(!is_geom_box_char('◆')); // U+25C6
