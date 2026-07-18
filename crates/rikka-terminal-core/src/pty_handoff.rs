@@ -104,7 +104,15 @@ impl TransferKit {
 ///
 /// Call AFTER `quiesce_for_transfer`: the reader is dead, so the Term can
 /// no longer change under the serialization.
-pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
+///
+/// `shipped_images`: ids whose image data travels alongside this replay
+/// (see [`image_payloads`]) — their Unicode placeholder cells are re-emitted
+/// verbatim so the receiver's renderer can place the carried images; every
+/// other placeholder blanks, exactly the pre-transport behavior.
+pub fn replay_bytes(
+    session: &TerminalSession,
+    shipped_images: &std::collections::HashSet<u32>,
+) -> Vec<u8> {
     use std::fmt::Write as _;
 
     use alacritty_terminal::grid::Dimensions as _;
@@ -222,12 +230,39 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
             let _ = write!(out, "\x1b[0{sgr}m");
             *last = Some(sgr);
         }
-        // A kitty/sixel placeholder carries an image id in its colors and
-        // an undefined glyph in `c`; the receiver has no image store, so
-        // the glyph would render as tofu. Blank it — the image itself does
-        // not survive a move either way.
+        // A kitty/sixel placeholder carries its image id in the fg color
+        // (24-bit spec or palette index — the VALUE is the id, never
+        // resolved through the palette). When that image rides the move,
+        // re-emit the cell verbatim under an exact id-preserving SGR so the
+        // receiver's renderer can place the carried image; otherwise blank
+        // it (a placeholder without its image would render as tofu).
         if cell.c == crate::kitty_graphics::PLACEHOLDER {
-            out.push(' ');
+            let id = match cell.fg {
+                Color::Spec(rgb) => {
+                    Some(((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | rgb.b as u32)
+                }
+                Color::Indexed(i) => Some(i as u32),
+                _ => None,
+            };
+            match (id, &cell.fg) {
+                (Some(id), Color::Spec(rgb)) if shipped_images.contains(&id) => {
+                    let _ = write!(out, "\x1b[0;38;2;{};{};{}m", rgb.r, rgb.g, rgb.b);
+                    *last = None;
+                    out.push(cell.c);
+                    if let Some(extra) = cell.zerowidth() {
+                        out.extend(extra);
+                    }
+                }
+                (Some(id), Color::Indexed(i)) if shipped_images.contains(&id) => {
+                    let _ = write!(out, "\x1b[0;38;5;{i}m");
+                    *last = None;
+                    out.push(cell.c);
+                    if let Some(extra) = cell.zerowidth() {
+                        out.extend(extra);
+                    }
+                }
+                _ => out.push(' '),
+            }
             return;
         }
         out.push(cell.c);
@@ -363,6 +398,50 @@ pub fn replay_bytes(session: &TerminalSession) -> Vec<u8> {
         out.push_str("\x1b[?25l");
     }
     out.into_bytes()
+}
+
+/// PNG-encode the session's image store for a tab move: `(id, cols, rows,
+/// png)` per image, insertion order. Newest images win under a byte budget
+/// (encoded size) so the state frame stays inside the IPC cap alongside the
+/// 4 MiB history budget; what does not fit simply drops — its placeholders
+/// blank in the replay, exactly the pre-transport behavior.
+pub fn image_payloads(session: &TerminalSession) -> Vec<(u32, u16, u16, Vec<u8>)> {
+    const IMAGE_BUDGET: usize = 1536 * 1024;
+    let mut picked = Vec::new();
+    let mut total = 0usize;
+    // Walk newest-first so the budget keeps what the user saw last.
+    for (id, stored) in session.images.snapshot_all().into_iter().rev() {
+        let Some(bytes) = stored.image.as_bytes(0) else {
+            continue;
+        };
+        let size = stored.image.size(0);
+        let (w, h) = (size.width.0 as u32, size.height.0 as u32);
+        if w == 0 || h == 0 {
+            continue;
+        }
+        // BGRA (gpui atlas order) back to RGBA for the encoder.
+        let mut rgba = bytes.to_vec();
+        for px in rgba.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        let Some(buf) = image::RgbaImage::from_raw(w, h, rgba) else {
+            continue;
+        };
+        let mut png = Vec::new();
+        if image::DynamicImage::ImageRgba8(buf)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .is_err()
+        {
+            continue;
+        }
+        if total + png.len() > IMAGE_BUDGET {
+            continue;
+        }
+        total += png.len();
+        picked.push((id, stored.cols, stored.rows, png));
+    }
+    picked.reverse(); // back to insertion order
+    picked
 }
 
 /// winconpty's `PTY_SIGNAL_RESIZE_WINDOW` message: three little-endian u16s —
@@ -638,7 +717,7 @@ mod transfer_tests {
         };
         wait_eof(&a);
 
-        let replay = replay_bytes(&a);
+        let replay = replay_bytes(&a, &Default::default());
         let b = crate::pty_session::build_test_session_with_output(40, 10, replay);
         wait_eof(&b);
 
@@ -661,6 +740,43 @@ mod transfer_tests {
         );
     }
 
+    /// Images survive the move: the store PNG-encodes losslessly, and the
+    /// replay re-emits placeholder cells whose image made the payload while
+    /// blanking the rest (the pre-transport behavior).
+    #[test]
+    fn image_store_and_placeholders_survive_the_move() {
+        let script = crate::sixel::placeholder_bytes(7, 3, 1, 0);
+        let a = crate::pty_session::build_test_session_with_output(40, 5, script);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while a.is_connected() {
+            assert!(std::time::Instant::now() < deadline, "no EOF");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        #[rustfmt::skip]
+        let rgba: Vec<u8> = vec![
+            255, 0, 0, 255,   0, 255, 0, 255,
+            0, 0, 255, 255,   255, 255, 255, 255,
+        ];
+        assert!(a.images.insert_rgba(7, 2, 2, rgba.clone(), 3, 1));
+
+        // The payload PNG decodes back to the exact pixels + placement.
+        let payloads = image_payloads(&a);
+        assert_eq!(payloads.len(), 1);
+        let (id, c, r, png) = &payloads[0];
+        assert_eq!((*id, *c, *r), (7, 3, 1));
+        let img = image::load_from_memory_with_format(png, image::ImageFormat::Png).unwrap();
+        let out = img.to_rgba8();
+        assert_eq!(out.dimensions(), (2, 2));
+        assert_eq!(out.into_raw(), rgba);
+
+        // Shipped id → placeholders re-emitted; not shipped → blanked.
+        let shipped: std::collections::HashSet<u32> = [7].into_iter().collect();
+        let with = String::from_utf8(replay_bytes(&a, &shipped)).unwrap();
+        assert!(with.contains(crate::kitty_graphics::PLACEHOLDER));
+        let without = String::from_utf8(replay_bytes(&a, &Default::default())).unwrap();
+        assert!(!without.contains(crate::kitty_graphics::PLACEHOLDER));
+    }
+
     /// OSC 8 hyperlinks must survive the move: the replay re-emits the link
     /// around each linked run, so the receiver's cells carry the same id/uri
     /// instead of degrading to plain text.
@@ -680,7 +796,7 @@ mod transfer_tests {
         };
         wait_eof(&a);
 
-        let replay = String::from_utf8(replay_bytes(&a)).unwrap();
+        let replay = String::from_utf8(replay_bytes(&a, &Default::default())).unwrap();
         assert!(
             replay.contains("\x1b]8;id=k1;https://example.com/a\x1b\\"),
             "replay must re-open the hyperlink: {replay:?}"
@@ -732,7 +848,7 @@ mod transfer_tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         session.quiesce_for_transfer().expect("quiesce");
-        let replay = String::from_utf8(replay_bytes(&session)).unwrap();
+        let replay = String::from_utf8(replay_bytes(&session, &Default::default())).unwrap();
         assert!(
             replay.contains("TRAPPED"),
             "bytes in flight at quiesce were lost by the move"
@@ -835,7 +951,7 @@ mod transfer_tests {
         wait_eof(&a);
         assert!(a.term.lock().mode().contains(TermMode::ALT_SCREEN));
 
-        let replay = replay_bytes(&a);
+        let replay = replay_bytes(&a, &Default::default());
 
         // The receiver as adopted: alt screen active, alt content visible.
         let b = crate::pty_session::build_test_session_with_output(40, 5, replay.clone());
@@ -900,7 +1016,7 @@ mod transfer_tests {
         };
         wait_eof(&a);
 
-        let replay = replay_bytes(&a);
+        let replay = replay_bytes(&a, &Default::default());
         let b = crate::pty_session::build_test_session_with_output(40, 5, replay);
         wait_eof(&b);
 

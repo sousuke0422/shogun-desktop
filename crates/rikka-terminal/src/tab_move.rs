@@ -101,18 +101,22 @@ pub fn send_tab(
     session.quiesce_for_transfer()?;
     // Serialize AFTER quiesce — the reader is dead, the Term is finally
     // still. The receiver replays this as its parser preface, so the tab
-    // arrives wearing the sender's screen instead of blank.
-    let vt = rikka_terminal_core::pty_handoff::replay_bytes(session);
+    // arrives wearing the sender's screen instead of blank. The image store
+    // travels alongside; placeholders of images that made the budget are
+    // re-emitted in the replay (the rest blank, as before).
+    let images = rikka_terminal_core::pty_handoff::image_payloads(session);
+    let shipped: std::collections::HashSet<u32> = images.iter().map(|(id, ..)| *id).collect();
+    let vt = rikka_terminal_core::pty_handoff::replay_bytes(session, &shipped);
     match (dest, conn) {
         // Inheritance COPIES the handles into the child, so the kit keeps
         // ownership of ours throughout — plain drop semantics on every path.
         (Destination::NewProcess, _) => {
-            LocalAttach::from_transfer(kit, startup, Some(vt), palette)?
+            LocalAttach::from_transfer(kit, startup, Some(vt), palette, images)?
                 .relay_to_window_process()
                 .context("relay the detached tab to its window process")
         }
         (Destination::Window { id, drop_at, .. }, Some(conn)) => {
-            push_to_window(conn, kit, startup, vt, palette, id, drop_at)
+            push_to_window(conn, kit, startup, vt, images, palette, id, drop_at)
         }
         (Destination::Window { .. }, None) => unreachable!("window move always connects first"),
     }
@@ -130,6 +134,7 @@ fn push_to_window(
     kit: TransferKit,
     startup: ipc::StartupInfo,
     state_vt: Vec<u8>,
+    images: Vec<ipc::ImagePayload>,
     palette: Option<Vec<u32>>,
     id: u64,
     drop_at: Option<(i32, i32)>,
@@ -148,7 +153,7 @@ fn push_to_window(
             ..Default::default()
         },
         startup,
-        state: Some(ipc::state_from_vt(&state_vt)),
+        state: Some(ipc::state_from_parts(&state_vt, &images)),
         elevated: false,
         // Informational: an attach on a window socket always adopts there.
         target: ipc::Target::Window(id),

@@ -2177,8 +2177,10 @@ fn elect(endpoint: &str, launch: &cli::Launch) -> Option<Role> {
 /// through CreateProcess), so the pid is ours and a monarch pulls from us.
 fn attach_request(a: &cli::AttachSpec, launch: &cli::Launch) -> ipc::AttachArgs {
     let [input, output, signal, reference, server, client] = a.handles;
-    // A tab-move relay parent left the screen replay in a temp file (bulk
-    // bytes cannot ride handle inheritance) — consume it exactly once.
+    // A tab-move relay parent left the screen state in a temp file (bulk
+    // bytes cannot ride handle inheritance) — consume it exactly once. The
+    // relay writes the full state JSON (`{vt_b64, images}`); a raw-VT file
+    // from an older sibling still parses via the fallback.
     let state = a
         .state_path
         .as_ref()
@@ -2187,7 +2189,12 @@ fn attach_request(a: &cli::AttachSpec, launch: &cli::Launch) -> ipc::AttachArgs 
             let _ = std::fs::remove_file(p);
             bytes.ok()
         })
-        .map(|vt| ipc::state_from_vt(&vt));
+        .map(|bytes| {
+            serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .filter(|v| v.get("vt_b64").is_some())
+                .unwrap_or_else(|| ipc::state_from_vt(&bytes))
+        });
     ipc::AttachArgs {
         pid: std::process::id(),
         handles: ipc::Handles {
@@ -3015,6 +3022,39 @@ mod tests {
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
         let accept = std::thread::spawn(move || window_accept_loop(listener, tx));
 
+        // An image in the sender's store plus its on-screen placeholder
+        // cells: both must survive the move.
+        out_write
+            .write_all(&rikka_terminal_core::sixel::placeholder_bytes(9, 2, 1, 0))
+            .unwrap();
+        {
+            // The snapshot blanks placeholder glyphs and carries the decoded
+            // placement on `SnapshotCell.image` instead — poll that.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let seen = source
+                    .snapshot
+                    .lock()
+                    .cells
+                    .iter()
+                    .any(|row| row.iter().any(|c| c.image.is_some()));
+                if seen {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "placeholders never reached the sender's grid"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        #[rustfmt::skip]
+        let rgba: Vec<u8> = vec![
+            255, 0, 0, 255,   0, 255, 0, 255,
+            0, 0, 255, 255,   255, 255, 255, 255,
+        ];
+        assert!(source.images.insert_rgba(9, 2, 2, rgba, 2, 1));
+
         // A distinctive palette rides the move (bg/fg/sel + 16 ANSI).
         let sent_palette: Vec<u32> = (0..19).map(|i| 0x100000 + i).collect();
         tab_move::send_tab(
@@ -3064,6 +3104,27 @@ mod tests {
         // The sender's screen arrived with the move (the state replay ran
         // as the receiver's parser preface)…
         sees("BEFORE-MOVE");
+        // …the image store crossed with it (id, pixels re-encoded, placement
+        // size), and the replayed grid kept the placeholder cells…
+        {
+            let img = received
+                .images
+                .get(9)
+                .expect("image store must survive the move");
+            assert_eq!((img.cols, img.rows), (2, 1));
+            let size = img.image.size(0);
+            assert_eq!((size.width.0, size.height.0), (2, 2));
+            let has_placement = received
+                .snapshot
+                .lock()
+                .cells
+                .iter()
+                .any(|row| row.iter().any(|c| c.image.is_some_and(|p| p.id == 9)));
+            assert!(
+                has_placement,
+                "replayed placeholder cells must decode to the carried image"
+            );
+        }
         // …and the live pipe keeps flowing after it.
         out_write.write_all(b"AFTER-MOVE").unwrap();
         sees("AFTER-MOVE");

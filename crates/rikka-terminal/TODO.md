@@ -6,9 +6,11 @@
 
 ## タブ移送（P2 残・優先度順）
 
-- [ ] **画像 store の搬送** — 移送すると kitty/sixel 画像は消える
-      （placeholder セルは空白化済みで tofu は出ない）。wire にバイナリ添付
-      か再転送プロトコルが要る。
+- [x] ~~画像 store の搬送~~ — store を PNG 化して `state.images` で搬送
+      （新しい順に 1.5MiB 予算・溢れは従来どおり blank）。予算に乗った id の
+      placeholder セルは replay で素通し（fg=id を厳密保存する専用 SGR）、
+      受信側 `into_session` が store 復元。E2E で pixel/placement/placeholder
+      復元を実証。予算外・旧送信元は従来挙動に fail open。
 - [x] ~~OSC 8 ハイパーリンクの搬送~~ — `replay_bytes` がリンク run を
       OSC 8 で再発行（history は行単位で self-contained・id/uri 一致で
       受信側 parser が結合）。roundtrip テストで cell.hyperlink 復元を実証。

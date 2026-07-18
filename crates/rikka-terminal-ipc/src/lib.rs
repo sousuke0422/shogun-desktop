@@ -135,6 +135,55 @@ pub fn vt_from_state(state: &Option<serde_json::Value>) -> Option<Vec<u8>> {
     base64::engine::general_purpose::STANDARD.decode(b64).ok()
 }
 
+/// One carried image of a tab move: `(id, cols, rows, png_bytes)` — the
+/// engine's `pty_handoff::image_payloads` shape.
+pub type ImagePayload = (u32, u16, u16, Vec<u8>);
+
+/// The full `attach.state` value for a tab move: the screen replay plus the
+/// image store (`{ "vt_b64": …, "images": [{id,c,r,png_b64}…] }`). The
+/// `images` key is omitted when empty, so old receivers see exactly the
+/// `state_from_vt` shape they already understand.
+pub fn state_from_parts(vt: &[u8], images: &[ImagePayload]) -> serde_json::Value {
+    use base64::Engine as _;
+    let mut v = state_from_vt(vt);
+    if !images.is_empty() {
+        let arr: Vec<serde_json::Value> = images
+            .iter()
+            .map(|(id, c, r, png)| {
+                serde_json::json!({
+                    "id": id,
+                    "c": c,
+                    "r": r,
+                    "png_b64": base64::engine::general_purpose::STANDARD.encode(png),
+                })
+            })
+            .collect();
+        v["images"] = serde_json::Value::Array(arr);
+    }
+    v
+}
+
+/// The carried images out of an `attach.state`. Malformed entries are
+/// skipped (fail open — that image simply does not survive, like any image
+/// that missed the sender's budget).
+pub fn images_from_state(state: &Option<serde_json::Value>) -> Vec<ImagePayload> {
+    use base64::Engine as _;
+    let Some(arr) = state.as_ref().and_then(|s| s.get("images")?.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|e| {
+            let id = u32::try_from(e.get("id")?.as_u64()?).ok()?;
+            let c = u16::try_from(e.get("c")?.as_u64()?).ok()?;
+            let r = u16::try_from(e.get("r")?.as_u64()?).ok()?;
+            let png = base64::engine::general_purpose::STANDARD
+                .decode(e.get("png_b64")?.as_str()?)
+                .ok()?;
+            Some((id, c, r, png))
+        })
+        .collect()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct RegisterWindow {
     pub pid: u32,

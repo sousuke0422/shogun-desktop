@@ -444,6 +444,17 @@ impl KittyImageStore {
         self.inner.lock().map.get(&id).cloned()
     }
 
+    /// Every stored image in insertion order (oldest first) — the tab-move
+    /// serializer walks this to carry the store across processes.
+    pub fn snapshot_all(&self) -> Vec<(u32, StoredImage)> {
+        let inner = self.inner.lock();
+        inner
+            .order
+            .iter()
+            .filter_map(|&id| inner.map.get(&id).map(|img| (id, img.clone())))
+            .collect()
+    }
+
     /// True when no image is stored (the visibility fast path is
     /// `GridSnapshot::has_images`; this is for tests).
     #[cfg(test)]

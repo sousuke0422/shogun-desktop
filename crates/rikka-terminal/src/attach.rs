@@ -44,6 +44,9 @@ pub struct LocalAttach {
     /// The tab's color palette in wire form (`AttachArgs::palette`) — the
     /// adopter re-attaches it so the moved tab keeps its profile colors.
     palette: Option<Vec<u32>>,
+    /// The tab's image store (kitty/sixel), PNG-encoded per image —
+    /// restored into the assembled session so placements keep rendering.
+    images: Vec<ipc::ImagePayload>,
 }
 
 /// Duplicate one raw handle value out of `source` into this process.
@@ -129,6 +132,7 @@ fn take(
         startup: args.startup.clone(),
         state_vt: ipc::vt_from_state(&args.state),
         palette: args.palette.clone(),
+        images: ipc::images_from_state(&args.state),
     })
 }
 
@@ -143,6 +147,7 @@ impl LocalAttach {
         startup: ipc::StartupInfo,
         state_vt: Option<Vec<u8>>,
         palette: Option<Vec<u32>>,
+        images: Vec<ipc::ImagePayload>,
     ) -> Result<Self> {
         ensure!(
             kit.keepalive.len() <= 2,
@@ -161,6 +166,7 @@ impl LocalAttach {
             startup,
             state_vt,
             palette,
+            images,
         })
     }
 
@@ -186,6 +192,7 @@ impl LocalAttach {
             startup,
             state_vt,
             palette: _,
+            images,
         } = self;
         let cols = if startup.cols >= 2 { startup.cols } else { 80 };
         let rows = if startup.rows >= 2 { startup.rows } else { 24 };
@@ -213,6 +220,20 @@ impl LocalAttach {
         drop(reference);
         if let Some(title) = &startup.title {
             *session.title.lock() = Some(title.clone());
+        }
+        // Restore the carried image store (kitty/sixel): each PNG decodes
+        // back to RGBA and re-inserts under its original id, so the replayed
+        // placeholder cells render their placements immediately. A corrupt
+        // entry just drops, like any image that missed the sender's budget.
+        for (id, cols, rows, png) in images {
+            let Ok(img) = image::load_from_memory_with_format(&png, image::ImageFormat::Png) else {
+                continue;
+            };
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            session
+                .images
+                .insert_rgba(id, w, h, rgba.into_raw(), cols, rows);
         }
         Ok(session)
     }
@@ -263,18 +284,22 @@ impl LocalAttach {
             cmd.arg("--size")
                 .arg(format!("{},{}", self.startup.cols, self.startup.rows));
         }
-        // The screen replay is bulk bytes — handles ride inheritance, this
-        // rides a temp file the child reads once and deletes. A stale file
+        // The screen replay (and image store) is bulk bytes — handles ride
+        // inheritance, this rides a temp file the child reads once and
+        // deletes: the full state JSON (`{vt_b64, images}`). A stale file
         // (child died first) is a few KB in %TEMP%, harmless.
-        if let Some(vt) = &self.state_vt {
+        if self.state_vt.is_some() || !self.images.is_empty() {
+            let state =
+                ipc::state_from_parts(self.state_vt.as_deref().unwrap_or_default(), &self.images);
+            let bytes = serde_json::to_vec(&state).context("serialize tab-move state")?;
             let path = std::env::temp_dir().join(format!(
-                "rikka-move-{}-{:x}.vt",
+                "rikka-move-{}-{:x}.state",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos())
             ));
-            std::fs::write(&path, vt).context("write tab-move state file")?;
+            std::fs::write(&path, bytes).context("write tab-move state file")?;
             cmd.arg("--attach-state").arg(&path);
         }
         // The tab's palette: 19 hex values (tiny — rides argv, no file).
