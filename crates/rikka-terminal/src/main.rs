@@ -506,11 +506,97 @@ fn taskbar_aggregate(
     }
 }
 
+/// wt-style circular progress in a tab's icon slot (shown in place of the
+/// shell icon while progress is active). Normal = a green arc sweeping
+/// clockwise from 12 o'clock; error / warning = a full red / gold ring;
+/// indeterminate = a rotating arc.
+fn progress_ring(
+    id: impl Into<gpui::ElementId>,
+    (state, percent): (rikka_terminal_core::progress::ProgressState, u8),
+) -> gpui::AnyElement {
+    use gpui::AnimationExt as _;
+    use rikka_terminal_core::progress::ProgressState;
+    // Slot-sized like the 16px icon, so icon↔ring swaps don't shift the title.
+    const D: f32 = 16.0;
+    let slot = || div().w(px(D)).h(px(D)).mr(px(6.)).flex_shrink_0();
+    match state {
+        // Full static rings: a rounded-full border IS the ring — no path math.
+        ProgressState::Error => slot()
+            .rounded_full()
+            .border_2()
+            .border_color(rgb(0xE81123))
+            .into_any_element(),
+        ProgressState::Warning => slot()
+            .rounded_full()
+            .border_2()
+            .border_color(rgb(0xFFB900))
+            .into_any_element(),
+        ProgressState::Normal => slot()
+            .child(ring_arc(percent as f32 / 100.0, 0.0, rgb(0x16C60C)))
+            .into_any_element(),
+        ProgressState::Indeterminate => slot()
+            .with_animation(
+                id,
+                gpui::Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+                |el, delta| el.child(ring_arc(0.30, delta, rgb(0x60CDFF))),
+            )
+            .into_any_element(),
+    }
+}
+
+/// A circular track plus an arc of `fraction` turns starting `start_turns`
+/// past 12 o'clock, painted clockwise with gpui's path API inside a canvas.
+fn ring_arc(fraction: f32, start_turns: f32, color: gpui::Rgba) -> gpui::AnyElement {
+    gpui::canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            use std::f32::consts::{FRAC_PI_2, PI, TAU};
+            let c = bounds.center();
+            let r = (bounds.size.width / px(1.)).min(bounds.size.height / px(1.)) * 0.5 - 1.5;
+            if r <= 0.0 {
+                return;
+            }
+            let at = |a: f32| gpui::point(c.x + px(r * a.cos()), c.y + px(r * a.sin()));
+            let radii = gpui::point(px(r), px(r));
+            // Track: a full circle from two half arcs (a single arc with
+            // start == end would collapse).
+            let mut pb = gpui::PathBuilder::stroke(px(1.5));
+            pb.move_to(at(-FRAC_PI_2));
+            pb.arc_to(radii, px(0.), false, true, at(FRAC_PI_2));
+            pb.arc_to(radii, px(0.), false, true, at(-FRAC_PI_2));
+            if let Ok(p) = pb.build() {
+                window.paint_path(p, gpui::rgba(0xFFFFFF30));
+            }
+            // The progress arc (screen y grows downward, so sweep=true is
+            // clockwise).
+            let frac = fraction.clamp(0.0, 1.0);
+            if frac < 0.004 {
+                return;
+            }
+            let a0 = start_turns * TAU - FRAC_PI_2;
+            let mut pb = gpui::PathBuilder::stroke(px(2.));
+            pb.move_to(at(a0));
+            if frac >= 0.999 {
+                pb.arc_to(radii, px(0.), false, true, at(a0 + PI));
+                pb.arc_to(radii, px(0.), false, true, at(a0));
+            } else {
+                pb.arc_to(radii, px(0.), frac > 0.5, true, at(a0 + frac * TAU));
+            }
+            if let Ok(p) = pb.build() {
+                window.paint_path(p, color);
+            }
+        },
+    )
+    .size_full()
+    .into_any_element()
+}
+
 /// Rainbow segments of the animated progress fill (a seamless scrolling
 /// spectrum — each segment is a gradient to the next segment's hue).
 const PROGRESS_RAINBOW_SEGMENTS: usize = 16;
 
-/// A 3px progress bar pinned to the bottom of a (`.relative()`) tab.
+/// A 3px full-width progress bar (the SD/ghostty-style strip the active tab
+/// shows across the top of the pane).
 ///
 /// Normal fills to the percentage with a scrolling rainbow (static green was
 /// too easy to miss — same ゲーミング仕様 as shogun-desktop); indeterminate is
@@ -558,10 +644,7 @@ fn render_progress_bar(
             .into_any_element(),
     };
     div()
-        .absolute()
-        .bottom_0()
-        .left_0()
-        .right_0()
+        .w_full()
         .h(px(3.))
         .bg(gpui::rgba(0x00000059))
         .child(fill)
@@ -1365,13 +1448,13 @@ impl Render for TabsWindow {
                         .text_color(rgb(0xE81123))
                         .child("●")
                 });
-                // Shell icon (the program's own exe icon, or a bundled distro
-                // glyph), leftmost like wt. `None` = unadorned.
-                let icon_el = entry.0.icon().map(|ic| icon_element(ic, 6.));
-                // OSC 9;4 (or title-spinner) progress → thin bar along the
-                // tab's bottom edge.
-                let progress_el = tab_progress(&entry.0.session)
-                    .map(|p| render_progress_bar(("tab-progress", ix), p));
+                // Icon slot: while OSC 9;4 (or title-spinner) progress is
+                // active, a wt-style circular indicator takes the shell icon's
+                // place; the icon returns when progress clears.
+                let icon_el = match tab_progress(&entry.0.session) {
+                    Some(p) => Some(progress_ring(("tab-ring", ix), p)),
+                    None => entry.0.icon().map(|ic| icon_element(ic, 6.)),
+                };
                 // Separator to the left of this tab — hidden next to the
                 // selected tab, whose silhouette does the separating.
                 let sep = (ix > 0 && !active && ix - 1 != active_ix).then(|| {
@@ -1388,8 +1471,6 @@ impl Render for TabsWindow {
                     // Equal WinUI TabView width — see `tab_w` above.
                     .w(px(tab_w))
                     .flex_shrink_0()
-                    // Anchor for the absolute-positioned progress bar below.
-                    .relative()
                     .pl(px(8.))
                     .pr(px(4.))
                     .py(px(3.))
@@ -1414,7 +1495,6 @@ impl Render for TabsWindow {
                     })
                     .children(icon_el)
                     .children(rec_dot)
-                    .children(progress_el)
                     .child(
                         div()
                             .flex_1()
@@ -1861,6 +1941,16 @@ impl Render for TabsWindow {
             )
             .child(strip)
             .child(pane)
+            // Active tab's progress: an SD/ghostty-style bar across the top of
+            // the pane. An overlay, so the grid never reflows when it appears.
+            .children(self.active_session().and_then(tab_progress).map(|p| {
+                div()
+                    .absolute()
+                    .top(px(TAB_STRIP_H))
+                    .left_0()
+                    .right_0()
+                    .child(render_progress_bar("pane-progress", p))
+            }))
             .when(self.profile_menu, |root| {
                 // Click-away scrim behind the list; a click anywhere else
                 // closes the menu. Rendered before the list so the list wins
