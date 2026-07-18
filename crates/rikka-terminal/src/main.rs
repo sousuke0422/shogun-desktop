@@ -1450,10 +1450,12 @@ impl Render for TabsWindow {
                 });
                 // Icon slot: while OSC 9;4 (or title-spinner) progress is
                 // active, a wt-style circular indicator takes the shell icon's
-                // place; the icon returns when progress clears.
+                // place — but only on INACTIVE tabs. The active tab already
+                // shows its progress as the bar atop the pane, so it keeps its
+                // icon (a ring there would say the same thing twice).
                 let icon_el = match tab_progress(&entry.0.session) {
-                    Some(p) => Some(progress_ring(("tab-ring", ix), p)),
-                    None => entry.0.icon().map(|ic| icon_element(ic, 6.)),
+                    Some(p) if !active => Some(progress_ring(("tab-ring", ix), p)),
+                    _ => entry.0.icon().map(|ic| icon_element(ic, 6.)),
                 };
                 // Separator to the left of this tab — hidden next to the
                 // selected tab, whose silhouette does the separating.
