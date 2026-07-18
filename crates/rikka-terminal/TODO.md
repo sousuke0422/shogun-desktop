@@ -90,6 +90,12 @@
       バイトコード化で読めない — npm 旧版 tarball（2.1.100 以前は
       cli.js 同梱）を落として grep するのが確実。バー実装は
       `[" ","▏".."█"]`（旧型・幾何化済）と ▰▱（現行 material 型）の二系統。
+      副作用の解も兼ねる: フレーム中 ✳ U+2733 だけ Emoji プロパティ持ちで、
+      Twemoji 同梱側(shogun-desktop)は fallback が裸の U+2733 を食って
+      1コマだけカラー絵文字化する（VS16 なしの既定は text presentation が
+      正）。rikka は Twemoji 未登録ゆえ Segoe UI Symbol に落ちて文字のまま。
+      幾何化すれば両アプリで決定論的に消える。被覆実測(2026-07-18):
+      Moralerspace=✳✻⠋なし/▰あり・Twemoji=✳のみ・Segoe UI Symbol=全部。
 
 ## セキュリティ
 
