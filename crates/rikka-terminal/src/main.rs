@@ -801,6 +801,8 @@ pub struct TabsWindow {
     applied_title: Option<String>,
     /// The new-tab profile dropdown is open (rendered below the strip).
     profile_menu: bool,
+    /// Scrollback search bar (Ctrl+Shift+F) — shared engine widget.
+    search: rikka_terminal_core::search_bar::SearchBar,
     /// Horizontal scroll of the tab viewport (Firefox-style overflow: when
     /// tabs would push the caption buttons, they scroll here instead).
     strip_scroll: ScrollHandle,
@@ -895,6 +897,7 @@ impl TabsWindow {
             rows: 0,
             applied_title: None,
             profile_menu: false,
+            search: Default::default(),
             strip_scroll: ScrollHandle::default(),
             dragging_tab: None,
         };
@@ -955,6 +958,11 @@ impl TabsWindow {
                 if let Some(s) = self.active_session() {
                     s.jump_prompt(1);
                 }
+            }
+            Search => {
+                let sess = self.tabs.get(self.active).map(|e| &e.0.session);
+                self.search.toggle(sess);
+                cx.notify();
             }
         }
     }
@@ -1063,6 +1071,14 @@ impl TabsWindow {
         self.cols = 0;
         self.rows = 0;
         self.applied_title = None;
+        // The search bar is per-session state — a tab switch closes it and
+        // sweeps the highlight off every tab.
+        if self.search.open {
+            self.search.open = false;
+            for e in &self.tabs {
+                e.0.session.search_close();
+            }
+        }
         // Install the now-active tab's palette so the visible tab wears its
         // own colors (per-profile theming). Only the active tab renders, so
         // one global palette is enough.
@@ -1780,6 +1796,8 @@ impl Render for TabsWindow {
                             self.selection.hover_link_for(0),
                             images.as_deref(),
                             ime_preedit,
+                            self.active_session()
+                                .and_then(|s| s.search_match_for_render()),
                         ))
                         // Shared pane overlay (IME handler + selection
                         // listeners + caret). Single-sourced in the engine so
@@ -1882,6 +1900,17 @@ impl Render for TabsWindow {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
                 let m = &ks.modifiers;
+                // The search bar swallows the keyboard while open.
+                if this.search.open {
+                    let close_chord =
+                        keymap::resolve(m, ks.key.as_str()) == Some(keymap::Action::Search);
+                    let sess = this.tabs.get(this.active).map(|e| &e.0.session);
+                    if this.search.key(ks, close_chord, sess) {
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
                 // ── tab management chords (defaults Ctrl+Shift+…, each
                 // reassignable through `[keys]` — see keymap.rs) ────────
                 if let Some(action) = keymap::resolve(m, ks.key.as_str()) {
@@ -1997,6 +2026,14 @@ impl Render for TabsWindow {
                     .left_0()
                     .right_0()
                     .child(render_progress_bar("pane-progress", p))
+            }))
+            // Scrollback search bar (Ctrl+Shift+F): browser-style, top right.
+            .children(self.search.render().map(|bar| {
+                div()
+                    .absolute()
+                    .top(px(TAB_STRIP_H + 10.))
+                    .right(px(14.))
+                    .child(bar)
             }))
             .when(self.profile_menu, |root| {
                 // Click-away scrim behind the list; a click anywhere else

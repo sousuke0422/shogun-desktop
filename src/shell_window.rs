@@ -24,6 +24,8 @@ use std::time::Duration;
 
 pub struct ShellWindow {
     session: Option<TerminalSession>,
+    /// Scrollback search bar (Ctrl+Shift+F) — shared engine widget.
+    search: rikka_terminal_core::search_bar::SearchBar,
     error: Option<String>,
     scroll_handle: ScrollHandle,
     scroll_locked: bool,
@@ -123,6 +125,7 @@ impl ShellWindow {
             .detach();
         let mut win = Self {
             session: None,
+            search: Default::default(),
             error: None,
             scroll_handle: ScrollHandle::default(),
             scroll_locked: false,
@@ -466,6 +469,21 @@ impl Render for ShellWindow {
                 // the input handler (otherwise every char would double).
                 .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _win, cx| {
                     let ks = &event.keystroke;
+                    let m = &ks.modifiers;
+                    // Ctrl+Shift+F: scrollback search (shared engine widget).
+                    let search_chord = m.control && m.shift && !m.alt && ks.key == "f";
+                    if this.search.open {
+                        if this.search.key(ks, search_chord, this.session.as_ref()) {
+                            cx.notify();
+                            cx.stop_propagation();
+                            return;
+                        }
+                    } else if search_chord {
+                        this.search.toggle(this.session.as_ref());
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
                     // Shift+PageUp/PageDown: page through the scrollback.
                     if ks.modifiers.shift && (ks.key == "pageup" || ks.key == "pagedown") {
                         if let Some(s) = &this.session {
@@ -559,6 +577,9 @@ impl Render for ShellWindow {
                     self.selection.hover_link_for(0),
                     images.as_deref(),
                     ime_preedit,
+                    self.session
+                        .as_ref()
+                        .and_then(|s| s.search_match_for_render()),
                 ));
 
             // Overlay: registers the IME input handler (GPUI only routes
@@ -612,6 +633,13 @@ impl Render for ShellWindow {
                 .size_full()
                 .child(pane)
                 .child(overlay)
+                // Scrollback search bar (Ctrl+Shift+F), browser-style top
+                // right — the shared engine widget.
+                .children(
+                    self.search
+                        .render()
+                        .map(|bar| div().absolute().top(px(10.)).right(px(14.)).child(bar)),
+                )
                 // Right-click menu dispatching the same actions as the
                 // keyboard shortcuts (see render_terminal_tab). Attached to
                 // the NON-scrolling wrapper, never to the scroll container:

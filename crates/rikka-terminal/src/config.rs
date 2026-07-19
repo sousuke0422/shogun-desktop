@@ -171,6 +171,8 @@ pub struct KeysSection {
     pub jump_prompt_prev: Option<String>,
     #[serde(default)]
     pub jump_prompt_next: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

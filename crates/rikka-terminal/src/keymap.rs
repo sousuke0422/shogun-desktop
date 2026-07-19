@@ -34,6 +34,8 @@ pub enum Action {
     JumpPromptPrev,
     /// Scroll to the next shell prompt.
     JumpPromptNext,
+    /// Open/close the scrollback search bar.
+    Search,
 }
 
 /// One parsed binding: exact modifier set + gpui key name (lowercase).
@@ -93,7 +95,7 @@ impl KeyMap {
             alt: false,
             key: key.into(),
         };
-        let defaults: [(&Option<String>, &str, Action); 12] = [
+        let defaults: [(&Option<String>, &str, Action); 13] = [
             (&keys.new_tab, "t", Action::NewTab),
             (&keys.close_tab, "w", Action::CloseTab),
             (&keys.detach_tab, "d", Action::DetachTab),
@@ -106,6 +108,7 @@ impl KeyMap {
             (&keys.cycle_back, "tab", Action::CycleBack),
             (&keys.jump_prompt_prev, "up", Action::JumpPromptPrev),
             (&keys.jump_prompt_next, "down", Action::JumpPromptNext),
+            (&keys.search, "f", Action::Search),
         ];
         let mut bindings = Vec::new();
         for (configured, default_key, action) in defaults {

@@ -166,6 +166,8 @@ pub struct ShogunWindow {
     ime: gpui::Entity<TerminalIme<Self>>,
     /// Shared mouse-selection state (see `terminal::selection`).
     selection: SelectionState,
+    /// Scrollback search bar (Ctrl+Shift+F) — shared engine widget.
+    search: rikka_terminal_core::search_bar::SearchBar,
     /// Mirrors `Window::is_window_active()` (kept fresh by an activation
     /// observer) so the async notification watcher — which has no `Window` —
     /// can apply Ghostty-style focus suppression.
@@ -295,6 +297,7 @@ impl ShogunWindow {
             terminal_focus,
             ime,
             selection: SelectionState::default(),
+            search: Default::default(),
             window_active: window.is_window_active(),
             desktop_notifications,
             desktop_notifications_multiagent,
@@ -776,8 +779,29 @@ impl ShogunWindow {
     pub(crate) fn handle_terminal_key(
         &mut self,
         event: &KeyDownEvent,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> bool {
+        // Scrollback search bar: the chord opens it, and while open it
+        // swallows the keyboard (Esc / the chord again closes). Same shape
+        // as the shell window; mem::take dodges the `&mut self.search` vs
+        // `active_session(&self)` borrow overlap.
+        let ks = &event.keystroke;
+        let m = &ks.modifiers;
+        let search_chord = m.control && m.shift && !m.alt && ks.key == "f";
+        if self.search.open || search_chord {
+            let mut search = std::mem::take(&mut self.search);
+            let consumed = if search.open {
+                search.key(ks, search_chord, self.active_session())
+            } else {
+                search.toggle(self.active_session());
+                true
+            };
+            self.search = search;
+            if consumed {
+                cx.notify();
+                return true;
+            }
+        }
         // key_to_pty_bytes returns None for keys that must be left to the
         // platform text-input path (WM_CHAR / IME → TerminalIme handler).
         // The term mode selects the encoding (legacy vs kitty protocol).
@@ -810,7 +834,7 @@ impl ShogunWindow {
         if let Some(session) = session {
             if session.is_connected() {
                 let snap = session.snapshot.lock().clone();
-                render_terminal_tab(
+                let pane = render_terminal_tab(
                     &snap,
                     scroll_handle,
                     &self.terminal_focus,
@@ -821,6 +845,7 @@ impl ShogunWindow {
                     snap.selection,
                     self.selection.hover_link_for(selection_pane(is_shogun)),
                     Some(&session.images),
+                    session.search_match_for_render(),
                     is_shogun,
                     &self.terminal_font,
                     cw,
@@ -828,8 +853,19 @@ impl ShogunWindow {
                     self.pane_measured.clone(),
                     self.pane_origin.clone(),
                     cx,
-                )
-                .into_any_element()
+                );
+                div()
+                    .relative()
+                    .size_full()
+                    .child(pane)
+                    // Scrollback search bar (Ctrl+Shift+F), top-right of the
+                    // pane — the shared engine widget.
+                    .children(
+                        self.search
+                            .render()
+                            .map(|bar| div().absolute().top(px(10.)).right(px(14.)).child(bar)),
+                    )
+                    .into_any_element()
             } else {
                 let btn_id = if is_shogun {
                     "reconnect-shogun"
@@ -990,6 +1026,13 @@ impl ShogunWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Tab switch closes the search bar and drops the old pane's
+        // highlight (mirrors rikka's after_tab_change sweep).
+        if self.search.open {
+            let mut search = std::mem::take(&mut self.search);
+            search.close(self.active_session());
+            self.search = search;
+        }
         self.selected_tab = index;
         self.sync_focus_reports();
         if self.is_terminal_tab() {

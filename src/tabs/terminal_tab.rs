@@ -29,6 +29,8 @@ pub fn render_terminal_tab(
     hover_link: Option<u16>,
     // Kitty-graphics image store of the session shown in this pane.
     images: Option<&crate::terminal::kitty_graphics::KittyImageStore>,
+    // Current scrollback-search match (grid coords) for the gold highlight.
+    search: Option<((i32, usize), (i32, usize))>,
     is_shogun: bool,
     font: &str,
     // Cell width in logical pixels — measured via `TextSystem::ch_advance`.
@@ -218,6 +220,7 @@ pub fn render_terminal_tab(
                     hover_link,
                     images,
                     ime_preedit,
+                    search,
                 )),
         )
         // Right-click menu: dispatches the same actions as the keyboard

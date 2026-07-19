@@ -133,8 +133,15 @@
       （明示 dir > cwd(実在チェック) > home）。自動注入は v1 見送り・
       config.example.toml に pwsh/bash スニペット。実機で jump 2 段・
       C:\Windows 継承を確認。残: 自動注入・OSC 133;C/D 活用（出力範囲選択等）。
-- [ ] **スクロールバック検索** — wt 比でも欠落。検索バー UI＋grid 走査＋
-      ハイライト/ジャンプ。
+- [x] **スクロールバック検索** — 済 (2026-07-19)。vendored alacritty の
+      `RegexSearch`/`search_next`（regex・smart-case・履歴込み wrap 検索）を
+      エンジン直結（`search_set`/`search_step`/`search_match_for_render`）。
+      Ctrl+Shift+F（[keys] `search` 再割当可）で共有ウィジェット
+      `search_bar.rs` のバーが右上に出て incremental 検索、Enter/Shift+Enter
+      で次/前へステップ（マッチは上 1/3 へスクロール）、Esc/同チョードで
+      閉じ＋ハイライト解除。マッチは gold で renderer 描画。SD（shell 窓＋
+      将軍/家老陣ペイン）にも同配線。実機 3 段（開閉/incremental/step）確認。
+      残: 全マッチ同時ハイライト・件数表示（現状 current match のみ）。
 - [ ] **リガチャ** — SD に font_features 配線（settings→
       `renderer::set_font_features`・liga/calt/ss タグのパース）は**存在する
       が機能していない**: エンジンのセル固定シェイピング（`shape_line`

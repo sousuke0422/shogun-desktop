@@ -8,6 +8,7 @@ pub mod progress;
 pub mod pty_handoff;
 pub mod pty_session;
 pub mod renderer;
+pub mod search_bar;
 pub mod selection;
 pub mod sixel;
 pub mod theme;
@@ -144,6 +145,16 @@ impl SelectionKind {
 /// [`TerminalSession::selection_drag`].
 pub type ScreenSel = Option<(SelectionKind, (usize, usize, bool), (usize, usize, bool))>;
 
+/// A live scrollback search: the compiled query and the current match, both
+/// owned by the session so stepping and highlighting survive scrolling and
+/// output. See [`TerminalSession::search_set`].
+pub struct SearchLive {
+    regex: alacritty_terminal::term::search::RegexSearch,
+    /// The query as typed (for the host's search bar display).
+    pub query: String,
+    current: Option<alacritty_terminal::term::search::Match>,
+}
+
 pub struct TerminalSession {
     #[allow(dead_code)]
     pub term: Arc<FairMutex<Term<ClipboardListener>>>,
@@ -183,6 +194,9 @@ pub struct TerminalSession {
     /// Working directory last reported by the shell (OSC 9;9 / OSC 7) —
     /// new tabs inherit it. See [`Self::current_cwd`].
     pub cwd: Arc<FairMutex<Option<String>>>,
+    /// Live scrollback search (compiled query + current match), when the
+    /// host has a search bar open on this session. See [`Self::search_set`].
+    pub search: Arc<FairMutex<Option<SearchLive>>>,
     /// Last focus state reported to the application via CSI I / CSI O
     /// (focus reporting, DECSET ?1004). Sessions start focused: they are
     /// spawned into the surface the user is looking at.
@@ -515,6 +529,112 @@ impl TerminalSession {
     /// cwd inheritance by new tabs.
     pub fn current_cwd(&self) -> Option<String> {
         self.cwd.lock().clone()
+    }
+
+    /// Compile (or clear, on an empty query) the live scrollback search.
+    /// Smart-case is alacritty's: an all-lowercase query matches
+    /// case-insensitively. Returns `false` when the pattern does not
+    /// compile — the previous state is kept, so a half-typed regex never
+    /// drops the current match.
+    pub fn search_set(&self, query: &str) -> bool {
+        if query.is_empty() {
+            *self.search.lock() = None;
+            self.poke_redraw();
+            return true;
+        }
+        match alacritty_terminal::term::search::RegexSearch::new(query) {
+            Ok(regex) => {
+                *self.search.lock() = Some(SearchLive {
+                    regex,
+                    query: query.to_string(),
+                    current: None,
+                });
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Step to the next (`dir >= 0`) or previous match and scroll it into
+    /// view (upper third). The first step after [`Self::search_set`] starts
+    /// from the viewport top. alacritty's search wraps around the buffer.
+    /// Returns whether a match is current afterwards.
+    pub fn search_step(&self, dir: i32) -> bool {
+        use alacritty_terminal::grid::Dimensions as _;
+        use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point, Side};
+        let delta;
+        let found;
+        {
+            let term = self.term.lock();
+            let mut slot = self.search.lock();
+            let Some(live) = slot.as_mut() else {
+                return false;
+            };
+            let off = term.grid().display_offset() as i32;
+            let rows = term.screen_lines() as i32;
+            let origin = match (&live.current, dir >= 0) {
+                (Some(m), true) => m.end().add(&*term, Boundary::None, 1),
+                (Some(m), false) => m.start().sub(&*term, Boundary::None, 1),
+                (None, true) => Point::new(Line(-off), Column(0)),
+                (None, false) => Point::new(
+                    Line(-off + rows - 1),
+                    Column(term.columns().saturating_sub(1)),
+                ),
+            };
+            let dirn = if dir >= 0 {
+                Direction::Right
+            } else {
+                Direction::Left
+            };
+            let m = term.search_next(&mut live.regex, origin, dirn, Side::Left, None);
+            found = m.is_some();
+            delta = match &m {
+                Some(m) => {
+                    let line = m.start().line.0;
+                    let viewport_row = line + off;
+                    if (0..rows).contains(&viewport_row) {
+                        0
+                    } else {
+                        let h = term.grid().history_size() as i32;
+                        ((rows / 3) - line).clamp(0, h) - off
+                    }
+                }
+                None => 0,
+            };
+            live.current = m;
+        }
+        if delta != 0 {
+            self.scroll_display(delta);
+        } else {
+            self.poke_redraw();
+        }
+        found
+    }
+
+    /// Drop the live search (and its highlight).
+    pub fn search_close(&self) {
+        *self.search.lock() = None;
+        self.poke_redraw();
+    }
+
+    /// The current search match in grid coordinates (`(line, col)` pairs),
+    /// for the renderer's highlight — it maps them into the viewport with
+    /// the snapshot's display offset.
+    pub fn search_match_for_render(&self) -> Option<((i32, usize), (i32, usize))> {
+        let slot = self.search.lock();
+        let m = slot.as_ref()?.current.as_ref()?;
+        Some((
+            (m.start().line.0, m.start().column.0),
+            (m.end().line.0, m.end().column.0),
+        ))
+    }
+
+    /// Nudge the UI to repaint (generation bump + notify) without touching
+    /// the grid — for state that lives beside the snapshot, like the search
+    /// highlight.
+    fn poke_redraw(&self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.notify.notify_one();
     }
 
     /// Jump to the previous (`dir < 0`) or next (`dir > 0`) shell prompt

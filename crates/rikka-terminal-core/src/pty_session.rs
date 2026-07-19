@@ -190,6 +190,7 @@ pub fn build_terminal_session_with_preface(
     // Shell integration: OSC 133;A prompt marks + OSC 9;9 / OSC 7 cwd.
     let prompt_marks: Arc<FairMutex<std::collections::VecDeque<u64>>> = Arc::default();
     let cwd: Arc<FairMutex<Option<String>>> = Arc::default();
+    let search: Arc<FairMutex<Option<crate::SearchLive>>> = Arc::new(FairMutex::new(None));
     let xtversion = crate::xtversion::XtversionScanner::new(xtversion_identity);
     // Flipped once the preface (if any) has been applied — the resize
     // settler holds every reflow until then (see the function docs).
@@ -588,6 +589,7 @@ pub fn build_terminal_session_with_preface(
         screen_sel,
         prompt_marks,
         cwd,
+        search,
         focused: AtomicBool::new(true),
         cell_size_px,
         title,
