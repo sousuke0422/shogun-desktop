@@ -118,9 +118,31 @@ impl PtyResizer for NoopResizer {
     }
 }
 
-/// A live screen-anchored selection: viewport `(anchor, head)` cells, each
-/// `(row, col, right_side)`. See [`TerminalSession::selection_drag`].
-pub type ScreenSel = Option<((usize, usize, bool), (usize, usize, bool))>;
+/// What a selection selects per cell under the cursor: a plain cell run, the
+/// whole word (double-click; alacritty's semantic boundaries), or whole
+/// lines (triple-click).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SelectionKind {
+    Simple,
+    Word,
+    Line,
+}
+
+impl SelectionKind {
+    fn to_alacritty(self) -> alacritty_terminal::selection::SelectionType {
+        use alacritty_terminal::selection::SelectionType as T;
+        match self {
+            SelectionKind::Simple => T::Simple,
+            SelectionKind::Word => T::Semantic,
+            SelectionKind::Line => T::Lines,
+        }
+    }
+}
+
+/// A live screen-anchored selection: its kind plus viewport `(anchor, head)`
+/// cells, each `(row, col, right_side)`. See
+/// [`TerminalSession::selection_drag`].
+pub type ScreenSel = Option<(SelectionKind, (usize, usize, bool), (usize, usize, bool))>;
 
 pub struct TerminalSession {
     #[allow(dead_code)]
@@ -410,22 +432,23 @@ impl TerminalSession {
     }
 
     /// Begin a mouse selection at viewport cell `(row, col)`; `right_side` =
-    /// the pointer sat in the right half of the cell. The selection lives in
+    /// the pointer sat in the right half of the cell, `kind` = plain drag /
+    /// double-click word / triple-click line. The selection lives in
     /// alacritty's `Selection` (grid coordinates), so it stays glued to the
     /// text through scrollback scrolling and output-driven rotation — the old
     /// app-side screen-row state slid off the content on any scroll.
-    pub fn selection_begin(&self, row: usize, col: usize, right_side: bool) {
+    pub fn selection_begin(&self, row: usize, col: usize, right_side: bool, kind: SelectionKind) {
         let mut term = self.term.lock();
         let point = viewport_point(&term, row, col);
         term.selection = Some(alacritty_terminal::selection::Selection::new(
-            alacritty_terminal::selection::SelectionType::Simple,
+            kind.to_alacritty(),
             point,
             side_of(right_side),
         ));
         // Arm the screen anchor only at the live tail — a selection begun
         // in scrollback is grid-glued from the start (the view is still).
         let cell = (row, col, right_side);
-        *self.screen_sel.lock() = (term.grid().display_offset() == 0).then_some((cell, cell));
+        *self.screen_sel.lock() = (term.grid().display_offset() == 0).then_some((kind, cell, cell));
         self.refresh_snapshot(&term);
     }
 
@@ -451,13 +474,19 @@ impl TerminalSession {
     /// point at is what you select. Scrolled back (offset > 0) the view is
     /// still, and the plain grid-glued head update keeps working — including
     /// wheel-while-dragging, where the anchor MUST stay with the text.
-    pub fn selection_drag(&self, anchor: (usize, usize, bool), head: (usize, usize, bool)) {
+    pub fn selection_drag(
+        &self,
+        anchor: (usize, usize, bool),
+        head: (usize, usize, bool),
+        kind: SelectionKind,
+    ) {
         let mut term = self.term.lock();
-        apply_selection_drag(&mut term, anchor, head);
+        apply_selection_drag(&mut term, anchor, head, kind);
         // Keep the screen anchor in sync so the parse thread re-pins the
         // finished selection too (a completed highlight must not walk off
         // the screen while an app streams).
-        *self.screen_sel.lock() = (term.grid().display_offset() == 0).then_some((anchor, head));
+        *self.screen_sel.lock() =
+            (term.grid().display_offset() == 0).then_some((kind, anchor, head));
         self.refresh_snapshot(&term);
     }
 
@@ -858,11 +887,12 @@ fn apply_selection_drag<L>(
     term: &mut Term<L>,
     anchor: (usize, usize, bool),
     head: (usize, usize, bool),
+    kind: SelectionKind,
 ) {
     if term.grid().display_offset() == 0 {
         let a = viewport_point(term, anchor.0, anchor.1);
         let mut sel = alacritty_terminal::selection::Selection::new(
-            alacritty_terminal::selection::SelectionType::Simple,
+            kind.to_alacritty(),
             a,
             side_of(anchor.2),
         );
@@ -909,8 +939,8 @@ pub(crate) fn repin_screen_selection<L>(term: &mut Term<L>, pin: &FairMutex<Scre
     if term.grid().display_offset() != 0 {
         return;
     }
-    if let Some((anchor, head)) = *pin.lock() {
-        apply_selection_drag(term, anchor, head);
+    if let Some((kind, anchor, head)) = *pin.lock() {
+        apply_selection_drag(term, anchor, head, kind);
     }
 }
 
@@ -1693,6 +1723,42 @@ mod tests {
         }
     }
 
+    /// Double-click = word (semantic boundaries), triple-click = whole line:
+    /// the kind expands the range beyond the clicked cell, and survives the
+    /// streaming re-pin.
+    #[test]
+    fn word_and_line_selection_kinds_expand() {
+        let mut term = make_term(40, 4);
+        advance_bytes(&mut term, b"hello world etc");
+        // Word: a click inside "world" (col 8) spans cols 6..=10.
+        apply_selection_drag(&mut term, (0, 8, false), (0, 8, false), SelectionKind::Word);
+        let r = (term.selection.as_ref())
+            .and_then(|s| s.to_range(&term))
+            .unwrap();
+        assert_eq!((r.start.column.0, r.end.column.0), (6, 10));
+
+        // Line: the whole row regardless of the clicked column.
+        apply_selection_drag(&mut term, (0, 8, false), (0, 8, false), SelectionKind::Line);
+        let r = (term.selection.as_ref())
+            .and_then(|s| s.to_range(&term))
+            .unwrap();
+        assert_eq!((r.start.column.0, r.end.column.0), (0, 39));
+
+        // The re-pin preserves the kind: after rotation the same text sits
+        // on viewport row 3 — a Word pin there must re-expand to the word.
+        let pin = FairMutex::new(Some((SelectionKind::Word, (3, 8, false), (3, 8, false))));
+        advance_bytes(&mut term, b"\r\nx\r\ny\r\nz\r\nhello world etc");
+        repin_screen_selection(&mut term, &pin);
+        let r = (term.selection.as_ref())
+            .and_then(|s| s.to_range(&term))
+            .unwrap();
+        assert_eq!(
+            (r.start.column.0, r.end.column.0),
+            (6, 10),
+            "word expansion must survive the streaming re-pin"
+        );
+    }
+
     /// Prompt jumping: previous = the newest mark above the viewport top,
     /// next = the oldest below; deltas are scroll_display units (positive =
     /// older). No mark in that direction = no-op.
@@ -1729,12 +1795,22 @@ mod tests {
         let mut term = make_term(20, 4);
         advance_bytes(&mut term, b"aaa\r\nbbb\r\nccc");
         // Drag over viewport row 0, cols 0..=2 ("aaa").
-        apply_selection_drag(&mut term, (0, 0, false), (0, 2, true));
+        apply_selection_drag(
+            &mut term,
+            (0, 0, false),
+            (0, 2, true),
+            SelectionKind::Simple,
+        );
         // The app streams two more lines — one rotation into history.
         advance_bytes(&mut term, b"\r\nddd\r\neee");
         // Same pointer cells on the next update: the selection must cover
         // viewport row 0 as it is NOW, not the rotated-away line.
-        apply_selection_drag(&mut term, (0, 0, false), (0, 2, true));
+        apply_selection_drag(
+            &mut term,
+            (0, 0, false),
+            (0, 2, true),
+            SelectionKind::Simple,
+        );
         let r = (term.selection.as_ref())
             .and_then(|s| s.to_range(&term))
             .expect("live-tail drag always selects");
@@ -1747,7 +1823,12 @@ mod tests {
         // stays put and only the head follows the pointer.
         term.scroll_display(alacritty_terminal::grid::Scroll::Delta(2));
         assert_eq!(term.grid().display_offset(), 1); // clamped to history
-        apply_selection_drag(&mut term, (0, 0, false), (1, 3, true));
+        apply_selection_drag(
+            &mut term,
+            (0, 0, false),
+            (1, 3, true),
+            SelectionKind::Simple,
+        );
         let r = (term.selection.as_ref())
             .and_then(|s| s.to_range(&term))
             .expect("selection persists across the scroll");
@@ -1767,8 +1848,17 @@ mod tests {
     fn completed_selection_re_pins_until_scrollback_freezes_it() {
         let mut term = make_term(20, 4);
         advance_bytes(&mut term, b"aaa\r\nbbb\r\nccc");
-        let pin = FairMutex::new(Some(((0usize, 0usize, false), (0usize, 2usize, true))));
-        apply_selection_drag(&mut term, (0, 0, false), (0, 2, true));
+        let pin = FairMutex::new(Some((
+            SelectionKind::Simple,
+            (0usize, 0usize, false),
+            (0usize, 2usize, true),
+        )));
+        apply_selection_drag(
+            &mut term,
+            (0, 0, false),
+            (0, 2, true),
+            SelectionKind::Simple,
+        );
 
         // Rotation after the mouse released → the parse loop re-pins.
         advance_bytes(&mut term, b"\r\nddd\r\neee");

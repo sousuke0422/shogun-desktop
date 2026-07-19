@@ -73,11 +73,15 @@ struct ReportDrag {
 #[derive(Clone, Copy)]
 struct LocalDrag {
     pane: usize,
-    /// Whether the pointer ever moved — a motionless click clears the
-    /// selection on release instead of leaving a one-cell highlight behind.
-    moved: bool,
+    /// Whether releasing without motion keeps the selection. A single click
+    /// that never moves clears on release (no one-cell highlight left
+    /// behind); a double/triple click IS the selection, so it stays.
+    keep: bool,
     /// The mouse-down cell and side.
     anchor: (usize, usize, bool),
+    /// Simple drag / double-click word / triple-click line — preserved
+    /// through every drag update and the streaming re-pin.
+    kind: crate::SelectionKind,
 }
 
 #[derive(Default)]
@@ -227,16 +231,26 @@ pub fn register_mouse_selection<V: SelectionHost>(
                 if ev.button == MouseButton::Left {
                     // One visible selection per window: evict the other
                     // panes', then anchor a fresh one in the grid itself.
+                    // Click count picks what a cell selects: 1 = the cell,
+                    // 2 = the word (semantic boundaries), 3+ = the line.
                     this.clear_selections_except(pane);
                     let right = side_at(ev.position);
+                    let kind = match ev.click_count {
+                        0 | 1 => crate::SelectionKind::Simple,
+                        2 => crate::SelectionKind::Word,
+                        _ => crate::SelectionKind::Line,
+                    };
                     if let Some(s) = this.pane_session(pane) {
-                        s.selection_begin(row, col, right);
+                        s.selection_begin(row, col, right, kind);
                     }
                     let state = this.selection_state();
                     state.drag = Some(LocalDrag {
                         pane,
-                        moved: false,
+                        // A word/line click IS the selection — keep it on a
+                        // motionless release.
+                        keep: kind != crate::SelectionKind::Simple,
                         anchor: (row, col, right),
+                        kind,
                     });
                     state.last_drag_cell = Some((row, col, right));
                     state.owner = Some(pane);
@@ -313,13 +327,14 @@ pub fn register_mouse_selection<V: SelectionHost>(
                         if let Some(s) = this.pane_session(pane) {
                             // Screen-anchored: re-pins the whole selection at
                             // the live tail so streaming redraw loops cannot
-                            // slide it off the pointer.
-                            s.selection_drag(drag.anchor, (row, col, right));
+                            // slide it off the pointer. The kind rides along —
+                            // a double-click drag keeps extending by words.
+                            s.selection_drag(drag.anchor, (row, col, right), drag.kind);
                         }
                         let state = this.selection_state();
                         state.last_drag_cell = Some((row, col, right));
                         if let Some(d) = state.drag.as_mut() {
-                            d.moved = true;
+                            d.keep = true;
                         }
                         cx.notify();
                     }
@@ -351,9 +366,9 @@ pub fn register_mouse_selection<V: SelectionHost>(
                     && let Some(drag) = this.selection_state().drag
                 {
                     this.selection_state().drag = None;
-                    if !drag.moved {
-                        // A motionless click clears rather than leaving a
-                        // one-cell highlight behind.
+                    if !drag.keep {
+                        // A motionless single click clears rather than
+                        // leaving a one-cell highlight behind.
                         if let Some(s) = this.pane_session(drag.pane) {
                             s.selection_clear();
                         }
