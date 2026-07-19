@@ -155,10 +155,19 @@ mod tests {
         }
         let _client = client.expect("same-user connect must still succeed");
         let peer = server.join().unwrap();
+        // PID attestation exists where the OS provides it — Windows
+        // (GetNamedPipeClientProcessId) and Linux (SO_PEERCRED). macOS's
+        // getpeereid attests uid/gid but no pid, so `peer_pid` correctly
+        // answers None there (and the P3 Unix security gate keys on euid
+        // instead — see TODO.md); same-user admission above is the
+        // load-bearing assertion on that platform.
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             peer,
             Some(std::process::id()),
             "server must attest the connecting PID"
         );
+        #[cfg(target_os = "macos")]
+        let _ = peer;
     }
 }

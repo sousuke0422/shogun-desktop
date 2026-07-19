@@ -206,6 +206,8 @@ fn establish(
         elevated: false,
         target: ipc::Target::New,
         drop_at: None,
+        // A cold start has no profile theme to carry.
+        palette: None,
     };
 
     let endpoint = ipc::transport::endpoint_name();
