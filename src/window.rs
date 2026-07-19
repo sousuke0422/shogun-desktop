@@ -370,13 +370,6 @@ impl ShogunWindow {
         }
     }
 
-    /// Send raw bytes to the active tab's PTY, if connected.
-    pub(crate) fn send_bytes_to_active(&self, bytes: &[u8]) {
-        if let Some(session) = self.active_session() {
-            session.send_bytes(bytes);
-        }
-    }
-
     /// Tab / back-tab for the TerminalSendTab/Backtab actions. Routed through
     /// the key encoder — the actions bypass capture_key_down, so the kitty
     /// keyboard-protocol mode must be applied here too (shift-tab is CSI Z
