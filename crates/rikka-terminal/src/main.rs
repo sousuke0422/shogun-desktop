@@ -518,12 +518,12 @@ fn progress_ring(
         ProgressState::Error => slot()
             .rounded_full()
             .border_2()
-            .border_color(rgb(0xE81123))
+            .border_color(rgb(0xBE5A50))
             .into_any_element(),
         ProgressState::Warning => slot()
             .rounded_full()
             .border_2()
-            .border_color(rgb(0xFFB900))
+            .border_color(rgb(0xC9A94E))
             .into_any_element(),
         ProgressState::Normal => slot()
             .child(ring_arc(percent as f32 / 100.0, 0.0, rgb(0x16C60C)))
@@ -612,7 +612,7 @@ fn render_progress_bar(
     };
     let fill = div().h_full().w(gpui::relative(fraction.clamp(0.0, 1.0)));
     let fill: gpui::AnyElement = match state {
-        ProgressState::Error => fill.bg(rgb(0xCC3333)).into_any_element(),
+        ProgressState::Error => fill.bg(rgb(0xBE5A50)).into_any_element(),
         ProgressState::Warning => fill.bg(rgb(0xC9A94E)).into_any_element(),
         ProgressState::Normal | ProgressState::Indeterminate => fill
             .with_animation(
@@ -1514,7 +1514,7 @@ impl Render for TabsWindow {
                     div()
                         .mr(px(4.))
                         .flex_shrink_0()
-                        .text_color(rgb(0xE81123))
+                        .text_color(rgb(0xBE5A50))
                         .child("●")
                 });
                 // Icon slot: while OSC 9;4 (or title-spinner) progress is
