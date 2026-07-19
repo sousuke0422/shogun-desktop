@@ -33,6 +33,45 @@ pub struct SearchHandlers {
     pub regex: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
 }
 
+/// The bar's color sheet (`0xRRGGBB` each), injected by the host so the
+/// widget can match the app's look — rikka keeps the VSCode-flavored
+/// default; shogun-desktop hands in its own shikkoku/zouge sheet instead of
+/// having the shared widget break its visual language.
+#[derive(Clone, Copy)]
+pub struct SearchColors {
+    /// Bar box fill.
+    pub bg: u32,
+    /// Bar box border.
+    pub border: u32,
+    /// Input field fill.
+    pub input_bg: u32,
+    /// Focus border + lit toggles.
+    pub accent: u32,
+    /// Query text; dimmed variants derive from it by alpha.
+    pub text: u32,
+    /// No-match / bad-regex signal (input border, counter).
+    pub error: u32,
+}
+
+impl Default for SearchColors {
+    /// The VSCode-flavored sheet the bar shipped with.
+    fn default() -> Self {
+        Self {
+            bg: 0x252526,
+            border: 0x454545,
+            input_bg: 0x313131,
+            accent: 0x007FD4,
+            text: 0xEDEDED,
+            error: 0xF14C4C,
+        }
+    }
+}
+
+/// `0xRRGGBB` + alpha → gpui rgba.
+fn a(rgb: u32, alpha: u8) -> gpui::Rgba {
+    rgba((rgb << 8) | alpha as u32)
+}
+
 /// Per-window search-bar state. `Default` = closed.
 #[derive(Default)]
 pub struct SearchBar {
@@ -220,8 +259,10 @@ impl SearchBar {
     fn button(
         id: &'static str,
         label: &'static str,
+        c: &SearchColors,
         on: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
     ) -> impl gpui::IntoElement {
+        let (text, hover_bg) = (a(c.text, 0xB8), a(c.text, 0x16));
         div()
             .id(id)
             .w(px(22.))
@@ -231,20 +272,22 @@ impl SearchBar {
             .justify_center()
             .rounded(px(4.))
             .text_size(px(12.))
-            .text_color(rgba(0xFFFFFFB8))
-            .hover(|s| s.bg(rgba(0xFFFFFF16)))
+            .text_color(text)
+            .hover(move |s| s.bg(hover_bg))
             .cursor_pointer()
             .on_click(on)
             .child(label)
     }
 
-    /// A 24×22 toggle button (`Aa` / `.*`): blue-lit when on.
+    /// A 24×22 toggle button (`Aa` / `.*`): accent-lit when on.
     fn toggle_button(
         id: &'static str,
         label: &'static str,
         on_state: bool,
+        c: &SearchColors,
         on: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
     ) -> impl gpui::IntoElement {
+        let hover_bg = a(c.text, 0x16);
         div()
             .id(id)
             .w(px(24.))
@@ -255,13 +298,13 @@ impl SearchBar {
             .rounded(px(4.))
             .text_size(px(11.))
             .when(on_state, |d| {
-                d.bg(rgba(0x007FD452))
+                d.bg(a(c.accent, 0x52))
                     .border_1()
-                    .border_color(rgb(0x007FD4))
-                    .text_color(rgb(0xFFFFFF))
+                    .border_color(rgb(c.accent))
+                    .text_color(rgb(c.text))
             })
-            .when(!on_state, |d| d.text_color(rgba(0xFFFFFFA0)))
-            .hover(|s| s.bg(rgba(0xFFFFFF16)))
+            .when(!on_state, |d| d.text_color(a(c.text, 0xA0)))
+            .hover(move |s| s.bg(hover_bg))
             .cursor_pointer()
             .on_click(on)
             .child(label)
@@ -274,6 +317,7 @@ impl SearchBar {
         &self,
         status: Option<SearchStatus>,
         h: SearchHandlers,
+        c: &SearchColors,
     ) -> Option<gpui::AnyElement> {
         if !self.open {
             return None;
@@ -305,9 +349,9 @@ impl SearchBar {
         let regex_on = self.regex;
         Some(
             div()
-                .bg(rgb(0x252526))
+                .bg(rgb(c.bg))
                 .border_1()
-                .border_color(rgb(0x454545))
+                .border_color(rgb(c.border))
                 .rounded(px(6.))
                 .shadow_lg()
                 .px(px(6.))
@@ -320,9 +364,9 @@ impl SearchBar {
                 // Input field: query + block caret; red border = no match.
                 .child(
                     div()
-                        .bg(rgb(0x313131))
+                        .bg(rgb(c.input_bg))
                         .border_1()
-                        .border_color(if error { rgb(0xF14C4C) } else { rgb(0x007FD4) })
+                        .border_color(if error { rgb(c.error) } else { rgb(c.accent) })
                         .rounded(px(3.))
                         .px(px(7.))
                         .py(px(2.))
@@ -333,40 +377,42 @@ impl SearchBar {
                         .items_center()
                         .child(if empty {
                             div()
-                                .text_color(rgba(0xFFFFFF60))
+                                .text_color(a(c.text, 0x60))
                                 .child("検索")
                                 .into_any_element()
                         } else {
                             div()
-                                .text_color(rgb(0xEDEDED))
+                                .text_color(rgb(c.text))
                                 .overflow_hidden()
                                 .child(self.query.clone())
                                 .into_any_element()
                         })
                         .child(
                             // Static caret at the end of the query.
-                            div().w(px(1.5)).h(px(15.)).ml(px(1.)).bg(rgb(0xAEAFAD)),
+                            div().w(px(1.5)).h(px(15.)).ml(px(1.)).bg(a(c.text, 0xC8)),
                         ),
                 )
                 // Aa case / .* regex toggles (Alt+C / Alt+R).
-                .child(Self::toggle_button("search-case", "Aa", case_on, h.case))
-                .child(Self::toggle_button("search-regex", ".*", regex_on, h.regex))
+                .child(Self::toggle_button("search-case", "Aa", case_on, c, h.case))
+                .child(Self::toggle_button(
+                    "search-regex",
+                    ".*",
+                    regex_on,
+                    c,
+                    h.regex,
+                ))
                 // Match counter.
                 .child(
                     div()
                         .min_w(px(52.))
                         .px(px(2.))
                         .text_size(px(11.5))
-                        .text_color(if error {
-                            rgb(0xF14C4C)
-                        } else {
-                            rgba(0xFFFFFFA0)
-                        })
+                        .text_color(if error { rgb(c.error) } else { a(c.text, 0xA0) })
                         .child(counter),
                 )
-                .child(Self::button("search-prev", "↑", h.prev))
-                .child(Self::button("search-next", "↓", h.next))
-                .child(Self::button("search-close", "✕", h.close))
+                .child(Self::button("search-prev", "↑", c, h.prev))
+                .child(Self::button("search-next", "↓", c, h.next))
+                .child(Self::button("search-close", "✕", c, h.close))
                 .into_any_element(),
         )
     }

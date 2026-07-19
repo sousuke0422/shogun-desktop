@@ -133,6 +133,21 @@ pub(crate) fn selection_pane(is_shogun: bool) -> usize {
     if is_shogun { 0 } else { 1 }
 }
 
+/// The search bar's shogun-desktop color sheet — shikkoku/zouge/steel-blue,
+/// so the shared widget speaks this app's visual language instead of
+/// rikka's VSCode-flavored default (warm near-black box, ivory text, the
+/// selection steel blue as accent).
+pub(crate) fn sd_search_colors() -> rikka_terminal_core::search_bar::SearchColors {
+    rikka_terminal_core::search_bar::SearchColors {
+        bg: 0x232220,
+        border: 0x453F35,
+        input_bg: 0x161514,
+        accent: 0x3465A4,
+        text: 0xE8DCC8,
+        error: 0xEF2929,
+    }
+}
+
 /// Search-bar button events routed through [`ShogunWindow::search_ui`].
 enum SearchUiEvent {
     Nav(i32),
@@ -897,7 +912,7 @@ impl ShogunWindow {
                             })),
                         };
                         self.search
-                            .render(status, handlers)
+                            .render(status, handlers, &sd_search_colors())
                             .map(|bar| div().absolute().top(px(10.)).right(px(14.)).child(bar))
                     })
                     .into_any_element()

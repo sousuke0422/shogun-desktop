@@ -2064,7 +2064,8 @@ impl Render for TabsWindow {
                         cx.notify();
                     })),
                 };
-                self.search.render(status, handlers).map(|bar| {
+                let colors = Default::default();
+                self.search.render(status, handlers, &colors).map(|bar| {
                     div()
                         .absolute()
                         .top(px(TAB_STRIP_H + 10.))
