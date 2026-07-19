@@ -118,6 +118,35 @@
       (2026-07-18): Moralerspace=✳✻⠋なし/▰あり・Twemoji=✳のみ・
       Segoe UI Symbol=全部。
 
+## ghostty 比較ギャップ（2026-07-19 調査・優先度順）
+
+- [ ] **ダブル/トリプルクリック選択**（単語/行） — vendored alacritty に
+      `SelectionType::Semantic` / `Lines` が既にあり、小工事で最大の日常
+      価値。screen-anchored 再ピン（`screen_sel`）との整合に注意: begin の
+      SelectionType を pin 側にも持たせて再ピンで種別を保存すること。
+- [ ] **シェル統合** — OSC 133 プロンプトマーク＋jump-to-prompt・OSC 7 cwd
+      追跡・自動注入。shogun-desktop `src/shell_integration.rs` に部分資産
+      あり。AI CLI の長出力とプロンプトジャンプは相性が良く費用対効果高。
+- [ ] **スクロールバック検索** — wt 比でも欠落。検索バー UI＋grid 走査＋
+      ハイライト/ジャンプ。
+- [ ] **リガチャ** — SD に font_features 配線（settings→
+      `renderer::set_font_features`・liga/calt/ss タグのパース）は**存在する
+      が機能していない**: エンジンのセル固定シェイピング（`shape_line`
+      force_width=cw で全グリフを n×cw にピン）がリガチャ置換を殺す構造の
+      ため。対応するなら「リガチャを含み得る ASCII run はシェイパー natural
+      で描き run 全幅のみセル境界に丸める」等、グリッド精度（ずれ皆無・
+      ブロック連結）とのトレードオフ設計が要る。
+- [ ] **ペイン分割**（split-pane） — cli.rs で意図的 TODO 宣言済み。構造工事。
+- [ ] **Quick terminal** — グローバルホットキーで出すドロップダウン窓。
+- [ ] 細目: grapheme clustering（mode 2027）・minimum-contrast・正規表現
+      URL 検出の網羅（OSC 8＋ベア URL 検出は実装済みの範囲）。内蔵テーマ集・
+      ライブリロード・terminfo 配布は既存項目の「残:」を参照。
+
+参考・rikka 側の優位（比較の公平のため記録）: Windows 対応そのもの＋既定
+ターミナル handoff・wt CLI/プロファイル/スキーム互換・sixel・ライブセッション
+のタブ移送一式（tear-off/drag-merge・画面/画像/テーマ搬送・クラッシュ隔離・
+monarch 再選出）・OSC 9;4 プログレス UI。ghostty は現時点 Windows 未対応。
+
 ## セキュリティ
 
 - [x] ~~IPC の権限境界~~ — 名前空間は rendezvous であって境界でないと判明
