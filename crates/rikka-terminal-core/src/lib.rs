@@ -145,14 +145,67 @@ impl SelectionKind {
 /// [`TerminalSession::selection_drag`].
 pub type ScreenSel = Option<(SelectionKind, (usize, usize, bool), (usize, usize, bool))>;
 
-/// A live scrollback search: the compiled query and the current match, both
-/// owned by the session so stepping and highlighting survive scrolling and
-/// output. See [`TerminalSession::search_set`].
+/// A live scrollback search: the compiled query, every match (capped) and
+/// the current one, all owned by the session so stepping, the match counter
+/// and highlighting survive scrolling and output. See
+/// [`TerminalSession::search_set`].
 pub struct SearchLive {
     regex: alacritty_terminal::term::search::RegexSearch,
     /// The query as typed (for the host's search bar display).
     pub query: String,
     current: Option<alacritty_terminal::term::search::Match>,
+    /// Every match in the buffer (history top → viewport bottom), collected
+    /// on set/step and capped at [`SEARCH_MATCH_CAP`] — the "3/12" counter
+    /// and the pale all-match highlight. Stale while output streams past an
+    /// open bar; the next step re-collects.
+    matches: Vec<alacritty_terminal::term::search::Match>,
+    /// The collection hit the cap ("N/999+").
+    truncated: bool,
+    /// 1-based position of `current` in `matches`; 0 = none / unknown.
+    index: usize,
+}
+
+/// Cap on collected search matches (counter shows "999+" beyond it).
+const SEARCH_MATCH_CAP: usize = 1000;
+
+/// Search-bar numbers: current match position (1-based; 0 = none), total
+/// matches, and whether the total got capped.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct SearchStatus {
+    pub index: usize,
+    pub total: usize,
+    pub truncated: bool,
+}
+
+/// Everything the renderer paints for a live search, in grid coordinates
+/// (`(line, col)` pairs; the renderer maps them into the viewport with the
+/// snapshot's display offset): the current match plus every other
+/// viewport-visible match for the pale highlight.
+#[derive(Clone, Default)]
+pub struct SearchRender {
+    pub current: Option<((i32, usize), (i32, usize))>,
+    pub others: Vec<((i32, usize), (i32, usize))>,
+}
+
+/// Collect every match in the whole buffer, top of history to the viewport
+/// bottom, capped at [`SEARCH_MATCH_CAP`].
+fn collect_search_matches(
+    term: &Term<ClipboardListener>,
+    regex: &mut alacritty_terminal::term::search::RegexSearch,
+) -> (Vec<alacritty_terminal::term::search::Match>, bool) {
+    use alacritty_terminal::grid::Dimensions as _;
+    use alacritty_terminal::index::{Column, Direction, Point};
+    use alacritty_terminal::term::search::RegexIter;
+    let start = Point::new(term.topmost_line(), Column(0));
+    let end = Point::new(term.bottommost_line(), term.last_column());
+    let mut matches = Vec::new();
+    for m in RegexIter::new(start, end, Direction::Right, term, regex) {
+        if matches.len() >= SEARCH_MATCH_CAP {
+            return (matches, true);
+        }
+        matches.push(m);
+    }
+    (matches, false)
 }
 
 pub struct TerminalSession {
@@ -538,17 +591,27 @@ impl TerminalSession {
     /// drops the current match.
     pub fn search_set(&self, query: &str) -> bool {
         if query.is_empty() {
+            let term = self.term.lock();
             *self.search.lock() = None;
+            drop(term);
             self.poke_redraw();
             return true;
         }
         match alacritty_terminal::term::search::RegexSearch::new(query) {
-            Ok(regex) => {
+            Ok(mut regex) => {
+                // Lock order everywhere: term before search.
+                let term = self.term.lock();
+                let (matches, truncated) = collect_search_matches(&term, &mut regex);
                 *self.search.lock() = Some(SearchLive {
                     regex,
                     query: query.to_string(),
                     current: None,
+                    matches,
+                    truncated,
+                    index: 0,
                 });
+                drop(term);
+                self.poke_redraw();
                 true
             }
             Err(_) => false,
@@ -601,6 +664,21 @@ impl TerminalSession {
                 }
                 None => 0,
             };
+            // Keep the counter honest: locate the match in the collected
+            // list, re-collecting once when it isn't there (the grid moved
+            // under an open bar).
+            live.index = match &m {
+                Some(m) => {
+                    let pos = live.matches.iter().position(|x| x == m).or_else(|| {
+                        let (matches, truncated) = collect_search_matches(&term, &mut live.regex);
+                        live.matches = matches;
+                        live.truncated = truncated;
+                        live.matches.iter().position(|x| x == m)
+                    });
+                    pos.map(|p| p + 1).unwrap_or(0)
+                }
+                None => 0,
+            };
             live.current = m;
         }
         if delta != 0 {
@@ -617,16 +695,49 @@ impl TerminalSession {
         self.poke_redraw();
     }
 
-    /// The current search match in grid coordinates (`(line, col)` pairs),
-    /// for the renderer's highlight — it maps them into the viewport with
-    /// the snapshot's display offset.
-    pub fn search_match_for_render(&self) -> Option<((i32, usize), (i32, usize))> {
+    /// The search-bar numbers ("3/12"), without touching the grid.
+    pub fn search_status(&self) -> Option<SearchStatus> {
         let slot = self.search.lock();
-        let m = slot.as_ref()?.current.as_ref()?;
-        Some((
-            (m.start().line.0, m.start().column.0),
-            (m.end().line.0, m.end().column.0),
-        ))
+        let live = slot.as_ref()?;
+        Some(SearchStatus {
+            index: live.index,
+            total: live.matches.len(),
+            truncated: live.truncated,
+        })
+    }
+
+    /// What the renderer paints for a live search: the current match plus
+    /// every other match intersecting the viewport (pale highlight), all in
+    /// grid coordinates — the renderer maps them with the snapshot's
+    /// display offset.
+    pub fn search_render_state(&self) -> Option<SearchRender> {
+        use alacritty_terminal::grid::Dimensions as _;
+        // Lock order everywhere: term before search.
+        let term = self.term.lock();
+        let slot = self.search.lock();
+        let live = slot.as_ref()?;
+        let off = term.grid().display_offset() as i32;
+        let rows = term.screen_lines() as i32;
+        let as_pair = |m: &alacritty_terminal::term::search::Match| {
+            (
+                (m.start().line.0, m.start().column.0),
+                (m.end().line.0, m.end().column.0),
+            )
+        };
+        let current = live.current.as_ref().map(as_pair);
+        let others = live
+            .matches
+            .iter()
+            .filter(|m| {
+                // Intersects the viewport (grid lines -off .. -off+rows-1)
+                // and is not the current match (painted separately, solid).
+                m.end().line.0 >= -off
+                    && m.start().line.0 <= -off + rows - 1
+                    && live.current.as_ref() != Some(*m)
+            })
+            .map(as_pair)
+            .collect();
+        Some(SearchRender { current, others })
     }
 
     /// Nudge the UI to repaint (generation bump + notify) without touching

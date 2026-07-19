@@ -473,7 +473,7 @@ impl Render for ShellWindow {
                     // Ctrl+Shift+F: scrollback search (shared engine widget).
                     let search_chord = m.control && m.shift && !m.alt && ks.key == "f";
                     if this.search.open {
-                        if this.search.key(ks, search_chord, this.session.as_ref()) {
+                        if this.search.key(ks, search_chord, this.session.as_ref(), cx) {
                             cx.notify();
                             cx.stop_propagation();
                             return;
@@ -577,9 +577,7 @@ impl Render for ShellWindow {
                     self.selection.hover_link_for(0),
                     images.as_deref(),
                     ime_preedit,
-                    self.session
-                        .as_ref()
-                        .and_then(|s| s.search_match_for_render()),
+                    self.session.as_ref().and_then(|s| s.search_render_state()),
                 ));
 
             // Overlay: registers the IME input handler (GPUI only routes
@@ -633,13 +631,32 @@ impl Render for ShellWindow {
                 .size_full()
                 .child(pane)
                 .child(overlay)
-                // Scrollback search bar (Ctrl+Shift+F), browser-style top
-                // right — the shared engine widget.
-                .children(
+                // Scrollback search bar (Ctrl+Shift+F), VSCode/wt-style
+                // top right — the shared engine widget.
+                .children({
+                    let status = self.session.as_ref().and_then(|s| s.search_status());
+                    let handlers = rikka_terminal_core::search_bar::SearchHandlers {
+                        prev: Box::new(cx.listener(|this: &mut ShellWindow, _, _, cx| {
+                            this.search.nav(-1, this.session.as_ref());
+                            cx.notify();
+                        })),
+                        next: Box::new(cx.listener(|this: &mut ShellWindow, _, _, cx| {
+                            this.search.nav(1, this.session.as_ref());
+                            cx.notify();
+                        })),
+                        close: Box::new(cx.listener(|this: &mut ShellWindow, _, _, cx| {
+                            this.search.close(this.session.as_ref());
+                            cx.notify();
+                        })),
+                        case: Box::new(cx.listener(|this: &mut ShellWindow, _, _, cx| {
+                            this.search.toggle_case(this.session.as_ref());
+                            cx.notify();
+                        })),
+                    };
                     self.search
-                        .render()
-                        .map(|bar| div().absolute().top(px(10.)).right(px(14.)).child(bar)),
-                )
+                        .render(status, handlers)
+                        .map(|bar| div().absolute().top(px(10.)).right(px(14.)).child(bar))
+                })
                 // Right-click menu dispatching the same actions as the
                 // keyboard shortcuts (see render_terminal_tab). Attached to
                 // the NON-scrolling wrapper, never to the scroll container:

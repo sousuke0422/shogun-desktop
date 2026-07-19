@@ -967,6 +967,14 @@ impl TabsWindow {
         }
     }
 
+    /// Step the open search (↑/↓ buttons, Enter): shared helper for the
+    /// button listeners.
+    fn search_nav(&mut self, dir: i32, cx: &mut Context<Self>) {
+        let sess = self.tabs.get(self.active).map(|e| &e.0.session);
+        self.search.nav(dir, sess);
+        cx.notify();
+    }
+
     /// Take ownership of a tab: point its driver's waker at this window and
     /// make it the active tab. This is the whole "attach" operation — the
     /// session itself never moves threads.
@@ -1796,8 +1804,7 @@ impl Render for TabsWindow {
                             self.selection.hover_link_for(0),
                             images.as_deref(),
                             ime_preedit,
-                            self.active_session()
-                                .and_then(|s| s.search_match_for_render()),
+                            self.active_session().and_then(|s| s.search_render_state()),
                         ))
                         // Shared pane overlay (IME handler + selection
                         // listeners + caret). Single-sourced in the engine so
@@ -1905,7 +1912,7 @@ impl Render for TabsWindow {
                     let close_chord =
                         keymap::resolve(m, ks.key.as_str()) == Some(keymap::Action::Search);
                     let sess = this.tabs.get(this.active).map(|e| &e.0.session);
-                    if this.search.key(ks, close_chord, sess) {
+                    if this.search.key(ks, close_chord, sess, cx) {
                         cx.notify();
                         cx.stop_propagation();
                         return;
@@ -2027,14 +2034,39 @@ impl Render for TabsWindow {
                     .right_0()
                     .child(render_progress_bar("pane-progress", p))
             }))
-            // Scrollback search bar (Ctrl+Shift+F): browser-style, top right.
-            .children(self.search.render().map(|bar| {
-                div()
-                    .absolute()
-                    .top(px(TAB_STRIP_H + 10.))
-                    .right(px(14.))
-                    .child(bar)
-            }))
+            // Scrollback search bar (Ctrl+Shift+F): VSCode/wt-style, top
+            // right — counter from the session, buttons via host listeners.
+            .children({
+                let status = self
+                    .tabs
+                    .get(self.active)
+                    .and_then(|e| e.0.session.search_status());
+                let handlers = rikka_terminal_core::search_bar::SearchHandlers {
+                    prev: Box::new(cx.listener(|this: &mut TabsWindow, _, _, cx| {
+                        this.search_nav(-1, cx);
+                    })),
+                    next: Box::new(cx.listener(|this: &mut TabsWindow, _, _, cx| {
+                        this.search_nav(1, cx);
+                    })),
+                    close: Box::new(cx.listener(|this: &mut TabsWindow, _, _, cx| {
+                        let sess = this.tabs.get(this.active).map(|e| &e.0.session);
+                        this.search.close(sess);
+                        cx.notify();
+                    })),
+                    case: Box::new(cx.listener(|this: &mut TabsWindow, _, _, cx| {
+                        let sess = this.tabs.get(this.active).map(|e| &e.0.session);
+                        this.search.toggle_case(sess);
+                        cx.notify();
+                    })),
+                };
+                self.search.render(status, handlers).map(|bar| {
+                    div()
+                        .absolute()
+                        .top(px(TAB_STRIP_H + 10.))
+                        .right(px(14.))
+                        .child(bar)
+                })
+            })
             .when(self.profile_menu, |root| {
                 // Click-away scrim behind the list; a click anywhere else
                 // closes the menu. Rendered before the list so the list wins

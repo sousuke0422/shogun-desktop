@@ -133,6 +133,13 @@ pub(crate) fn selection_pane(is_shogun: bool) -> usize {
     if is_shogun { 0 } else { 1 }
 }
 
+/// Search-bar button events routed through [`ShogunWindow::search_ui`].
+enum SearchUiEvent {
+    Nav(i32),
+    Close,
+    CaseToggle,
+}
+
 pub struct ShogunWindow {
     selected_tab: usize,
     settings_tab: SettingsTab,
@@ -769,6 +776,19 @@ impl ShogunWindow {
     /// was consumed here (the caller should stop propagation so GPUI actions
     /// like tab focus-cycling never see it); `false` when the key is left for
     /// the platform text-input path (WM_CHAR / IME → EntityInputHandler).
+    /// Search-bar button dispatch; mem::take dodges the `&mut self.search`
+    /// vs `active_session(&self)` borrow overlap.
+    fn search_ui(&mut self, ev: SearchUiEvent, cx: &mut Context<Self>) {
+        let mut search = std::mem::take(&mut self.search);
+        match ev {
+            SearchUiEvent::Nav(dir) => search.nav(dir, self.active_session()),
+            SearchUiEvent::Close => search.close(self.active_session()),
+            SearchUiEvent::CaseToggle => search.toggle_case(self.active_session()),
+        }
+        self.search = search;
+        cx.notify();
+    }
+
     pub(crate) fn handle_terminal_key(
         &mut self,
         event: &KeyDownEvent,
@@ -784,7 +804,7 @@ impl ShogunWindow {
         if self.search.open || search_chord {
             let mut search = std::mem::take(&mut self.search);
             let consumed = if search.open {
-                search.key(ks, search_chord, self.active_session())
+                search.key(ks, search_chord, self.active_session(), cx)
             } else {
                 search.toggle(self.active_session());
                 true
@@ -838,7 +858,7 @@ impl ShogunWindow {
                     snap.selection,
                     self.selection.hover_link_for(selection_pane(is_shogun)),
                     Some(&session.images),
-                    session.search_match_for_render(),
+                    session.search_render_state(),
                     is_shogun,
                     &self.terminal_font,
                     cw,
@@ -851,13 +871,30 @@ impl ShogunWindow {
                     .relative()
                     .size_full()
                     .child(pane)
-                    // Scrollback search bar (Ctrl+Shift+F), top-right of the
-                    // pane — the shared engine widget.
-                    .children(
+                    // Scrollback search bar (Ctrl+Shift+F), VSCode/wt-style
+                    // top-right of the pane — the shared engine widget. The
+                    // button listeners go through mem::take like the key
+                    // path (`&mut self.search` vs `active_session(&self)`).
+                    .children({
+                        let status = session.search_status();
+                        let handlers = rikka_terminal_core::search_bar::SearchHandlers {
+                            prev: Box::new(cx.listener(|this: &mut ShogunWindow, _, _, cx| {
+                                this.search_ui(SearchUiEvent::Nav(-1), cx);
+                            })),
+                            next: Box::new(cx.listener(|this: &mut ShogunWindow, _, _, cx| {
+                                this.search_ui(SearchUiEvent::Nav(1), cx);
+                            })),
+                            close: Box::new(cx.listener(|this: &mut ShogunWindow, _, _, cx| {
+                                this.search_ui(SearchUiEvent::Close, cx);
+                            })),
+                            case: Box::new(cx.listener(|this: &mut ShogunWindow, _, _, cx| {
+                                this.search_ui(SearchUiEvent::CaseToggle, cx);
+                            })),
+                        };
                         self.search
-                            .render()
-                            .map(|bar| div().absolute().top(px(10.)).right(px(14.)).child(bar)),
-                    )
+                            .render(status, handlers)
+                            .map(|bar| div().absolute().top(px(10.)).right(px(14.)).child(bar))
+                    })
                     .into_any_element()
             } else {
                 let btn_id = if is_shogun {

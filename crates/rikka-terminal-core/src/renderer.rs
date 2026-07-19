@@ -1020,11 +1020,12 @@ pub fn render_grid(
     // from the absolute viewport-overlay canvas never reach the screen
     // (empirically verified 2026-07-03).
     ime_preedit: Option<String>,
-    // Current scrollback-search match in GRID coordinates ((line, col)
-    // pairs, from `TerminalSession::search_match_for_render`) — mapped into
-    // the viewport here with the snapshot's display offset and painted as a
-    // gold highlight over the row (same span rules as the selection).
-    search: Option<((i32, usize), (i32, usize))>,
+    // Live scrollback search in GRID coordinates (from
+    // `TerminalSession::search_render_state`) — mapped into the viewport
+    // here with the snapshot's display offset and painted as gold
+    // highlights over the row (same span rules as the selection): solid for
+    // the current match, pale for every other visible one (VSCode-style).
+    search: Option<crate::SearchRender>,
 ) -> impl IntoElement {
     // Frame-time harness (SHOGUN_FRAMETIME): times this element build and
     // marks the frame boundary on drop. No-op when the env var is unset.
@@ -1032,8 +1033,8 @@ pub fn render_grid(
     let (cursor_row, cursor_col) = snap.cursor;
     let cursor_shape = snap.cursor_shape;
     let grid_cols = snap.cols;
-    // Search match → viewport rows, clamped like the selection mapping.
-    let search_vp: Option<((usize, usize), (usize, usize))> = search.and_then(|(s, e)| {
+    // Search matches → viewport rows, clamped like the selection mapping.
+    let map_search_vp = |(s, e): ((i32, usize), (i32, usize))| {
         let off = snap.display_offset as i32;
         let (sr, er) = (s.0 + off, e.0 + off);
         if er < 0 || sr >= snap.rows as i32 {
@@ -1046,7 +1047,21 @@ pub fn render_grid(
             (er as usize, e.1.min(snap.cols.saturating_sub(1)))
         };
         Some((start, end))
-    });
+    };
+    let search_vp: Option<((usize, usize), (usize, usize))> = search
+        .as_ref()
+        .and_then(|sr| sr.current)
+        .and_then(map_search_vp);
+    let search_others_vp: Vec<((usize, usize), (usize, usize))> = search
+        .as_ref()
+        .map(|sr| {
+            sr.others
+                .iter()
+                .copied()
+                .filter_map(map_search_vp)
+                .collect()
+        })
+        .unwrap_or_default();
     let font_name = font.to_string();
     // SGR blink phase from the wall clock (600ms on / 600ms off), so the
     // renderer stays stateless. The refresh task repaints on a timer while
@@ -1092,6 +1107,10 @@ pub fn render_grid(
             let total_cols: usize = runs.iter().map(|r| r.width).sum();
             let sel_cols = selection_cols_for_row(selection, row_idx, grid_cols, row);
             let search_cols = selection_cols_for_row(search_vp, row_idx, grid_cols, row);
+            let search_others_cols: Vec<(usize, usize)> = search_others_vp
+                .iter()
+                .filter_map(|&vp| selection_cols_for_row(Some(vp), row_idx, grid_cols, row))
+                .collect();
             let link_spans: Vec<(usize, usize)> = hover_link
                 .map(|idx| link_cols_for_row(row, idx))
                 .unwrap_or_default();
@@ -1443,15 +1462,26 @@ pub fn render_grid(
                         ));
                     }
 
-                    // Scrollback-search match: a translucent gold highlight,
-                    // distinct from the selection blue.
+                    // Scrollback-search matches: every visible match gets a
+                    // pale gold wash, the current one a solid gold highlight
+                    // (VSCode-style two-level emphasis), distinct from the
+                    // selection blue.
+                    for &(c0, c1) in &search_others_cols {
+                        window.paint_quad(fill(
+                            Bounds {
+                                origin: point(px(ox + c0 as f32 * cw), px(oy)),
+                                size: size(px((c1 - c0) as f32 * cw), px(ch)),
+                            },
+                            rgba(0xE8A33D2E),
+                        ));
+                    }
                     if let Some((c0, c1)) = search_cols {
                         window.paint_quad(fill(
                             Bounds {
                                 origin: point(px(ox + c0 as f32 * cw), px(oy)),
                                 size: size(px((c1 - c0) as f32 * cw), px(ch)),
                             },
-                            rgba(0xE8A33D66),
+                            rgba(0xE8A33D88),
                         ));
                     }
 

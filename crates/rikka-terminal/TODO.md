@@ -137,11 +137,14 @@
       `RegexSearch`/`search_next`（regex・smart-case・履歴込み wrap 検索）を
       エンジン直結（`search_set`/`search_step`/`search_match_for_render`）。
       Ctrl+Shift+F（[keys] `search` 再割当可）で共有ウィジェット
-      `search_bar.rs` のバーが右上に出て incremental 検索、Enter/Shift+Enter
-      で次/前へステップ（マッチは上 1/3 へスクロール）、Esc/同チョードで
-      閉じ＋ハイライト解除。マッチは gold で renderer 描画。SD（shell 窓＋
-      将軍/家老陣ペイン）にも同配線。実機 3 段（開閉/incremental/step）確認。
-      残: 全マッチ同時ハイライト・件数表示（現状 current match のみ）。
+      `search_bar.rs` の VSCode/wt 風バーが右上に出る: 入力欄（caret・
+      不一致で赤枠）＋ Aa トグル（Alt+C・強制 case-sensitive、オフ=
+      smart-case）＋件数 3/12（cap 1000 で 999+・RegexIter 全収集）＋
+      ↑/↓/✕ ボタン（SearchHandlers 経由 host listener）＋ Ctrl+V ペースト。
+      incremental 検索、Enter/Shift+Enter で次/前（マッチは上 1/3 へ
+      スクロール）、Esc/同チョードで閉じ。全マッチ薄 gold＋current 濃 gold
+      の 2 段ハイライト。SD（shell 窓＋将軍/家老陣ペイン）にも同配線。
+      実機検証: 3 段（開閉/incremental/step）＋件数/Aa/×クリック全 PASS。
 - [ ] **リガチャ** — SD に font_features 配線（settings→
       `renderer::set_font_features`・liga/calt/ss タグのパース）は**存在する
       が機能していない**: エンジンのセル固定シェイピング（`shape_line`
