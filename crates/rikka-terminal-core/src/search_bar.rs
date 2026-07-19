@@ -9,11 +9,13 @@
 //! match counter — lives on the [`TerminalSession`] (see `search_set` /
 //! `search_step` / `search_status`), so the bar is pure UI state.
 //!
-//! The box is VSCode/wt-shaped: an input field (block caret, red border when
-//! nothing matches), an `Aa` case toggle, the `3/12` counter and prev / next
-//! / close buttons. Buttons need host listeners (the host entity owns the
-//! state), so [`SearchBar::render`] takes a [`SearchHandlers`] of boxed
-//! click callbacks the host builds with `cx.listener`.
+//! The box is WinUI 3-shaped (wt's search kin): an input field with the
+//! WinUI TextBox signature — a 2px accent underline, red when nothing
+//! matches — an `Aa` case toggle, a `.*` regex toggle, the `3/12` counter
+//! and prev / next / close buttons. Buttons need host listeners (the host
+//! entity owns the state), so [`SearchBar::render`] takes a
+//! [`SearchHandlers`] of boxed click callbacks the host builds with
+//! `cx.listener`.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -34,9 +36,8 @@ pub struct SearchHandlers {
 }
 
 /// The bar's color sheet (`0xRRGGBB` each), injected by the host so the
-/// widget can match the app's look — rikka keeps the VSCode-flavored
-/// default; shogun-desktop hands in its own shikkoku/zouge sheet instead of
-/// having the shared widget break its visual language.
+/// widget can match the app's look. Both apps ride the warm default today;
+/// the injection point stays for theme-following hosts.
 #[derive(Clone, Copy)]
 pub struct SearchColors {
     /// Bar box fill.
@@ -45,10 +46,9 @@ pub struct SearchColors {
     pub border: u32,
     /// Input field fill.
     pub input_bg: u32,
-    /// Input field border (its resting accent — VSCode paints this its
-    /// focus blue; a host can pick something quieter).
+    /// Input field resting border (subtle, WinUI TextBox-style).
     pub input_border: u32,
-    /// Lit toggles.
+    /// The TextBox underline + lit toggles.
     pub accent: u32,
     /// Query text; dimmed variants derive from it by alpha.
     pub text: u32,
@@ -57,16 +57,18 @@ pub struct SearchColors {
 }
 
 impl Default for SearchColors {
-    /// The VSCode-flavored sheet the bar shipped with.
+    /// The shared sheet: warm near-black / ivory / steel blue — the
+    /// shikkoku/zouge direction both apps' default terminal palette
+    /// already speaks.
     fn default() -> Self {
         Self {
-            bg: 0x252526,
-            border: 0x454545,
-            input_bg: 0x313131,
-            input_border: 0x007FD4,
-            accent: 0x007FD4,
-            text: 0xEDEDED,
-            error: 0xF14C4C,
+            bg: 0x2B2A28,
+            border: 0x45403A,
+            input_bg: 0x1F1E1C,
+            input_border: 0x4A453E,
+            accent: 0x3465A4,
+            text: 0xE8DCC8,
+            error: 0xEF2929,
         }
     }
 }
@@ -259,18 +261,18 @@ impl SearchBar {
         true
     }
 
-    /// A 22×22 hover-highlighted icon button.
+    /// A 28×24 hover-highlighted icon button (WinUI subtle style).
     fn button(
         id: &'static str,
         label: &'static str,
         c: &SearchColors,
         on: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
     ) -> impl gpui::IntoElement {
-        let (text, hover_bg) = (a(c.text, 0xB8), a(c.text, 0x16));
+        let (text, hover_bg) = (a(c.text, 0xB8), a(c.text, 0x14));
         div()
             .id(id)
-            .w(px(22.))
-            .h(px(22.))
+            .w(px(28.))
+            .h(px(24.))
             .flex()
             .items_center()
             .justify_center()
@@ -283,7 +285,8 @@ impl SearchBar {
             .child(label)
     }
 
-    /// A 24×22 toggle button (`Aa` / `.*`): accent-lit when on.
+    /// A 28×24 toggle button (`Aa` / `.*`): solid accent fill when on
+    /// (WinUI ToggleButton style).
     fn toggle_button(
         id: &'static str,
         label: &'static str,
@@ -291,24 +294,20 @@ impl SearchBar {
         c: &SearchColors,
         on: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
     ) -> impl gpui::IntoElement {
-        let hover_bg = a(c.text, 0x16);
+        let hover_bg = a(c.text, 0x14);
         div()
             .id(id)
-            .w(px(24.))
-            .h(px(22.))
+            .w(px(28.))
+            .h(px(24.))
             .flex()
             .items_center()
             .justify_center()
             .rounded(px(4.))
             .text_size(px(11.))
-            .when(on_state, |d| {
-                d.bg(a(c.accent, 0x52))
-                    .border_1()
-                    .border_color(rgb(c.accent))
-                    .text_color(rgb(c.text))
+            .when(on_state, |d| d.bg(rgb(c.accent)).text_color(rgb(c.text)))
+            .when(!on_state, |d| {
+                d.text_color(a(c.text, 0xA0)).hover(move |s| s.bg(hover_bg))
             })
-            .when(!on_state, |d| d.text_color(a(c.text, 0xA0)))
-            .hover(move |s| s.bg(hover_bg))
             .cursor_pointer()
             .on_click(on)
             .child(label)
@@ -356,49 +355,56 @@ impl SearchBar {
                 .bg(rgb(c.bg))
                 .border_1()
                 .border_color(rgb(c.border))
-                .rounded(px(6.))
+                .rounded(px(8.))
                 .shadow_lg()
-                .px(px(6.))
-                .py(px(4.))
+                .px(px(8.))
+                .py(px(6.))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(4.))
+                .gap(px(6.))
                 .text_size(px(13.))
-                // Input field: query + block caret; red border = no match.
+                // Input field, WinUI TextBox-shaped: subtle resting frame
+                // with the signature 2px accent underline — red = no match.
                 .child(
                     div()
                         .bg(rgb(c.input_bg))
                         .border_1()
-                        .border_color(if error {
-                            rgb(c.error)
-                        } else {
-                            rgb(c.input_border)
-                        })
-                        .rounded(px(3.))
-                        .px(px(7.))
-                        .py(px(2.))
-                        .min_w(px(170.))
+                        .border_color(rgb(c.input_border))
+                        .rounded(px(4.))
+                        .min_w(px(190.))
                         .max_w(px(340.))
                         .flex()
-                        .flex_row()
-                        .items_center()
-                        .child(if empty {
-                            div()
-                                .text_color(a(c.text, 0x60))
-                                .child("検索")
-                                .into_any_element()
-                        } else {
-                            div()
-                                .text_color(rgb(c.text))
-                                .overflow_hidden()
-                                .child(self.query.clone())
-                                .into_any_element()
-                        })
+                        .flex_col()
                         .child(
-                            // Static caret at the end of the query.
-                            div().w(px(1.5)).h(px(15.)).ml(px(1.)).bg(a(c.text, 0xC8)),
-                        ),
+                            div()
+                                .px(px(8.))
+                                .py(px(3.))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .child(if empty {
+                                    div()
+                                        .text_color(a(c.text, 0x60))
+                                        .child("検索")
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .text_color(rgb(c.text))
+                                        .overflow_hidden()
+                                        .child(self.query.clone())
+                                        .into_any_element()
+                                })
+                                .child(
+                                    // Static caret at the end of the query.
+                                    div().w(px(1.5)).h(px(15.)).ml(px(1.)).bg(a(c.text, 0xC8)),
+                                ),
+                        )
+                        .child(div().h(px(2.)).rounded_b(px(3.)).bg(if error {
+                            rgb(c.error)
+                        } else {
+                            rgb(c.accent)
+                        })),
                 )
                 // Aa case / .* regex toggles (Alt+C / Alt+R).
                 .child(Self::toggle_button("search-case", "Aa", case_on, c, h.case))
