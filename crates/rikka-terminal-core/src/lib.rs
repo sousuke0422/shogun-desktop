@@ -417,6 +417,23 @@ impl TerminalSession {
         self.refresh_snapshot(&term);
     }
 
+    /// Drag update, screen-anchored while the view rides the live tail.
+    ///
+    /// With `display_offset == 0`, a streaming application can rotate the
+    /// grid between updates — Ink-style status redraws (Claude Code's
+    /// shimmer, Codex's "Working…") with a wrapped line miscount their
+    /// cursor-up and scroll on every repaint — and a grid-glued anchor then
+    /// slides off what the pointer actually covered. So the WHOLE selection
+    /// is rebuilt from the current viewport cells each update: what you
+    /// point at is what you select. Scrolled back (offset > 0) the view is
+    /// still, and the plain grid-glued head update keeps working — including
+    /// wheel-while-dragging, where the anchor MUST stay with the text.
+    pub fn selection_drag(&self, anchor: (usize, usize, bool), head: (usize, usize, bool)) {
+        let mut term = self.term.lock();
+        apply_selection_drag(&mut term, anchor, head);
+        self.refresh_snapshot(&term);
+    }
+
     /// Drop any selection in this pane.
     pub fn selection_clear(&self) {
         let mut term = self.term.lock();
@@ -777,6 +794,32 @@ pub fn hwheel_pty_bytes(
 /// xterm the event is dropped rather than clamped to a fabricated cell.
 /// Viewport cell → grid coordinates at the current scroll position (screen
 /// row r maps to grid `Line(r - display_offset)`).
+/// The screen-anchored drag core (see [`TerminalSession::selection_drag`]),
+/// on a bare `Term` so it is unit-testable without a PTY: at the live tail
+/// (`display_offset == 0`) the whole selection re-pins to the current
+/// viewport cells; scrolled back, only the head moves (grid-glued).
+fn apply_selection_drag<L>(
+    term: &mut Term<L>,
+    anchor: (usize, usize, bool),
+    head: (usize, usize, bool),
+) {
+    if term.grid().display_offset() == 0 {
+        let a = viewport_point(term, anchor.0, anchor.1);
+        let mut sel = alacritty_terminal::selection::Selection::new(
+            alacritty_terminal::selection::SelectionType::Simple,
+            a,
+            side_of(anchor.2),
+        );
+        sel.update(viewport_point(term, head.0, head.1), side_of(head.2));
+        term.selection = Some(sel);
+    } else {
+        let h = viewport_point(term, head.0, head.1);
+        if let Some(sel) = term.selection.as_mut() {
+            sel.update(h, side_of(head.2));
+        }
+    }
+}
+
 fn viewport_point<L>(term: &Term<L>, row: usize, col: usize) -> alacritty_terminal::index::Point {
     use alacritty_terminal::grid::Dimensions as _;
     use alacritty_terminal::index::{Column, Line, Point};
@@ -1554,6 +1597,45 @@ mod tests {
         for &byte in bytes {
             parser.advance(term, byte);
         }
+    }
+
+    /// Streaming rotation must not slide an in-flight drag: at the live
+    /// tail every update re-pins the whole selection to the CURRENT
+    /// viewport cells (an Ink-style shimmer that scrolls each repaint used
+    /// to drag the anchor off what the pointer covered). Scrolled back,
+    /// the drag stays grid-glued: only the head moves.
+    #[test]
+    fn screen_anchored_drag_repins_under_rotation() {
+        let mut term = make_term(20, 4);
+        advance_bytes(&mut term, b"aaa\r\nbbb\r\nccc");
+        // Drag over viewport row 0, cols 0..=2 ("aaa").
+        apply_selection_drag(&mut term, (0, 0, false), (0, 2, true));
+        // The app streams two more lines — one rotation into history.
+        advance_bytes(&mut term, b"\r\nddd\r\neee");
+        // Same pointer cells on the next update: the selection must cover
+        // viewport row 0 as it is NOW, not the rotated-away line.
+        apply_selection_drag(&mut term, (0, 0, false), (0, 2, true));
+        let r = (term.selection.as_ref())
+            .and_then(|s| s.to_range(&term))
+            .expect("live-tail drag always selects");
+        let offset = term.grid().display_offset() as i32;
+        assert_eq!(offset, 0);
+        assert_eq!(r.start.line.0 + offset, 0, "must sit on viewport row 0");
+        assert_eq!((r.start.column.0, r.end.column.0), (0, 2));
+
+        // Scrolled back the view is still — the grid-glued path: the anchor
+        // stays put and only the head follows the pointer.
+        term.scroll_display(alacritty_terminal::grid::Scroll::Delta(2));
+        assert_eq!(term.grid().display_offset(), 1); // clamped to history
+        apply_selection_drag(&mut term, (0, 0, false), (1, 3, true));
+        let r = (term.selection.as_ref())
+            .and_then(|s| s.to_range(&term))
+            .expect("selection persists across the scroll");
+        // Anchor: still grid line 0 from the re-pin above — NOT re-anchored
+        // to the new viewport row 0 (grid line -1). Head: viewport (1,3)
+        // with offset 1 → grid line 0, column 3.
+        assert_eq!((r.start.line.0, r.end.line.0), (0, 0));
+        assert_eq!((r.start.column.0, r.end.column.0), (0, 3));
     }
 
     #[test]

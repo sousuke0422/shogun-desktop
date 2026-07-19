@@ -67,12 +67,23 @@ struct ReportDrag {
 /// through scrollback scrolling and output rotation — this only tracks the
 /// in-flight drag and which pane owns the visible selection. All mutation
 /// goes through [`register_mouse_selection`]'s listeners.
+/// An in-flight local drag. The anchor is kept in VIEWPORT coordinates so
+/// each update can re-pin the whole selection while streaming output rotates
+/// the grid underneath (see `TerminalSession::selection_drag`).
+#[derive(Clone, Copy)]
+struct LocalDrag {
+    pane: usize,
+    /// Whether the pointer ever moved — a motionless click clears the
+    /// selection on release instead of leaving a one-cell highlight behind.
+    moved: bool,
+    /// The mouse-down cell and side.
+    anchor: (usize, usize, bool),
+}
+
 #[derive(Default)]
 pub struct SelectionState {
-    /// In-flight local drag: `(pane, pointer ever moved)`. A click that never
-    /// moves clears the selection on release instead of leaving a one-cell
-    /// highlight behind.
-    drag: Option<(usize, bool)>,
+    /// In-flight local drag, if any.
+    drag: Option<LocalDrag>,
     /// Last cell+side the drag head was set to, for per-cell dedup.
     last_drag_cell: Option<(usize, usize, bool)>,
     /// Pane whose Term holds the current selection (drag or completed) — the
@@ -222,7 +233,11 @@ pub fn register_mouse_selection<V: SelectionHost>(
                         s.selection_begin(row, col, right);
                     }
                     let state = this.selection_state();
-                    state.drag = Some((pane, false));
+                    state.drag = Some(LocalDrag {
+                        pane,
+                        moved: false,
+                        anchor: (row, col, right),
+                    });
                     state.last_drag_cell = Some((row, col, right));
                     state.owner = Some(pane);
                     cx.notify();
@@ -290,17 +305,22 @@ pub fn register_mouse_selection<V: SelectionHost>(
                     return;
                 }
                 if ev.pressed_button == Some(MouseButton::Left)
-                    && let Some((drag_pane, _)) = this.selection_state().drag
-                    && drag_pane == pane
+                    && let Some(drag) = this.selection_state().drag
+                    && drag.pane == pane
                 {
                     let right = side_at(ev.position);
                     if this.selection_state().last_drag_cell != Some((row, col, right)) {
                         if let Some(s) = this.pane_session(pane) {
-                            s.selection_update(row, col, right);
+                            // Screen-anchored: re-pins the whole selection at
+                            // the live tail so streaming redraw loops cannot
+                            // slide it off the pointer.
+                            s.selection_drag(drag.anchor, (row, col, right));
                         }
                         let state = this.selection_state();
                         state.last_drag_cell = Some((row, col, right));
-                        state.drag = Some((pane, true));
+                        if let Some(d) = state.drag.as_mut() {
+                            d.moved = true;
+                        }
                         cx.notify();
                     }
                 }
@@ -328,13 +348,13 @@ pub fn register_mouse_selection<V: SelectionHost>(
                     return;
                 }
                 if ev.button == MouseButton::Left
-                    && let Some((drag_pane, moved)) = this.selection_state().drag
+                    && let Some(drag) = this.selection_state().drag
                 {
                     this.selection_state().drag = None;
-                    if !moved {
+                    if !drag.moved {
                         // A motionless click clears rather than leaving a
                         // one-cell highlight behind.
-                        if let Some(s) = this.pane_session(drag_pane) {
+                        if let Some(s) = this.pane_session(drag.pane) {
                             s.selection_clear();
                         }
                         this.selection_state().owner = None;
