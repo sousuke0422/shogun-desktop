@@ -78,8 +78,9 @@ hidden = ["Azure Cloud Shell"]
 # Jump between shell prompts (needs OSC 133 marks — see Shell integration).
 # jump_prompt_prev = "ctrl+shift+up"
 # jump_prompt_next = "ctrl+shift+down"
-# Scrollback search (regex, smart-case; Aa button / Alt+C forces
-# case-sensitive). Enter = next, Shift+Enter = prev, Esc closes.
+# Scrollback search. Literal by default; the .* button (Alt+R) switches to
+# regex, Aa (Alt+C) forces case-sensitive (off = smart-case). Enter = next,
+# Shift+Enter = prev, Esc closes.
 # search = "ctrl+shift+f"
 
 # ── Shell integration ────────────────────────────────────────────────────

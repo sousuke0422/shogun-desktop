@@ -138,6 +138,7 @@ enum SearchUiEvent {
     Nav(i32),
     Close,
     CaseToggle,
+    RegexToggle,
 }
 
 pub struct ShogunWindow {
@@ -784,6 +785,7 @@ impl ShogunWindow {
             SearchUiEvent::Nav(dir) => search.nav(dir, self.active_session()),
             SearchUiEvent::Close => search.close(self.active_session()),
             SearchUiEvent::CaseToggle => search.toggle_case(self.active_session()),
+            SearchUiEvent::RegexToggle => search.toggle_regex(self.active_session()),
         }
         self.search = search;
         cx.notify();
@@ -889,6 +891,9 @@ impl ShogunWindow {
                             })),
                             case: Box::new(cx.listener(|this: &mut ShogunWindow, _, _, cx| {
                                 this.search_ui(SearchUiEvent::CaseToggle, cx);
+                            })),
+                            regex: Box::new(cx.listener(|this: &mut ShogunWindow, _, _, cx| {
+                                this.search_ui(SearchUiEvent::RegexToggle, cx);
                             })),
                         };
                         self.search

@@ -652,6 +652,10 @@ impl Render for ShellWindow {
                             this.search.toggle_case(this.session.as_ref());
                             cx.notify();
                         })),
+                        regex: Box::new(cx.listener(|this: &mut ShellWindow, _, _, cx| {
+                            this.search.toggle_regex(this.session.as_ref());
+                            cx.notify();
+                        })),
                     };
                     self.search
                         .render(status, handlers)

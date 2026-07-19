@@ -2058,6 +2058,11 @@ impl Render for TabsWindow {
                         this.search.toggle_case(sess);
                         cx.notify();
                     })),
+                    regex: Box::new(cx.listener(|this: &mut TabsWindow, _, _, cx| {
+                        let sess = this.tabs.get(this.active).map(|e| &e.0.session);
+                        this.search.toggle_regex(sess);
+                        cx.notify();
+                    })),
                 };
                 self.search.render(status, handlers).map(|bar| {
                     div()

@@ -30,6 +30,7 @@ pub struct SearchHandlers {
     pub next: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
     pub close: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
     pub case: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
+    pub regex: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
 }
 
 /// Per-window search-bar state. `Default` = closed.
@@ -44,17 +45,58 @@ pub struct SearchBar {
     /// `Aa` toggle: force case-sensitive matching. Off = alacritty's
     /// smart-case (an all-lowercase query matches case-insensitively).
     pub case_sensitive: bool,
+    /// `.*` toggle: treat the query as a regex. Off (default) = literal
+    /// search, VSCode-style — the query is meta-escaped before compiling.
+    pub regex: bool,
+}
+
+/// Escape regex metacharacters (the `regex_syntax::escape` set — every
+/// `\c` in it is a legal literal escape) for the literal-search mode.
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if matches!(
+            c,
+            '\\' | '.'
+                | '+'
+                | '*'
+                | '?'
+                | '('
+                | ')'
+                | '|'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '^'
+                | '$'
+                | '#'
+                | '&'
+                | '-'
+                | '~'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 impl SearchBar {
-    /// The pattern actually handed to the engine: the query, forced
-    /// case-sensitive via an inline flag when `Aa` is on (inline flags win
-    /// over the smart-case default the engine compiles with).
+    /// The pattern actually handed to the engine: the query — meta-escaped
+    /// unless `.*` is on — forced case-sensitive via an inline flag when
+    /// `Aa` is on (inline flags win over the smart-case default the engine
+    /// compiles with).
     fn effective_pattern(&self) -> String {
-        if self.case_sensitive {
-            format!("(?-i){}", self.query)
-        } else {
+        let base = if self.regex {
             self.query.clone()
+        } else {
+            regex_escape(&self.query)
+        };
+        if self.case_sensitive {
+            format!("(?-i){base}")
+        } else {
+            base
         }
     }
 
@@ -93,6 +135,12 @@ impl SearchBar {
     /// Flip the `Aa` toggle and re-run the search under the new casing.
     pub fn toggle_case(&mut self, session: Option<&TerminalSession>) {
         self.case_sensitive = !self.case_sensitive;
+        self.changed(session);
+    }
+
+    /// Flip the `.*` toggle and re-run the search under the new mode.
+    pub fn toggle_regex(&mut self, session: Option<&TerminalSession>) {
+        self.regex = !self.regex;
         self.changed(session);
     }
 
@@ -148,8 +196,9 @@ impl SearchBar {
                     self.changed(session);
                 }
             }
-            // Alt+C flips the Aa toggle (VSCode's chord).
+            // Alt+C / Alt+R flip the Aa / .* toggles (VSCode's chords).
             "c" if m.alt && !m.control => self.toggle_case(session),
+            "r" if m.alt && !m.control => self.toggle_regex(session),
             _ => {
                 if !m.control
                     && !m.alt
@@ -183,6 +232,35 @@ impl SearchBar {
             .rounded(px(4.))
             .text_size(px(12.))
             .text_color(rgba(0xFFFFFFB8))
+            .hover(|s| s.bg(rgba(0xFFFFFF16)))
+            .cursor_pointer()
+            .on_click(on)
+            .child(label)
+    }
+
+    /// A 24×22 toggle button (`Aa` / `.*`): blue-lit when on.
+    fn toggle_button(
+        id: &'static str,
+        label: &'static str,
+        on_state: bool,
+        on: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
+    ) -> impl gpui::IntoElement {
+        div()
+            .id(id)
+            .w(px(24.))
+            .h(px(22.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .text_size(px(11.))
+            .when(on_state, |d| {
+                d.bg(rgba(0x007FD452))
+                    .border_1()
+                    .border_color(rgb(0x007FD4))
+                    .text_color(rgb(0xFFFFFF))
+            })
+            .when(!on_state, |d| d.text_color(rgba(0xFFFFFFA0)))
             .hover(|s| s.bg(rgba(0xFFFFFF16)))
             .cursor_pointer()
             .on_click(on)
@@ -224,6 +302,7 @@ impl SearchBar {
             _ => String::new(),
         };
         let case_on = self.case_sensitive;
+        let regex_on = self.regex;
         Some(
             div()
                 .bg(rgb(0x252526))
@@ -255,7 +334,7 @@ impl SearchBar {
                         .child(if empty {
                             div()
                                 .text_color(rgba(0xFFFFFF60))
-                                .child("検索 (regex)")
+                                .child("検索")
                                 .into_any_element()
                         } else {
                             div()
@@ -269,29 +348,9 @@ impl SearchBar {
                             div().w(px(1.5)).h(px(15.)).ml(px(1.)).bg(rgb(0xAEAFAD)),
                         ),
                 )
-                // Aa case toggle.
-                .child(
-                    div()
-                        .id("search-case")
-                        .w(px(24.))
-                        .h(px(22.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(4.))
-                        .text_size(px(11.))
-                        .when(case_on, |d| {
-                            d.bg(rgba(0x007FD452))
-                                .border_1()
-                                .border_color(rgb(0x007FD4))
-                                .text_color(rgb(0xFFFFFF))
-                        })
-                        .when(!case_on, |d| d.text_color(rgba(0xFFFFFFA0)))
-                        .hover(|s| s.bg(rgba(0xFFFFFF16)))
-                        .cursor_pointer()
-                        .on_click(h.case)
-                        .child("Aa"),
-                )
+                // Aa case / .* regex toggles (Alt+C / Alt+R).
+                .child(Self::toggle_button("search-case", "Aa", case_on, h.case))
+                .child(Self::toggle_button("search-regex", ".*", regex_on, h.regex))
                 // Match counter.
                 .child(
                     div()
@@ -310,5 +369,33 @@ impl SearchBar {
                 .child(Self::button("search-close", "✕", h.close))
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::regex_escape;
+    use alacritty_terminal::term::search::RegexSearch;
+
+    /// Every metacharacter the literal mode escapes must stay a legal
+    /// escape for the engine's regex dialect — an escape it rejects would
+    /// turn literal search into a permanent red-border compile error.
+    #[test]
+    fn escaped_metacharacters_compile() {
+        let raw = r"a.b+c*d?e(f)g|h[i]j{k}l^m$n#o&p-q~r\s";
+        let escaped = regex_escape(raw);
+        assert!(RegexSearch::new(&escaped).is_ok(), "pattern: {escaped}");
+    }
+
+    #[test]
+    fn plain_text_is_untouched() {
+        assert_eq!(regex_escape("needle 検索"), "needle 検索");
+    }
+
+    /// The escaped form must not stay a functioning metacharacter: "1.5"
+    /// literal-escaped must not match "1x5".
+    #[test]
+    fn dot_loses_its_magic() {
+        assert_eq!(regex_escape("1.5"), r"1\.5");
     }
 }
