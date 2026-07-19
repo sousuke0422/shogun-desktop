@@ -124,9 +124,13 @@
       `SelectionType::Semantic` / `Lines` が既にあり、小工事で最大の日常
       価値。screen-anchored 再ピン（`screen_sel`）との整合に注意: begin の
       SelectionType を pin 側にも持たせて再ピンで種別を保存すること。
-- [ ] **シェル統合** — OSC 133 プロンプトマーク＋jump-to-prompt・OSC 7 cwd
-      追跡・自動注入。shogun-desktop `src/shell_integration.rs` に部分資産
-      あり。AI CLI の長出力とプロンプトジャンプは相性が良く費用対効果高。
+- [x] ~~シェル統合~~ — OSC 133;A マーク（絶対行記録・scrollback cap 超で
+      最古から失効）＋ Ctrl+Shift+↑/↓ jump-to-prompt（[keys] 再割当可）、
+      OSC 9;9（wt/ConEmu・通知と衝突しない順で判定）＋ OSC 7（localhost の
+      file:// URL・%decode・/C:/ 正規化）の cwd 追跡→**新規タブが cwd 継承**
+      （明示 dir > cwd(実在チェック) > home）。自動注入は v1 見送り・
+      config.example.toml に pwsh/bash スニペット。実機で jump 2 段・
+      C:\Windows 継承を確認。残: 自動注入・OSC 133;C/D 活用（出力範囲選択等）。
 - [ ] **スクロールバック検索** — wt 比でも欠落。検索バー UI＋grid 走査＋
       ハイライト/ジャンプ。
 - [ ] **リガチャ** — SD に font_features 配線（settings→
