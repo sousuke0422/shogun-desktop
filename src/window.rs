@@ -142,6 +142,7 @@ pub(crate) fn sd_search_colors() -> rikka_terminal_core::search_bar::SearchColor
         bg: 0x232220,
         border: 0x453F35,
         input_bg: 0x161514,
+        input_border: 0x5A5245,
         accent: 0x3465A4,
         text: 0xE8DCC8,
         error: 0xEF2929,

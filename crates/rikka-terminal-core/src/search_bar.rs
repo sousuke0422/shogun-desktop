@@ -45,7 +45,10 @@ pub struct SearchColors {
     pub border: u32,
     /// Input field fill.
     pub input_bg: u32,
-    /// Focus border + lit toggles.
+    /// Input field border (its resting accent — VSCode paints this its
+    /// focus blue; a host can pick something quieter).
+    pub input_border: u32,
+    /// Lit toggles.
     pub accent: u32,
     /// Query text; dimmed variants derive from it by alpha.
     pub text: u32,
@@ -60,6 +63,7 @@ impl Default for SearchColors {
             bg: 0x252526,
             border: 0x454545,
             input_bg: 0x313131,
+            input_border: 0x007FD4,
             accent: 0x007FD4,
             text: 0xEDEDED,
             error: 0xF14C4C,
@@ -366,7 +370,11 @@ impl SearchBar {
                     div()
                         .bg(rgb(c.input_bg))
                         .border_1()
-                        .border_color(if error { rgb(c.error) } else { rgb(c.accent) })
+                        .border_color(if error {
+                            rgb(c.error)
+                        } else {
+                            rgb(c.input_border)
+                        })
                         .rounded(px(3.))
                         .px(px(7.))
                         .py(px(2.))
