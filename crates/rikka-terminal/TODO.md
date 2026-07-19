@@ -120,10 +120,12 @@
 
 ## ghostty 比較ギャップ（2026-07-19 調査・優先度順）
 
-- [ ] **ダブル/トリプルクリック選択**（単語/行） — vendored alacritty に
-      `SelectionType::Semantic` / `Lines` が既にあり、小工事で最大の日常
-      価値。screen-anchored 再ピン（`screen_sel`）との整合に注意: begin の
-      SelectionType を pin 側にも持たせて再ピンで種別を保存すること。
+- [x] ~~ダブル/トリプルクリック選択~~ — click_count で
+      Simple/Word(semantic)/Line を選択、`SelectionKind` が drag と
+      streaming 再ピンを通して保存される（ダブルクリックドラッグは単語単位で
+      伸びる）。単語/行クリックは無移動 release でも選択維持。共有エンジン
+      実装ゆえ SD にもリビルドだけで搭載済み。実機でダブル=単語・
+      トリプル=行を確認。
 - [x] ~~シェル統合~~ — OSC 133;A マーク（絶対行記録・scrollback cap 超で
       最古から失効）＋ Ctrl+Shift+↑/↓ jump-to-prompt（[keys] 再割当可）、
       OSC 9;9（wt/ConEmu・通知と衝突しない順で判定）＋ OSC 7（localhost の
