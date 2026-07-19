@@ -184,6 +184,9 @@ pub fn build_terminal_session_with_preface(
     let progress = Arc::new(Progress::default());
     let notifications: notify::NotificationQueue = Default::default();
     let images = Arc::new(kitty_graphics::KittyImageStore::default());
+    // Screen-anchored selection (see TerminalSession::screen_sel): re-pinned
+    // by the parse thread after every output application.
+    let screen_sel: Arc<FairMutex<crate::ScreenSel>> = Arc::new(FairMutex::new(None));
     let xtversion = crate::xtversion::XtversionScanner::new(xtversion_identity);
     // Flipped once the preface (if any) has been applied — the resize
     // settler holds every reflow until then (see the function docs).
@@ -203,6 +206,7 @@ pub fn build_terminal_session_with_preface(
         let progress2 = Arc::clone(&progress);
         let notifications2 = Arc::clone(&notifications);
         let images2 = Arc::clone(&images);
+        let screen_sel2 = Arc::clone(&screen_sel);
         let cell_px2 = Arc::clone(&cell_size_px);
         let writer2 = Arc::clone(&writer);
         let preface_done2 = Arc::clone(&preface_done);
@@ -310,6 +314,7 @@ pub fn build_terminal_session_with_preface(
                                     Err(RecvTimeoutError::Timeout) => {
                                         let mut t = term2.lock();
                                         parser.stop_sync(&mut *t);
+                                        crate::repin_screen_selection(&mut t, &screen_sel2);
                                         *snap2.lock() = take_snapshot(&t);
                                         drop(t);
                                         gen2.fetch_add(1, Ordering::Relaxed);
@@ -329,6 +334,7 @@ pub fn build_terminal_session_with_preface(
                             if parser.sync_timeout().sync_timeout().is_some() {
                                 let mut t = term2.lock();
                                 parser.stop_sync(&mut *t);
+                                crate::repin_screen_selection(&mut t, &screen_sel2);
                                 *snap2.lock() = take_snapshot(&t);
                             }
                             conn2.store(false, Ordering::Relaxed);
@@ -426,6 +432,7 @@ pub fn build_terminal_session_with_preface(
                                     }
                                 }
                             }
+                            crate::repin_screen_selection(&mut t, &screen_sel2);
                             *snap2.lock() = take_snapshot(&t);
                             drop(t);
                             // Written only after releasing the term lock, so the
@@ -553,6 +560,7 @@ pub fn build_terminal_session_with_preface(
         progress,
         notifications,
         images,
+        screen_sel,
         focused: AtomicBool::new(true),
         cell_size_px,
         title,

@@ -118,9 +118,20 @@ impl PtyResizer for NoopResizer {
     }
 }
 
+/// A live screen-anchored selection: viewport `(anchor, head)` cells, each
+/// `(row, col, right_side)`. See [`TerminalSession::selection_drag`].
+pub type ScreenSel = Option<((usize, usize, bool), (usize, usize, bool))>;
+
 pub struct TerminalSession {
     #[allow(dead_code)]
     pub term: Arc<FairMutex<Term<ClipboardListener>>>,
+    /// The screen-anchored selection, while one is live at the tail: the
+    /// parse thread re-pins the grid selection from these viewport cells
+    /// after every output application, so streaming redraw loops (Codex's
+    /// timer-driven "Working…", Claude Code re-rendering on mouse reports)
+    /// cannot walk a made selection off the screen. Dropped — freezing the
+    /// selection to the grid — on scroll-back.
+    pub screen_sel: Arc<FairMutex<ScreenSel>>,
     pub writer: Arc<FairMutex<Box<dyn std::io::Write + Send>>>,
     pub snapshot: Arc<FairMutex<GridSnapshot>>,
     pub connected: Arc<AtomicBool>,
@@ -403,6 +414,10 @@ impl TerminalSession {
             point,
             side_of(right_side),
         ));
+        // Arm the screen anchor only at the live tail — a selection begun
+        // in scrollback is grid-glued from the start (the view is still).
+        let cell = (row, col, right_side);
+        *self.screen_sel.lock() = (term.grid().display_offset() == 0).then_some((cell, cell));
         self.refresh_snapshot(&term);
     }
 
@@ -431,6 +446,10 @@ impl TerminalSession {
     pub fn selection_drag(&self, anchor: (usize, usize, bool), head: (usize, usize, bool)) {
         let mut term = self.term.lock();
         apply_selection_drag(&mut term, anchor, head);
+        // Keep the screen anchor in sync so the parse thread re-pins the
+        // finished selection too (a completed highlight must not walk off
+        // the screen while an app streams).
+        *self.screen_sel.lock() = (term.grid().display_offset() == 0).then_some((anchor, head));
         self.refresh_snapshot(&term);
     }
 
@@ -438,6 +457,7 @@ impl TerminalSession {
     pub fn selection_clear(&self) {
         let mut term = self.term.lock();
         term.selection = None;
+        *self.screen_sel.lock() = None;
         self.refresh_snapshot(&term);
     }
 
@@ -510,8 +530,14 @@ impl TerminalSession {
         let mut t = self.term.lock();
         let before = t.grid().display_offset();
         t.scroll_display(Scroll::Delta(delta));
-        if t.grid().display_offset() == before {
+        let after = t.grid().display_offset();
+        if after == before {
             return; // already clamped at top/bottom — nothing to repaint
+        }
+        if before == 0 && after > 0 {
+            // Scrolling back freezes a screen-anchored selection to the
+            // grid: from here it stays with its text, wheel and all.
+            *self.screen_sel.lock() = None;
         }
         *self.snapshot.lock() = take_snapshot(&t);
         drop(t);
@@ -817,6 +843,21 @@ fn apply_selection_drag<L>(
         if let Some(sel) = term.selection.as_mut() {
             sel.update(h, side_of(head.2));
         }
+    }
+}
+
+/// Re-pin a live screen-anchored selection after output was applied: while
+/// the view rides the live tail, the highlight stays on the viewport cells
+/// the user marked, so streaming redraw loops (a timer-driven "Working…",
+/// an app re-rendering on mouse reports) cannot walk it off the screen.
+/// No-op when scrolled back (the session dropped the pin on scroll-back) or
+/// when no screen-anchored selection is live.
+pub(crate) fn repin_screen_selection<L>(term: &mut Term<L>, pin: &FairMutex<ScreenSel>) {
+    if term.grid().display_offset() != 0 {
+        return;
+    }
+    if let Some((anchor, head)) = *pin.lock() {
+        apply_selection_drag(term, anchor, head);
     }
 }
 
@@ -1636,6 +1677,46 @@ mod tests {
         // with offset 1 → grid line 0, column 3.
         assert_eq!((r.start.line.0, r.end.line.0), (0, 0));
         assert_eq!((r.start.column.0, r.end.column.0), (0, 3));
+    }
+
+    /// A COMPLETED selection must not walk off the screen either: the parse
+    /// thread re-pins it from the stored viewport cells after every output
+    /// application (Codex's timer-driven redraws, Claude Code re-rendering
+    /// on hover-driven mouse reports). Once scrolled back the pin drops and
+    /// rotation leaves the grid-glued selection to follow its text.
+    #[test]
+    fn completed_selection_re_pins_until_scrollback_freezes_it() {
+        let mut term = make_term(20, 4);
+        advance_bytes(&mut term, b"aaa\r\nbbb\r\nccc");
+        let pin = FairMutex::new(Some(((0usize, 0usize, false), (0usize, 2usize, true))));
+        apply_selection_drag(&mut term, (0, 0, false), (0, 2, true));
+
+        // Rotation after the mouse released → the parse loop re-pins.
+        advance_bytes(&mut term, b"\r\nddd\r\neee");
+        repin_screen_selection(&mut term, &pin);
+        let r = (term.selection.as_ref())
+            .and_then(|s| s.to_range(&term))
+            .expect("pinned selection survives rotation");
+        assert_eq!(
+            r.start.line.0 + term.grid().display_offset() as i32,
+            0,
+            "highlight stays on viewport row 0"
+        );
+
+        // Scroll-back drops the pin (the session API does); from here the
+        // frozen selection follows its TEXT through further rotation.
+        *pin.lock() = None;
+        term.scroll_display(alacritty_terminal::grid::Scroll::Delta(1));
+        let frozen = (term.selection.as_ref())
+            .and_then(|s| s.to_range(&term))
+            .expect("selection persists across the scroll");
+        advance_bytes(&mut term, b"\r\nfff");
+        repin_screen_selection(&mut term, &pin); // must be a no-op now
+        let after = (term.selection.as_ref())
+            .and_then(|s| s.to_range(&term))
+            .expect("grid-glued selection persists");
+        assert_eq!(after.start.line.0, frozen.start.line.0 - 1);
+        assert_eq!(after.start.column.0, frozen.start.column.0);
     }
 
     #[test]
