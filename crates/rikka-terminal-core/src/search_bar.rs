@@ -48,7 +48,10 @@ pub struct SearchColors {
     pub input_bg: u32,
     /// Input field resting border (subtle, WinUI TextBox-style).
     pub input_border: u32,
-    /// The TextBox underline + lit toggles.
+    /// The TextBox resting underline — one step stronger than the frame,
+    /// blending in (WinUI's resting bottom border), not shouting accent.
+    pub underline: u32,
+    /// Lit toggles.
     pub accent: u32,
     /// Query text; dimmed variants derive from it by alpha.
     pub text: u32,
@@ -66,6 +69,7 @@ impl Default for SearchColors {
             border: 0x45403A,
             input_bg: 0x1F1E1C,
             input_border: 0x4A453E,
+            underline: 0x6B6357,
             accent: 0x3465A4,
             text: 0xE8DCC8,
             error: 0xEF2929,
@@ -403,7 +407,7 @@ impl SearchBar {
                         .child(div().h(px(2.)).rounded_b(px(3.)).bg(if error {
                             rgb(c.error)
                         } else {
-                            rgb(c.accent)
+                            rgb(c.underline)
                         })),
                 )
                 // Aa case / .* regex toggles (Alt+C / Alt+R).

@@ -658,7 +658,7 @@ impl Render for ShellWindow {
                         })),
                     };
                     self.search
-                        .render(status, handlers, &crate::window::sd_search_colors())
+                        .render(status, handlers, &Default::default())
                         .map(|bar| div().absolute().top(px(10.)).right(px(14.)).child(bar))
                 })
                 // Right-click menu dispatching the same actions as the
