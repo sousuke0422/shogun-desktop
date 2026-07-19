@@ -30,8 +30,12 @@
 //! holds), `--maximize`/`--full-screen`, `--geometry CxR[+X+Y]`,
 //! `--class`/`--name` (accepted, no X11 here), `-v/--version`.
 //!
+//! Also: `-w/--window new|last|0|<id>` — route the launch's tabs into an
+//! existing window (`0`/`last` = any live window; `<id>` = a per-window id).
+//! The monarch resolves the target and forwards the spawn to that window's
+//! own socket; anything unresolvable falls open to a fresh window.
+//!
 //! Deliberately TODO (structural work, tracked in README):
-//! - `-w/--window` routing to an existing window (needs single-instance IPC)
 //! - `split-pane`/`sp` (needs pane splits), `focus-tab`, `move-focus`,
 //!   `move-pane`, `focus-pane`
 //!
@@ -95,6 +99,10 @@ pub struct Launch {
     /// `--window-process`: spawned by the monarch to host one window — skip
     /// the single-instance election and register with the spawner instead.
     pub window_process: bool,
+    /// `-w/--window`: open this launch's tabs in an EXISTING window.
+    /// `Some(0)` = any window (`-w 0` / `-w last`); `Some(id)` = that window
+    /// (per-window ids). `None` = a fresh window (default, and `-w new`).
+    pub window: Option<u64>,
 }
 
 fn value_of(
@@ -197,9 +205,17 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
                         launch.size_cells = Some((c as u16, r as u16));
                     }
                     "-w" | "--window" => {
-                        return Err("-w/--window (既存ウィンドウへのルーティング) は未対応です \
-                             (TODO: 単一インスタンス IPC)"
-                            .into());
+                        it.next();
+                        let v = value_of(&mut it, "-w/--window")?;
+                        launch.window = match v.as_str() {
+                            // wt semantics: "new" forces a fresh window (our
+                            // default anyway); 0/"last" reuses an existing one.
+                            "new" => None,
+                            "last" | "0" => Some(0),
+                            id => Some(id.parse::<u64>().map_err(|_| {
+                                format!("-w/--window は new / last / 0 / 窓ID のいずれかです: {id}")
+                            })?),
+                        };
                     }
                     // Internal (rikka-handoff.exe): default-terminal cold
                     // start — see AttachSpec.
@@ -445,6 +461,23 @@ mod tests {
     }
 
     #[test]
+    fn window_target_forms() {
+        // Default and the explicit "new" are both a fresh window.
+        assert_eq!(parse(v(&[])).unwrap().window, None);
+        assert_eq!(parse(v(&["-w", "new"])).unwrap().window, None);
+        // 0 / "last" = any existing window.
+        assert_eq!(parse(v(&["-w", "0"])).unwrap().window, Some(0));
+        assert_eq!(parse(v(&["--window", "last"])).unwrap().window, Some(0));
+        // A concrete per-window id.
+        assert_eq!(
+            parse(v(&["-w", "44040193"])).unwrap().window,
+            Some(44040193)
+        );
+        // Garbage is an error, not a silent new window.
+        assert!(parse(v(&["-w", "nope"])).is_err());
+    }
+
+    #[test]
     fn new_tab_options_and_alias() {
         let l = parse(v(&["nt", "-d", "C:\\work", "--title", "作業", "-p", "cmd"])).unwrap();
         assert_eq!(l.tabs.len(), 1);
@@ -482,7 +515,10 @@ mod tests {
     #[test]
     fn unsupported_subcommands_error_as_todo() {
         assert!(parse(v(&["split-pane"])).unwrap_err().contains("TODO"));
-        assert!(parse(v(&["-w", "0", "nt"])).unwrap_err().contains("TODO"));
+        // `-w` graduated from the TODO list: it parses and carries a target.
+        let l = parse(v(&["-w", "0", "nt"])).unwrap();
+        assert_eq!(l.window, Some(0));
+        assert_eq!(l.tabs.len(), 1);
     }
 
     #[test]

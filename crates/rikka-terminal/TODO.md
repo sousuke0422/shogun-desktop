@@ -28,8 +28,11 @@
       Ctrl+Shift+X は具体窓 entry へ、drag-merge の pid 形式 query は
       resolve の pid フォールバックで解決。旧 monarch 混在は id==pid 判定で
       互換。directory の upsert/置換/フォールバックはユニットテスト済。
-- [ ] **`-w <id>` CLI** — `rt -w <id>` は「未対応」エラーのまま
-      （cli.rs）。spawn の既存窓ルーティング＋窓 socket の spawn 受理が要る。
+- [x] ~~`-w <id>` CLI~~ — `rt -w new|last|0|<id>` 実装。monarch が
+      `resolve_target`（0=any・実 id・pid フォールバック）で具体窓へ書き換え、
+      その窓 socket に Spawn を転送（窓 socket が Spawn 受理）。受信 pump が
+      指名窓にタブを展開（相対 dir は送信元 cwd に anchor）。解決不能・窓消滅は
+      新窓に fail open。実機で `-w 0` の既存窓着地（新プロセス0）を確認。
 - [ ] **Unix の tab move** — SCM_RIGHTS 版の handle 移送。tear-off /
       drag-merge も Windows 専用のまま。
 - [ ] elevated handoff 窓プロセス（wire に flag のみ・実装なし）。

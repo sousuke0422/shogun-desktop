@@ -42,6 +42,12 @@ pub struct SpawnArgs {
     pub cwd: Option<String>,
     #[serde(default)]
     pub argv: Vec<String>,
+    /// `rt -w`: open the tabs in an EXISTING window instead of a new one.
+    /// `Some(0)` = any window ("last"); `Some(id)` = that window. The monarch
+    /// rewrites 0/pid forms to the concrete per-window id before forwarding
+    /// to the window's own socket. Absent = a fresh window (the default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
     #[serde(default)]
     pub profile: Option<String>,
     #[serde(default)]

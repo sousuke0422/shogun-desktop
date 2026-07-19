@@ -2242,6 +2242,7 @@ fn forward_launch(endpoint: &str, launch: &cli::Launch) -> std::io::Result<()> {
             ipc::Request::Spawn(ipc::SpawnArgs {
                 cwd,
                 argv,
+                window: launch.window,
                 ..Default::default()
             })
         }
@@ -2294,6 +2295,9 @@ fn open_inherited(_cx: &mut App, launch: &cli::Launch) -> bool {
 enum Forwarded {
     /// A forwarded launch: re-parse the CLI and open a window for it.
     Spawn(Vec<String>),
+    /// A targeted launch (`rt -w`) routed to this process's window socket:
+    /// open its tabs in the addressed window instead of a fresh one.
+    SpawnInWindow(ipc::SpawnArgs),
     /// An adopted OS handoff: wrap the session in a fresh window.
     #[cfg(windows)]
     Attach(Box<TerminalSession>, ipc::StartupInfo, Option<Vec<u32>>),
@@ -2324,6 +2328,7 @@ fn wire_theme(p: Option<Vec<u32>>) -> Option<rikka_terminal_core::theme::Palette
 fn pump_forwarded(cx: &mut App, msg: Forwarded) {
     match msg {
         Forwarded::Spawn(argv) => open_forwarded(cx, argv),
+        Forwarded::SpawnInWindow(s) => spawn_in_window(cx, s),
         #[cfg(windows)]
         Forwarded::Attach(session, startup, palette) => {
             open_attached(cx, *session, startup, palette)
@@ -2410,24 +2415,54 @@ impl WindowDirectory {
             .collect()
     }
 
-    /// The window's own socket endpoint, for direct tab-move routing. An
-    /// exact window-id match wins; a bare-pid query (the drag-merge sender
-    /// only knows the pid under the cursor) matches any of that process's
-    /// windows — they share one socket, and the receiver routes by drop
-    /// point. `None` when unknown or registered without a socket (its bind
-    /// failed — it cannot receive moves).
-    fn resolve(&self, window_id: u64) -> Option<String> {
-        self.0
-            .iter()
-            .find(|w| w.window_id == window_id && !w.endpoint.is_empty())
-            .or_else(|| {
-                u32::try_from(window_id).ok().and_then(|pid| {
-                    self.0
-                        .iter()
-                        .find(|w| w.pid == pid && !w.endpoint.is_empty())
+    /// Resolve a target query to a concrete reachable window: `0` = any
+    /// live window (`rt -w last`); otherwise an exact window-id match, then
+    /// the bare-pid fallback (a drag-merge sender only knows the pid under
+    /// the cursor — that process's windows share one socket, and the
+    /// receiver routes by drop point). Returns the CONCRETE window id with
+    /// the endpoint so a forwarded spawn addresses a real window. `None`
+    /// when nothing reachable matches (endpointless windows cannot receive).
+    fn resolve_target(&self, query: u64) -> Option<(u64, String)> {
+        let hit = if query == 0 {
+            self.0.iter().find(|w| !w.endpoint.is_empty())
+        } else {
+            self.0
+                .iter()
+                .find(|w| w.window_id == query && !w.endpoint.is_empty())
+                .or_else(|| {
+                    u32::try_from(query).ok().and_then(|pid| {
+                        self.0
+                            .iter()
+                            .find(|w| w.pid == pid && !w.endpoint.is_empty())
+                    })
                 })
-            })
-            .map(|w| w.endpoint.clone())
+        };
+        hit.map(|w| (w.window_id, w.endpoint.clone()))
+    }
+
+    /// The window's own socket endpoint, for direct tab-move routing.
+    /// `None` when the id is unknown or the window registered without a
+    /// socket (its bind failed — it cannot receive moves).
+    fn resolve(&self, window_id: u64) -> Option<String> {
+        // 0 means "any" only for -w spawns, never for a tab move.
+        if window_id == 0 {
+            return None;
+        }
+        self.resolve_target(window_id).map(|(_, ep)| ep)
+    }
+}
+
+/// Forward a targeted spawn (`rt -w`) to a window process's own socket.
+/// `Ok` only when the window answered ok — anything else lets the caller
+/// fall open to the new-window path.
+fn forward_spawn_to_window(endpoint: &str, s: &ipc::SpawnArgs) -> std::io::Result<()> {
+    let mut conn = ipc::transport::connect(endpoint)?;
+    conn.send_request(&ipc::Request::Spawn(s.clone()))?;
+    let resp = conn.recv_response()?;
+    if resp.ok {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(resp.error.unwrap_or_default()))
     }
 }
 
@@ -2502,13 +2537,32 @@ fn monarch_accept_loop(
                 std::thread::Builder::new()
                     .name("rikka-ipc-conn".into())
                     .spawn(move || match conn.recv_request() {
-                        Ok(ipc::Request::Spawn(s)) => {
+                        Ok(ipc::Request::Spawn(mut s)) => {
+                            // Targeted spawn (`rt -w`): resolve the addressed
+                            // window and forward to its own socket, rewriting
+                            // 0/pid forms to the concrete per-window id. Any
+                            // failure falls open to the normal new-window
+                            // path — a launch must never be lost.
+                            let routed = match s.window {
+                                Some(q) => match directory.lock().resolve_target(q) {
+                                    Some((id, endpoint)) => {
+                                        s.window = Some(id);
+                                        forward_spawn_to_window(&endpoint, &s).is_ok()
+                                    }
+                                    None => false,
+                                },
+                                None => false,
+                            };
                             // Crash isolation first; in-process only as
                             // fallback (a monarch-resident window beats a
                             // dead launch).
-                            if let Err(e) = spawn_window_process(&s) {
-                                log::warn!("window-process spawn failed, opening in-process: {e}");
-                                let _ = tx.unbounded_send(Forwarded::Spawn(s.argv));
+                            if !routed {
+                                if let Err(e) = spawn_window_process(&s) {
+                                    log::warn!(
+                                        "window-process spawn failed, opening in-process: {e}"
+                                    );
+                                    let _ = tx.unbounded_send(Forwarded::Spawn(s.argv));
+                                }
                             }
                             let _ = conn.send_response(&ipc::Response::ok());
                         }
@@ -2668,12 +2722,22 @@ fn window_accept_loop(
                     };
                     let _ = conn.send_response(&resp);
                 }
+                Ok(ipc::Request::Spawn(s)) => {
+                    // A targeted spawn the monarch routed here (`rt -w`):
+                    // the pump opens its tabs in the addressed window.
+                    let resp = if tx.unbounded_send(Forwarded::SpawnInWindow(s)).is_ok() {
+                        ipc::Response::ok()
+                    } else {
+                        ipc::Response::error("window is shutting down")
+                    };
+                    let _ = conn.send_response(&resp);
+                }
                 Ok(ipc::Request::Ping) => {
                     let _ = conn.send_response(&ipc::Response::ok());
                 }
                 Ok(_) => {
                     let _ = conn.send_response(&ipc::Response::error(
-                        "window socket: attach and ping only",
+                        "window socket: attach, spawn and ping only",
                     ));
                 }
                 Err(_) => {}
@@ -2824,6 +2888,51 @@ fn open_attached(
     let entry = hub::new_tab(cx, session);
     entry.0.set_theme(wire_theme(palette));
     open_tabs_window_opts(cx, vec![entry], &launch);
+}
+
+/// Open a targeted spawn's tabs in the addressed window of THIS process
+/// (`rt -w <id>`, routed here by the monarch): re-parse the forwarded CLI,
+/// resolve its relative dirs against the SENDER's cwd, and adopt each tab
+/// into that window. A vanished target falls open to a fresh window — the
+/// launch must never be lost.
+fn spawn_in_window(cx: &mut App, s: ipc::SpawnArgs) {
+    let Some(view) = s.window.and_then(|id| hub::window_by_id(cx, id)) else {
+        return open_forwarded(cx, s.argv);
+    };
+    let launch = cli::parse(s.argv.clone()).unwrap_or_default();
+    let mut specs = cli::expand_dir_tabs(launch.tabs);
+    if specs.is_empty() {
+        specs = vec![default_spec(cx)];
+    }
+    for spec in &mut specs {
+        // Relative dirs are the sender's — anchor them to its cwd. (The
+        // positional-dir detection in expand_dir_tabs tests OUR cwd; `.`
+        // and absolute paths behave, deep relative ones may fall through
+        // to running as a command — acceptable for v1.)
+        if let (Some(dir), Some(cwd)) = (&spec.dir, &s.cwd) {
+            let p = std::path::Path::new(dir);
+            if p.is_relative() {
+                spec.dir = Some(
+                    std::path::Path::new(cwd)
+                        .join(p)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    let entries: Vec<TabEntry> = specs
+        .iter()
+        .filter_map(|sp| create_tab_spec(cx, sp))
+        .collect();
+    if entries.is_empty() {
+        return;
+    }
+    let _ = view.update(cx, |v, cx| {
+        for entry in entries {
+            v.adopt(entry, cx);
+        }
+    });
 }
 
 /// Re-parse a forwarded CLI and open a window for it IN THIS process — the
@@ -3046,6 +3155,11 @@ mod tests {
         assert_eq!(dir.resolve((1 << 20) | 3).as_deref(), Some("ep-one"));
         // …and the bare-pid form (a drag-merge sender only knows the pid).
         assert_eq!(dir.resolve(1).as_deref(), Some("ep-one"));
+        // `-w 0` / "last": any reachable window, as a CONCRETE target.
+        assert_eq!(
+            dir.resolve_target(0),
+            Some(((1 << 20) | 3, "ep-one".into()))
+        );
         assert_eq!(
             dir.resolve(2 << 20),
             None,
@@ -3140,6 +3254,35 @@ mod tests {
         let resp = conn.recv_response().unwrap();
         assert!(resp.ok);
         assert_eq!(resp.endpoint.as_deref(), Some("win-4242"));
+        drop(accept); // detach: the loop parks in accept() until process exit
+    }
+
+    /// The `rt -w` last hop: a window socket accepts a targeted Spawn and
+    /// hands it to the pump as SpawnInWindow, concrete window id intact.
+    #[cfg(windows)]
+    #[test]
+    fn window_socket_accepts_targeted_spawns() {
+        let name = format!("rikka-test-wspawn-{}.sock", std::process::id());
+        let listener = ipc::transport::Monarch::bind(&name).expect("bind window socket");
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
+        let accept = std::thread::spawn(move || window_accept_loop(listener, tx));
+
+        let mut conn = ipc::transport::connect(&name).expect("connect window socket");
+        conn.send_request(&ipc::Request::Spawn(ipc::SpawnArgs {
+            argv: vec!["new-tab".into(), "-t".into(), "targeted".into()],
+            window: Some(77),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(conn.recv_response().unwrap().ok);
+
+        match rx.try_recv().expect("one pumped message") {
+            Forwarded::SpawnInWindow(s) => {
+                assert_eq!(s.window, Some(77));
+                assert_eq!(s.argv[2], "targeted");
+            }
+            _ => panic!("expected SpawnInWindow"),
+        }
         drop(accept); // detach: the loop parks in accept() until process exit
     }
 
