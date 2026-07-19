@@ -72,7 +72,9 @@ impl Default for SearchColors {
             underline: 0x6B6357,
             accent: 0x3465A4,
             text: 0xE8DCC8,
-            error: 0xEF2929,
+            // Muted rust red — the pure-red signal reads garish against
+            // the warm sheet.
+            error: 0xBE5A50,
         }
     }
 }
