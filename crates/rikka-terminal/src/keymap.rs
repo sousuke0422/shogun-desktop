@@ -30,6 +30,10 @@ pub enum Action {
     Copy,
     Paste,
     CycleBack,
+    /// Scroll to the previous shell prompt (OSC 133 marks).
+    JumpPromptPrev,
+    /// Scroll to the next shell prompt.
+    JumpPromptNext,
 }
 
 /// One parsed binding: exact modifier set + gpui key name (lowercase).
@@ -89,7 +93,7 @@ impl KeyMap {
             alt: false,
             key: key.into(),
         };
-        let defaults: [(&Option<String>, &str, Action); 10] = [
+        let defaults: [(&Option<String>, &str, Action); 12] = [
             (&keys.new_tab, "t", Action::NewTab),
             (&keys.close_tab, "w", Action::CloseTab),
             (&keys.detach_tab, "d", Action::DetachTab),
@@ -100,6 +104,8 @@ impl KeyMap {
             (&keys.copy, "c", Action::Copy),
             (&keys.paste, "v", Action::Paste),
             (&keys.cycle_back, "tab", Action::CycleBack),
+            (&keys.jump_prompt_prev, "up", Action::JumpPromptPrev),
+            (&keys.jump_prompt_next, "down", Action::JumpPromptNext),
         ];
         let mut bindings = Vec::new();
         for (configured, default_key, action) in defaults {

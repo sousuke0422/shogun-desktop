@@ -167,6 +167,10 @@ pub struct KeysSection {
     pub paste: Option<String>,
     #[serde(default)]
     pub cycle_back: Option<String>,
+    #[serde(default)]
+    pub jump_prompt_prev: Option<String>,
+    #[serde(default)]
+    pub jump_prompt_next: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

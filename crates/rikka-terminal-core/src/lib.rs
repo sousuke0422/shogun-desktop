@@ -153,6 +153,14 @@ pub struct TerminalSession {
     /// (written by the PTY reader thread, painted by the renderer for
     /// placeholder cells). See [`kitty_graphics`].
     pub images: Arc<kitty_graphics::KittyImageStore>,
+    /// Shell-integration prompt marks (OSC 133;A), as absolute buffer lines
+    /// (`history_size + screen row` at mark time — exact until scrollback
+    /// caps, after which the oldest marks fall off with their rows). Written
+    /// by the PTY reader thread; [`Self::jump_prompt`] scrolls between them.
+    pub prompt_marks: Arc<FairMutex<std::collections::VecDeque<u64>>>,
+    /// Working directory last reported by the shell (OSC 9;9 / OSC 7) —
+    /// new tabs inherit it. See [`Self::current_cwd`].
+    pub cwd: Arc<FairMutex<Option<String>>>,
     /// Last focus state reported to the application via CSI I / CSI O
     /// (focus reporting, DECSET ?1004). Sessions start focused: they are
     /// spawned into the surface the user is looking at.
@@ -472,6 +480,28 @@ impl TerminalSession {
     /// scrollback and handles wide/wrapped lines correctly.
     pub fn selection_text(&self) -> Option<String> {
         self.term.lock().selection_to_string()
+    }
+
+    /// The working directory the shell last reported (OSC 9;9 / OSC 7), for
+    /// cwd inheritance by new tabs.
+    pub fn current_cwd(&self) -> Option<String> {
+        self.cwd.lock().clone()
+    }
+
+    /// Jump to the previous (`dir < 0`) or next (`dir > 0`) shell prompt
+    /// (OSC 133;A marks), ghostty-style. No-op without marks in that
+    /// direction.
+    pub fn jump_prompt(&self, dir: i32) {
+        let delta = {
+            let term = self.term.lock();
+            let h = term.grid().history_size() as i64;
+            let off = term.grid().display_offset() as i64;
+            let marks = self.prompt_marks.lock();
+            prompt_jump_delta(h, off, marks.iter().copied(), dir)
+        };
+        if let Some(d) = delta {
+            self.scroll_display(d as i32);
+        }
     }
 
     /// Route horizontal wheel ticks to the PTY when the running application
@@ -844,6 +874,29 @@ fn apply_selection_drag<L>(
             sel.update(h, side_of(head.2));
         }
     }
+}
+
+/// Scroll delta (positive = older) that puts the previous/next prompt mark
+/// at the top of the viewport. `h` = history size, `off` = current display
+/// offset, `marks` = absolute buffer lines (oldest→newest). The viewport top
+/// sits at absolute line `h - off`; the previous prompt is the newest mark
+/// strictly above it, the next the oldest strictly below. `None` when no
+/// mark lies in that direction (or the mark scrolled off the retained
+/// history).
+fn prompt_jump_delta(
+    h: i64,
+    off: i64,
+    marks: impl DoubleEndedIterator<Item = u64> + Clone,
+    dir: i32,
+) -> Option<i64> {
+    let top = h - off;
+    let target = if dir < 0 {
+        marks.rev().map(|m| m as i64).find(|&m| m < top)
+    } else {
+        marks.map(|m| m as i64).find(|&m| m > top)
+    }?;
+    let want_off = (h - target).clamp(0, h);
+    (want_off != off).then_some(want_off - off)
 }
 
 /// Re-pin a live screen-anchored selection after output was applied: while
@@ -1638,6 +1691,32 @@ mod tests {
         for &byte in bytes {
             parser.advance(term, byte);
         }
+    }
+
+    /// Prompt jumping: previous = the newest mark above the viewport top,
+    /// next = the oldest below; deltas are scroll_display units (positive =
+    /// older). No mark in that direction = no-op.
+    #[test]
+    fn prompt_jump_delta_walks_marks() {
+        let marks = [10u64, 50, 90];
+        // Live tail (off=0, top=100): prev is the newest mark, 90.
+        assert_eq!(
+            prompt_jump_delta(100, 0, marks.iter().copied(), -1),
+            Some(10)
+        );
+        // From there (top=90): prev = 50.
+        assert_eq!(
+            prompt_jump_delta(100, 10, marks.iter().copied(), -1),
+            Some(40)
+        );
+        // And next from the middle goes back down to 90.
+        assert_eq!(
+            prompt_jump_delta(100, 50, marks.iter().copied(), 1),
+            Some(-40)
+        );
+        // Nothing newer than the tail; nothing older than the first mark.
+        assert_eq!(prompt_jump_delta(100, 0, marks.iter().copied(), 1), None);
+        assert_eq!(prompt_jump_delta(100, 90, marks.iter().copied(), -1), None);
     }
 
     /// Streaming rotation must not slide an in-flight drag: at the live

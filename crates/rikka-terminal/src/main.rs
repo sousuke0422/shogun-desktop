@@ -446,12 +446,6 @@ fn default_spec(cx: &App) -> cli::TabSpec {
     }
 }
 
-/// New shell session wrapped as a movable tab (driver task included).
-fn create_tab(cx: &mut App) -> Option<TabEntry> {
-    let spec = default_spec(cx);
-    create_tab_spec(cx, &spec)
-}
-
 /// Progress for a tab: an explicit OSC 9;4 report when the app sent one,
 /// otherwise inferred from a window-title spinner. The fallback covers agents
 /// that drop OSC 9;4 on some surfaces — Claude Code animates a Braille spinner
@@ -951,6 +945,17 @@ impl TabsWindow {
                 }
             }
             CycleBack => self.cycle(false, cx),
+            // Shell integration: hop between OSC 133 prompt marks.
+            JumpPromptPrev => {
+                if let Some(s) = self.active_session() {
+                    s.jump_prompt(-1);
+                }
+            }
+            JumpPromptNext => {
+                if let Some(s) = self.active_session() {
+                    s.jump_prompt(1);
+                }
+            }
         }
     }
 
@@ -1252,7 +1257,9 @@ impl TabsWindow {
     }
 
     fn new_tab(&mut self, cx: &mut Context<Self>) {
-        if let Some(entry) = create_tab(cx) {
+        let mut spec = default_spec(cx);
+        self.inherit_cwd(&mut spec);
+        if let Some(entry) = create_tab_spec(cx, &spec) {
             self.adopt(entry, cx);
         }
         self.profile_menu = false;
@@ -1266,12 +1273,27 @@ impl TabsWindow {
             .profiles
             .get(idx)
             .map(profile_to_spec);
-        if let Some(spec) = spec
-            && let Some(entry) = create_tab_spec(cx, &spec)
-        {
-            self.adopt(entry, cx);
+        if let Some(mut spec) = spec {
+            self.inherit_cwd(&mut spec);
+            if let Some(entry) = create_tab_spec(cx, &spec) {
+                self.adopt(entry, cx);
+            }
         }
         self.profile_menu = false;
+    }
+
+    /// Shell integration: a new tab without an explicit directory opens in
+    /// the ACTIVE tab's shell-reported cwd (OSC 9;9 / OSC 7), wt-style —
+    /// falling through to the home default when the shell never reported
+    /// one or the path no longer exists.
+    fn inherit_cwd(&self, spec: &mut cli::TabSpec) {
+        if spec.dir.is_some() {
+            return;
+        }
+        spec.dir = self
+            .active_session()
+            .and_then(|s| s.current_cwd())
+            .filter(|d| std::path::Path::new(d).is_dir());
     }
 }
 

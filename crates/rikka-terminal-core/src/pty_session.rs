@@ -187,6 +187,9 @@ pub fn build_terminal_session_with_preface(
     // Screen-anchored selection (see TerminalSession::screen_sel): re-pinned
     // by the parse thread after every output application.
     let screen_sel: Arc<FairMutex<crate::ScreenSel>> = Arc::new(FairMutex::new(None));
+    // Shell integration: OSC 133;A prompt marks + OSC 9;9 / OSC 7 cwd.
+    let prompt_marks: Arc<FairMutex<std::collections::VecDeque<u64>>> = Arc::default();
+    let cwd: Arc<FairMutex<Option<String>>> = Arc::default();
     let xtversion = crate::xtversion::XtversionScanner::new(xtversion_identity);
     // Flipped once the preface (if any) has been applied — the resize
     // settler holds every reflow until then (see the function docs).
@@ -207,6 +210,8 @@ pub fn build_terminal_session_with_preface(
         let notifications2 = Arc::clone(&notifications);
         let images2 = Arc::clone(&images);
         let screen_sel2 = Arc::clone(&screen_sel);
+        let prompt_marks2 = Arc::clone(&prompt_marks);
+        let cwd2 = Arc::clone(&cwd);
         let cell_px2 = Arc::clone(&cell_size_px);
         let writer2 = Arc::clone(&writer);
         let preface_done2 = Arc::clone(&preface_done);
@@ -354,6 +359,26 @@ pub fn build_terminal_session_with_preface(
                                     Some(OscEvent::Notify(note)) => {
                                         notify::push(&notifications2, note)
                                     }
+                                    Some(OscEvent::Prompt(
+                                        crate::progress::PromptMark::PromptStart,
+                                    )) => {
+                                        // Everything before this OSC has been
+                                        // parsed, so the cursor sits on the
+                                        // prompt row. Absolute buffer line =
+                                        // history + screen row (see
+                                        // TerminalSession::prompt_marks).
+                                        let abs = t.grid().history_size() as u64
+                                            + t.grid().cursor.point.line.0.max(0) as u64;
+                                        let mut marks = prompt_marks2.lock();
+                                        if marks.back() != Some(&abs) {
+                                            marks.push_back(abs);
+                                            if marks.len() > 1000 {
+                                                marks.pop_front();
+                                            }
+                                        }
+                                    }
+                                    Some(OscEvent::Prompt(_)) => {}
+                                    Some(OscEvent::Cwd(path)) => *cwd2.lock() = Some(path),
                                     None => {}
                                 }
                                 if let Some(payload) = apc.advance(byte)
@@ -561,6 +586,8 @@ pub fn build_terminal_session_with_preface(
         notifications,
         images,
         screen_sel,
+        prompt_marks,
+        cwd,
         focused: AtomicBool::new(true),
         cell_size_px,
         title,

@@ -75,6 +75,21 @@ hidden = ["Azure Cloud Shell"]
 # copy = "ctrl+shift+c"
 # paste = "ctrl+shift+v"
 # cycle_back = "ctrl+shift+tab"
+# Jump between shell prompts (needs OSC 133 marks — see Shell integration).
+# jump_prompt_prev = "ctrl+shift+up"
+# jump_prompt_next = "ctrl+shift+down"
+
+# ── Shell integration ────────────────────────────────────────────────────
+# rikka reads two things your shell can emit (no config needed here):
+#  * OSC 133 prompt marks — Ctrl+Shift+Up/Down then jumps between prompts.
+#  * OSC 9;9 (Windows path) or OSC 7 (file:// URL) cwd reports — a new tab
+#    then opens in the ACTIVE tab's directory instead of your home.
+#
+# PowerShell ($PROFILE) — prepend to what your prompt function returns:
+#   "`e]133;A`a`e]9;9;`"$($PWD.Path)`"`a" + "PS $PWD> "
+# bash (~/.bashrc):
+#   PS1='\[\e]133;A\a\]'"$PS1"
+#   PROMPT_COMMAND='printf "\e]7;file://%s\a" "$PWD"'
 
 [theme]
 # Terminal color palette. Import a Windows Terminal color scheme BY NAME

@@ -95,11 +95,30 @@ pub enum ProgressUpdate {
     Warning(Option<u8>),
 }
 
+/// A semantic-prompt mark (OSC 133, FinalTerm/ghostty shell integration).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PromptMark {
+    /// `133;A` — prompt starts here (the jump-to-prompt anchor).
+    PromptStart,
+    /// `133;B` — prompt ends, user command line starts.
+    CommandStart,
+    /// `133;C` — command output starts.
+    OutputStart,
+    /// `133;D[;exit]` — command finished.
+    Finished,
+}
+
 /// One event extracted by the scanner from the raw PTY stream.
 #[derive(Clone, PartialEq, Debug)]
 pub enum OscEvent {
     Progress(ProgressUpdate),
     Notify(TermNotification),
+    /// OSC 133 semantic prompt mark.
+    Prompt(PromptMark),
+    /// Working directory reported by the shell — OSC 9;9 (ConEmu/wt, a
+    /// plain Windows path) or OSC 7 (a `file://` URL), already normalized
+    /// to a local path.
+    Cwd(String),
 }
 
 /// Longest payload we collect. Notification bodies are capped at 255 bytes by
@@ -115,7 +134,7 @@ fn plausible(payload: &[u8]) -> bool {
         let n = payload.len().min(p.len());
         payload[..n] == p[..n]
     };
-    matches(b"9;") || matches(b"777;")
+    matches(b"9;") || matches(b"777;") || matches(b"133;") || matches(b"7;")
 }
 
 enum ScanState {
@@ -224,13 +243,75 @@ fn parse_payload(payload: &[u8]) -> Option<OscEvent> {
         // (deliberate Ghostty deviation — see notify.rs module docs).
         return parse_progress(rest).map(OscEvent::Progress);
     }
+    if let Some(rest) = payload.strip_prefix(b"9;9;") {
+        // ConEmu/wt cwd report — checked before the OSC 9 notification so a
+        // path never surfaces as a toast. Value may be double-quoted.
+        return parse_cwd_windows(rest).map(OscEvent::Cwd);
+    }
     if let Some(rest) = payload.strip_prefix(b"9;") {
         return notify::parse_osc9(rest).map(OscEvent::Notify);
     }
     if let Some(rest) = payload.strip_prefix(b"777;") {
         return notify::parse_osc777(rest).map(OscEvent::Notify);
     }
+    if let Some(rest) = payload.strip_prefix(b"133;") {
+        let mark = match rest.first()? {
+            b'A' => PromptMark::PromptStart,
+            b'B' => PromptMark::CommandStart,
+            b'C' => PromptMark::OutputStart,
+            b'D' => PromptMark::Finished,
+            _ => return None,
+        };
+        return Some(OscEvent::Prompt(mark));
+    }
+    if let Some(rest) = payload.strip_prefix(b"7;") {
+        return cwd_from_file_url(rest).map(OscEvent::Cwd);
+    }
     None
+}
+
+/// `9;9;<path>` — the path as the shell printed it, minus optional quotes.
+fn parse_cwd_windows(rest: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(rest).ok()?.trim();
+    let s = s.strip_prefix('"').unwrap_or(s);
+    let s = s.strip_suffix('"').unwrap_or(s);
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// `7;file://host/path` → a local path. Only an empty host / `localhost` is
+/// accepted (a foreign host's path means nothing to this machine); percent
+/// escapes decode, and a `/C:/…` drive form loses its leading slash so the
+/// result is a usable Windows path. Other absolute paths pass through as-is —
+/// the consumer existence-checks before using them.
+fn cwd_from_file_url(rest: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(rest).ok()?.trim();
+    let after = s.strip_prefix("file://")?;
+    let slash = after.find('/')?;
+    let (host, path) = after.split_at(slash);
+    if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+        return None;
+    }
+    // Percent-decode.
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    let mut path = String::from_utf8(out).ok()?;
+    // `/C:/work` (URL form of a Windows path) → `C:/work`.
+    let b = path.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        path.remove(0);
+    }
+    (!path.is_empty()).then_some(path)
 }
 
 /// Parse `<state>[;<progress>]` — the part after `9;4;`.
@@ -286,6 +367,43 @@ mod tests {
             scan(b"\x1b]9;4;1;42\x07"),
             vec![progress(ProgressUpdate::Set(42))]
         );
+    }
+
+    #[test]
+    fn prompt_marks_parse() {
+        assert_eq!(
+            scan(b"\x1b]133;A\x07"),
+            vec![OscEvent::Prompt(PromptMark::PromptStart)]
+        );
+        assert_eq!(
+            scan(b"\x1b]133;D;0\x1b\\"),
+            vec![OscEvent::Prompt(PromptMark::Finished)]
+        );
+        assert_eq!(scan(b"\x1b]133;Z\x07"), vec![]);
+    }
+
+    #[test]
+    fn cwd_reports_parse() {
+        // ConEmu/wt form, quoted and bare — and never as a notification.
+        assert_eq!(
+            scan(b"\x1b]9;9;\"C:\\work\\x\"\x07"),
+            vec![OscEvent::Cwd("C:\\work\\x".into())]
+        );
+        assert_eq!(
+            scan(b"\x1b]9;9;C:\\work\x07"),
+            vec![OscEvent::Cwd("C:\\work".into())]
+        );
+        // OSC 7 file URL: localhost + percent decoding + drive form.
+        assert_eq!(
+            scan(b"\x1b]7;file://localhost/C:/a%20b\x07"),
+            vec![OscEvent::Cwd("C:/a b".into())]
+        );
+        assert_eq!(
+            scan(b"\x1b]7;file:///home/aki\x07"),
+            vec![OscEvent::Cwd("/home/aki".into())]
+        );
+        // A foreign host's path means nothing here.
+        assert_eq!(scan(b"\x1b]7;file://elsewhere/home/aki\x07"), vec![]);
     }
 
     #[test]
