@@ -56,6 +56,41 @@ pub struct AppearanceSection {
     pub line_height: Option<f32>,
     #[serde(default)]
     pub acrylic: Option<bool>,
+    /// OpenType feature toggles, ghostty's font-feature shape: "liga" /
+    /// "-calt" (explicit off) / "ss01=2" (alternate index). DirectWrite
+    /// enables liga/clig/calt by default, so this exists mostly to turn
+    /// things OFF or to pick stylistic sets.
+    #[serde(default)]
+    pub font_features: Option<Vec<String>>,
+}
+
+/// Parse the ghostty-style feature list into `(tag, value)` pairs for
+/// `renderer::set_font_features`. Unparseable entries are dropped with a
+/// warning rather than killing the whole list.
+pub fn parse_font_features(list: &[String]) -> Vec<(String, u32)> {
+    let mut out = Vec::new();
+    for raw in list {
+        let s = raw.trim();
+        let (tag, value) = if let Some(rest) = s.strip_prefix('-') {
+            (rest.trim(), 0)
+        } else if let Some((tag, v)) = s.split_once('=') {
+            match v.trim().parse::<u32>() {
+                Ok(n) => (tag.trim(), n),
+                Err(_) => {
+                    log::warn!("[config] font_features: bad value in {s:?}, skipped");
+                    continue;
+                }
+            }
+        } else {
+            (s, 1)
+        };
+        if tag.len() == 4 && tag.is_ascii() {
+            out.push((tag.to_ascii_lowercase(), value));
+        } else {
+            log::warn!("[config] font_features: {tag:?} is not a 4-char OpenType tag, skipped");
+        }
+    }
+    out
 }
 
 /// ```toml
@@ -253,7 +288,19 @@ impl Config {
         let Ok(raw) = std::fs::read_to_string(&path) else {
             return Self::default();
         };
-        toml::from_str(&raw).unwrap_or_default()
+        // Strip a UTF-8 BOM: Notepad and PowerShell's `-Encoding UTF8`
+        // write one, and `toml` rejects it — which used to silently void
+        // the entire config (unwrap_or_default).
+        match toml::from_str(raw.trim_start_matches('\u{feff}')) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                log::warn!(
+                    "[config] {} unparseable, using defaults: {e}",
+                    path.display()
+                );
+                Self::default()
+            }
+        }
     }
 }
 
@@ -307,6 +354,35 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bom_prefixed_config_still_parses() {
+        let cfg: Config =
+            toml::from_str("\u{feff}[appearance]\nfont = \"X\"".trim_start_matches('\u{feff}'))
+                .unwrap();
+        assert_eq!(cfg.appearance.font.as_deref(), Some("X"));
+    }
+
+    #[test]
+    fn font_features_parse_ghostty_shapes() {
+        let list = vec![
+            "liga".to_string(),      // plain on
+            "-calt".to_string(),     // explicit off
+            "ss01=2".to_string(),    // alternate index
+            " zero ".to_string(),    // whitespace tolerated
+            "bogus-tag".to_string(), // not a 4-char tag → dropped
+            "ss02=x".to_string(),    // bad value → dropped
+        ];
+        assert_eq!(
+            super::parse_font_features(&list),
+            vec![
+                ("liga".to_string(), 1),
+                ("calt".to_string(), 0),
+                ("ss01".to_string(), 2),
+                ("zero".to_string(), 1),
+            ]
+        );
+    }
+
     use super::*;
 
     fn prof(name: &str, guid: &str) -> WtProfile {

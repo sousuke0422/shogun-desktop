@@ -145,13 +145,23 @@
       スクロール）、Esc/同チョードで閉じ。全マッチ薄 gold＋current 濃 gold
       の 2 段ハイライト。SD（shell 窓＋将軍/家老陣ペイン）にも同配線。
       実機検証: 3 段（開閉/incremental/step）＋件数/Aa/×クリック全 PASS。
-- [ ] **リガチャ** — SD に font_features 配線（settings→
-      `renderer::set_font_features`・liga/calt/ss タグのパース）は**存在する
-      が機能していない**: エンジンのセル固定シェイピング（`shape_line`
-      force_width=cw で全グリフを n×cw にピン）がリガチャ置換を殺す構造の
-      ため。対応するなら「リガチャを含み得る ASCII run はシェイパー natural
-      で描き run 全幅のみセル境界に丸める」等、グリッド精度（ずれ皆無・
-      ブロック連結）とのトレードオフ設計が要る。
+- [x] **リガチャ（ghostty 同等）** — 済 (2026-07-20)。真因は二重: (1)
+      gpui が features 未指定でも**空 IDWriteTypography を SetTypography**
+      し、DirectWrite の既定 OpenType features（calt/liga/clig = フォントの
+      合字）を全滅させていた（空 typography = 既定の置換）。空なら Set しない
+      修正で**フォントの合字が既定 ON**（ghostty の既定と同じ）。(2)
+      force_width の**グリフ連番ピン**が合字グリフ（n 文字 1 グリフ）で
+      後続を左に詰めるため、`glyph.index`（クラスタ開始 byte）から数えた
+      **セル番号ピン**に一般化（kitty/ghostty のモデル・合字なしでは旧挙動と
+      同一・BiDi 逆行は再カウント）。さらに DWrite TextLayout は
+      **default-on feature を 0 指定で切れない**（実測）ため、OFF は
+      renderer の **per-char shaping**（合字は shape 境界を跨げない）で実現。
+      config は `[appearance] font_features = ["-calt"]`（ghostty 書式
+      ±tag / tag=N・BOM 付き config も救済）。実機マトリクス 3 態 PASS:
+      既定=合字 ON（==> ≠ ≥ ≤ → ≡・4 連矢印でも列整合維持）/
+      -calt=全離散/ ss19=slashed zero ＋合字維持。SD は既存 settings 配線
+      がそのまま生きる（bundled Moralerspace の合字も既定 ON 化）。
+      注: カーソル通過セルは run 分割で合字が一時解除（kitty 同等・利点）。
 - [ ] **ペイン分割**（split-pane） — cli.rs で意図的 TODO 宣言済み。構造工事。
 - [ ] **Quick terminal** — グローバルホットキーで出すドロップダウン窓。
 - [ ] 細目: grapheme clustering（mode 2027）・minimum-contrast・正規表現

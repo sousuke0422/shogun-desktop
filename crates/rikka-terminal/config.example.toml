@@ -34,6 +34,11 @@ hidden = ["Azure Cloud Shell"]
 # font_size = 14.0
 # Cell height = font_size × line_height (default: 1.2).
 # line_height = 1.3
+# OpenType features, ghostty's font-feature shape. The font's ligatures are
+# ON by default (pick a ligature font like "Cascadia Code" — Consolas and
+# Cascadia Mono have none); "-calt" turns them off, "ss19" etc. picks
+# stylistic sets ("tag", "-tag", "tag=N").
+# font_features = ["-calt"]
 # Blurred (acrylic) window background. Default: off.
 # acrylic = true
 

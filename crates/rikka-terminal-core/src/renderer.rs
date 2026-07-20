@@ -55,6 +55,20 @@ pub fn terminal_font(family: &str) -> gpui::Font {
     f
 }
 
+/// Whether the configured features ask for ligatures OFF (any of the
+/// standard ligature/contextual features explicitly zeroed). DirectWrite's
+/// TextLayout cannot switch default-on features off (SetTypography only
+/// adds — verified live), so the renderer honors these by shaping cell by
+/// cell instead: a ligature cannot form across separate shape calls. The
+/// price — no contextual shaping at all in that mode — matches what
+/// `-calt` means anyway.
+fn ligatures_disabled() -> bool {
+    FONT_FEATURES.read().as_ref().is_some_and(|f| {
+        f.0.iter()
+            .any(|(tag, v)| *v == 0 && matches!(tag.as_str(), "calt" | "liga" | "clig" | "dlig"))
+    })
+}
+
 /// OpenType features applied to every terminal font instance (ligature and
 /// stylistic-set toggles — e.g. Monaspace arrows live in ss03). Engine-global
 /// so the embedder can flip features at runtime (settings save) without
@@ -1259,7 +1273,35 @@ pub fn render_grid(
                             });
 
                         let all_narrow = run.char_widths.iter().all(|&w| w == 1);
-                        if all_narrow {
+                        if all_narrow && ligatures_disabled() {
+                            // Ligatures OFF: shape cell by cell so no
+                            // ligature (or any contextual form) can span
+                            // cells — the only reliable off-switch over
+                            // DirectWrite's TextLayout (see
+                            // `ligatures_disabled`). Single-char lines hit
+                            // the per-frame shape cache hard, so this stays
+                            // cheap despite the extra calls.
+                            let mut x_off = x;
+                            for c in run.text.chars() {
+                                let text_run = gpui::TextRun {
+                                    len: c.len_utf8(),
+                                    font: run_font.clone(),
+                                    color: fg_hsla,
+                                    background_color: None,
+                                    underline: underline_style,
+                                    strikethrough: strikethrough_style,
+                                };
+                                let line = window.text_system().shape_line(
+                                    c.to_string().into(),
+                                    font_size,
+                                    &[text_run],
+                                    Some(px(cw)),
+                                );
+                                let _ =
+                                    line.paint(point(px(x_off), px(oy)), line_height, window, cx);
+                                x_off += cw;
+                            }
+                        } else if all_narrow {
                             let text_run = gpui::TextRun {
                                 len: run.text.len(),
                                 font: run_font,

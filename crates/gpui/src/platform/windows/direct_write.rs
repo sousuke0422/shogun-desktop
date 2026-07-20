@@ -619,7 +619,17 @@ impl DirectWriteState {
                     startPosition: utf16_offset,
                     length: current_text_utf16_length,
                 };
-                layout.SetTypography(&font_info.features, text_range)?;
+                // Only set a typography when there are features to set:
+                // an EMPTY IDWriteTypography replaces the default OpenType
+                // feature set with nothing, silently killing default-on
+                // features (calt/liga/clig — i.e. every font's ligatures;
+                // verified live 2026-07-20). And SetTypography can only ADD
+                // on top of that replacement — zeroing a default-on feature
+                // here is ignored, so turning ligatures OFF has to happen
+                // above the platform layer (rikka: per-char shaping).
+                if font_info.features.GetFontFeatureCount() > 0 {
+                    layout.SetTypography(&font_info.features, text_range)?;
+                }
                 utf16_offset += current_text_utf16_length;
 
                 layout
@@ -659,7 +669,10 @@ impl DirectWriteState {
                 text_layout.SetFontSize(font_size.0, text_range)?;
                 text_layout.SetFontStyle(font_info.font_face.GetStyle(), text_range)?;
                 text_layout.SetFontWeight(font_info.font_face.GetWeight(), text_range)?;
-                text_layout.SetTypography(&font_info.features, text_range)?;
+                // See above: an empty typography must NOT be set.
+                if font_info.features.GetFontFeatureCount() > 0 {
+                    text_layout.SetTypography(&font_info.features, text_range)?;
+                }
             }
 
             let mut runs = Vec::new();

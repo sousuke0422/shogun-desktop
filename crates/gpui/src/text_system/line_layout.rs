@@ -566,13 +566,34 @@ impl LineLayoutCache {
                 .layout_line(&text, font_size, runs);
 
             if let Some(force_width) = force_width {
-                let mut glyph_pos = 0;
+                // Cluster-pin, not glyph-count-pin: place every glyph at the
+                // CELL of its source character (`glyph.index` = byte offset
+                // of the glyph's cluster start), counting cells in
+                // characters of the source text. With ligatures the shaper
+                // fuses several characters into one glyph; a running glyph
+                // count would walk everything after the ligature left by
+                // (chars - 1) cells, while cluster-pinning keeps each glyph
+                // on its own cell boundary and lets a width-preserving
+                // ligature glyph span its cells — kitty/ghostty's model.
+                // Without ligatures (1 char = 1 glyph) this is identical to
+                // the old running count.
+                let mut cell = 0usize;
+                let mut last_index = 0usize;
                 for run in layout.runs.iter_mut() {
                     for glyph in run.glyphs.iter_mut() {
-                        if (glyph.position.x - glyph_pos * force_width).abs() > px(1.) {
-                            glyph.position.x = glyph_pos * force_width;
+                        cell = if glyph.index >= last_index {
+                            cell + text[last_index..glyph.index].chars().count()
+                        } else {
+                            // Non-monotonic cluster order (BiDi reordering):
+                            // recount from the top rather than slicing
+                            // backwards.
+                            text[..glyph.index].chars().count()
+                        };
+                        last_index = glyph.index;
+                        let target = cell as f32 * force_width;
+                        if (glyph.position.x - target).abs() > px(1.) {
+                            glyph.position.x = target;
                         }
-                        glyph_pos += 1;
                     }
                 }
             }

@@ -113,6 +113,9 @@ fn apply_appearance(cfg: &config::Config) {
     if let Some(font) = &cfg.appearance.font {
         let _ = FONT_OVERRIDE.set(font.clone());
     }
+    if let Some(features) = &cfg.appearance.font_features {
+        rikka_terminal_core::renderer::set_font_features(config::parse_font_features(features));
+    }
     let _ = ACRYLIC_CFG.set(cfg.appearance.acrylic.unwrap_or(false));
     let _ = SCROLLBACK_CFG.set(cfg.terminal.scrollback.map(|n| n as usize));
 }
