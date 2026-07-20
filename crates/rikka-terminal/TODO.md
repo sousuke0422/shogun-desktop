@@ -46,6 +46,13 @@
       (Win 24H2+) > ShellExecuteEx(runas) のフォールバック連鎖に。
       同梱はビルド時に版数＋SHA256 ピンで取得・CREDITS 追記・AV の
       PUA 誤検知歴（署名で概ね解消）に留意。
+      **抽象はクロスプラットフォーム前提 (2026-07-20 殿方針)**: 契約を
+      「argv を管理者権限で起動するだけ」の薄い ElevationExecutor に絞り、
+      P3 Unix 移植時に **pkexec (PolicyKit) / lxqt-sudo / kdesu / doas /
+      sudo -A**、macOS の osascript administrator 等を実装として
+      差し込めるようにする。cache・GUI プロンプト種別・環境変数の癖
+      （pkexec は env をサニタイズ＝DISPLAY/XAUTHORITY 例外要）は各実装に
+      閉じ込め、選択は自動検出＋config 明示指定の二段。
 
 ## resize / reflow（残りは意図的妥協のみ）
 
