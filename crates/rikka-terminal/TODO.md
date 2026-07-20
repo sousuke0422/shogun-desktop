@@ -173,6 +173,42 @@
 のタブ移送一式（tear-off/drag-merge・画面/画像/テーマ搬送・クラッシュ隔離・
 monarch 再選出）・OSC 9;4 プログレス UI。ghostty は現時点 Windows 未対応。
 
+## wt 比較ギャップ（2026-07-20 調査・実用度順）
+
+体感差はほぼ「ペイン分割＋設定まわり」に集約（プロファイル互換・defterm・
+進捗 UI・検索・リガチャは解消済み）。
+
+実用ギャップ大:
+
+- [ ] **ペイン分割** — ghostty ギャップと共通の最大物（broadcast input も
+      この上に乗る）。cli.rs の TODO 宣言参照。
+- [ ] **設定 UI＋保存即反映** — 現状 config.toml 手編集＋再起動。まず
+      テーマ/設定のライブリロード（file watcher）から。
+- [ ] **コマンドパレット**（Ctrl+Shift+P） — アクションの発見性で wt が上。
+- Quake モード / グローバルホットキー — ghostty ギャップの
+  **Quick terminal と同一物**（そちらを参照）。
+- elevated（管理者）タブ — 既出「elevated handoff 窓プロセス」参照
+  （wire に flag のみ）。
+
+実用ギャップ中:
+
+- [ ] キーバインドの網羅性 — wt は全アクション自由割当。rikka は主要
+      チョード 13 個の再割当のみ。
+- [ ] コピーの書式 — HTML/RTF コピー・Export text（バッファ書き出し）
+      が無い（プレーンのみ）。
+- [ ] アクセシビリティ（UIA/Narrator） — gpui の Windows UIA が弱く
+      構造的に重い。長期課題として認識のみ。
+- [ ] New Tab メニューの階層化（wt の folders） — 現状フラット。
+
+飾り級（小・要望が出たら）: 背景画像・ペイン透過度スライダー・
+unfocused appearance・visual bell・Terminal Chat（Copilot 統合）。
+
+参考・rikka 側の優位（wt 比）: kitty graphics（wt 未対応）・kitty
+keyboard protocol・Tera Term 風セッションログ・検索の regex/全マッチ/
+件数（wt はリテラル中心）・タブ移送の搬送力（drag-merge でテーマ/画像/
+リンクごと）・Twemoji 同梱の環境非依存絵文字・conhost 完全互換 reflow・
+リガチャの per-char off 制御。
+
 ## セキュリティ
 
 - [x] ~~IPC の権限境界~~ — 名前空間は rendezvous であって境界でないと判明
