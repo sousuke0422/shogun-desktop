@@ -627,9 +627,16 @@ impl DirectWriteState {
                 // on top of that replacement — zeroing a default-on feature
                 // here is ignored, so turning ligatures OFF has to happen
                 // above the platform layer (rikka: per-char shaping).
-                if font_info.features.GetFontFeatureCount() > 0 {
-                    layout.SetTypography(&font_info.features, text_range)?;
-                }
+                // The typography is never empty: an EMPTY IDWriteTypography
+                // REPLACES DirectWrite's default OpenType feature set with
+                // nothing (killing every font's default-on ligatures —
+                // calt/liga/clig), so apply_font_features always seeds those
+                // three explicitly. Skipping SetTypography instead is NOT
+                // safe: raw default shaping surfaces fallback-font glyph
+                // runs in the Draw callback, whose identifier-miss path
+                // re-enters select_font on &mut self and crashed with an AV
+                // (verified live 2026-07-21, default Consolas config).
+                layout.SetTypography(&font_info.features, text_range)?;
                 utf16_offset += current_text_utf16_length;
 
                 layout
@@ -670,9 +677,8 @@ impl DirectWriteState {
                 text_layout.SetFontStyle(font_info.font_face.GetStyle(), text_range)?;
                 text_layout.SetFontWeight(font_info.font_face.GetWeight(), text_range)?;
                 // See above: an empty typography must NOT be set.
-                if font_info.features.GetFontFeatureCount() > 0 {
-                    text_layout.SetTypography(&font_info.features, text_range)?;
-                }
+                // See above: never skip, never empty.
+                text_layout.SetTypography(&font_info.features, text_range)?;
             }
 
             let mut runs = Vec::new();
@@ -1868,9 +1874,6 @@ fn apply_font_features(
     features: &FontFeatures,
 ) -> Result<()> {
     let tag_values = features.tag_value_list();
-    if tag_values.is_empty() {
-        return Ok(());
-    }
 
     // All of these features are enabled by default by DirectWrite.
     // If you want to (and can) peek into the source of DirectWrite
