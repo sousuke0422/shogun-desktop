@@ -36,6 +36,16 @@
 - [ ] **Unix の tab move** — SCM_RIGHTS 版の handle 移送。tear-off /
       drag-merge も Windows 専用のまま。
 - [ ] elevated handoff 窓プロセス（wire に flag のみ・実装なし）。
+      **方針 (2026-07-20 殿発案)**: 昇格執行の実体は **gsudo
+      (gerardog/gsudo・MIT・署名済みバイナリ) をバンドル**して使う —
+      UAC ダイアログが署名者名義になり、credentials cache で 2 回目以降の
+      UAC を省略できる（cache は UAC 削減のトレードオフゆえ**既定 off・
+      opt-in**）。ただし工数の本丸は rikka 側の「昇格 PTY ホスト＋IPC」
+      （非昇格 UI 窓のまま昇格 ConPTY を別プロセスに握らせる・conhost
+      handoff と同型）。昇格実体は抽象化し、gsudo（同梱）> inbox sudo
+      (Win 24H2+) > ShellExecuteEx(runas) のフォールバック連鎖に。
+      同梱はビルド時に版数＋SHA256 ピンで取得・CREDITS 追記・AV の
+      PUA 誤検知歴（署名で概ね解消）に留意。
 
 ## resize / reflow（残りは意図的妥協のみ）
 
