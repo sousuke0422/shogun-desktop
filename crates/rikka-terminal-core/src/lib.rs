@@ -1532,8 +1532,27 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         }
     }
 
-    detect_implicit_links(&mut cells, &wrapped, &mut links, &mut link_ids);
-    let links = assign_link_occurrences(&mut cells, &wrapped, &links);
+    // Effective wrap for URL detection: line editors (pwsh's PSReadLine)
+    // repaint long input lines with explicit newlines/cursor motion, so a
+    // visually wrapped URL often carries no WRAPLINE flag and the
+    // continuation row lost its underline (殿 report 2026-07-20). When a
+    // row is filled to its last column with URL-ish characters and the
+    // next row starts with one, treat it as wrapped for link purposes —
+    // the URL regex still decides what actually links, so a false join
+    // costs nothing.
+    let mut url_wrapped = wrapped.clone();
+    for row in 0..rows.saturating_sub(1) {
+        if !url_wrapped[row]
+            && let (Some(a), Some(b)) = (cells[row].last(), cells[row + 1].first())
+        {
+            url_wrapped[row] = a.display_width != 0
+                && b.display_width != 0
+                && is_bare_url_char(a.c)
+                && is_bare_url_char(b.c);
+        }
+    }
+    detect_implicit_links(&mut cells, &url_wrapped, &mut links, &mut link_ids);
+    let links = assign_link_occurrences(&mut cells, &url_wrapped, &links);
 
     // SGR-applied affordance: every linked cell without an underline of its
     // own gets a dotted accent underline, so click targets are visible
@@ -1734,11 +1753,15 @@ fn assign_link_occurrences(
     out
 }
 
+/// A character a bare URL can contain — shared by [`detect_urls`] and the
+/// effective-wrap heuristic in `take_snapshot`.
+fn is_bare_url_char(c: char) -> bool {
+    c.is_ascii_graphic() && !matches!(c, '"' | '\'' | '<' | '>' | '`')
+}
+
 /// `[start, end)` char spans of bare URLs in `chars`, with the URI text.
 fn detect_urls(chars: &[char]) -> Vec<(usize, usize, String)> {
-    fn is_url_char(c: char) -> bool {
-        c.is_ascii_graphic() && !matches!(c, '"' | '\'' | '<' | '>' | '`')
-    }
+    let is_url_char = is_bare_url_char;
     let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {
@@ -2276,6 +2299,26 @@ mod tests {
     }
 
     #[test]
+    fn implicit_url_joins_hard_wrapped_rows() {
+        // PSReadLine-style repaint: the line is written to the last column,
+        // then an explicit CRLF moves to the next row — no WRAPLINE flag.
+        // The effective-wrap heuristic must still join the rows so the
+        // continuation keeps its link (and its dotted underline).
+        let mut term = make_term(10, 3);
+        advance_bytes(&mut term, b"https://e.\r\ncom/ab");
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.links, vec!["https://e.com/ab".to_string()]);
+        assert_eq!(snap.cells[0][9].link, Some(0));
+        assert_eq!(
+            snap.cells[1][0].link,
+            Some(0),
+            "continuation row lost its link"
+        );
+        assert_eq!(snap.cells[1][5].link, Some(0));
+        assert_eq!(snap.cells[1][6].link, None);
+    }
+
+    #[test]
     fn wrapped_url_reconstructs_full_uri_on_both_rows() {
         // A realistic long URL (query string) soft-wrapped by a narrow term:
         // every linked cell, on either row, must resolve to the WHOLE URL,
@@ -2308,6 +2351,16 @@ mod tests {
         let snap = take_snapshot(&term);
         assert_eq!(snap.links, vec!["https://real.example/".to_string()]);
         assert_eq!(snap.cells[0][0].link, Some(0));
+    }
+
+    #[test]
+    fn detect_urls_keeps_trailing_ampersand() {
+        // Discord CDN links end in "&" — that is part of the URL, not prose
+        // punctuation (殿 2026-07-21).
+        let chars: Vec<char> = "https://cdn.example/a.txt?ex=1&hm=2&".chars().collect();
+        let got = detect_urls(&chars);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].2, "https://cdn.example/a.txt?ex=1&hm=2&");
     }
 
     #[test]
