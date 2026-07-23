@@ -160,6 +160,32 @@ fn fragment_files() -> Vec<std::path::PathBuf> {
     files
 }
 
+/// Every available scheme, resolved onto `base`, for the settings window's
+/// picker: the user's settings.json first, then fragments; deduped
+/// case-insensitively (first wins, matching [`palette_for`]'s precedence)
+/// and sorted by name. ONE filesystem sweep — callers cache the result;
+/// nothing here may run per frame.
+pub fn catalog(base: Palette) -> Vec<(String, Palette)> {
+    let from_settings = crate::wt_profiles::settings_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|raw| schemes_in(&raw))
+        .unwrap_or_default();
+    let from_fragments = fragment_files()
+        .into_iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .flat_map(|raw| schemes_in(&raw))
+        .collect::<Vec<_>>();
+    let mut out: Vec<(String, Palette)> = Vec::new();
+    for s in from_settings.into_iter().chain(from_fragments) {
+        if !out.iter().any(|(n, _)| n.eq_ignore_ascii_case(&s.name)) {
+            let name = s.name.clone();
+            out.push((name, s.apply_onto(base.clone())));
+        }
+    }
+    out.sort_by(|(a, _), (b, _)| a.to_lowercase().cmp(&b.to_lowercase()));
+    out
+}
+
 /// Resolve a wt color scheme by name and fold it onto `base`. Sources, in
 /// precedence order (first match wins): the user's settings.json, then
 /// fragment files. `None` when no scheme of that name exists anywhere.

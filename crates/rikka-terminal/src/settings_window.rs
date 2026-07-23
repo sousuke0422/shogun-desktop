@@ -50,7 +50,6 @@ enum Field {
     Font,
     Term,
     LogDir,
-    WtScheme,
     ThemeBg,
     ThemeFg,
 }
@@ -82,6 +81,11 @@ pub struct SettingsWindow {
     status: Option<(String, bool)>,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    /// The wt-scheme picker overlay (list from [`crate::wt_schemes::catalog`],
+    /// loaded ONCE at window open — never per frame).
+    scheme_menu: bool,
+    schemes: Vec<(String, rikka_terminal_core::theme::Palette)>,
+    scheme_scroll: ScrollHandle,
 }
 
 impl SettingsWindow {
@@ -116,6 +120,9 @@ impl SettingsWindow {
             status: None,
             focus,
             scroll: ScrollHandle::default(),
+            scheme_menu: false,
+            schemes: crate::wt_schemes::catalog(rikka_terminal_core::theme::DEFAULT),
+            scheme_scroll: ScrollHandle::default(),
         }
     }
 
@@ -131,7 +138,6 @@ impl SettingsWindow {
             Field::Font => &mut self.v.font,
             Field::Term => &mut self.v.term,
             Field::LogDir => &mut self.v.log_dir,
-            Field::WtScheme => &mut self.v.wt_scheme,
             Field::ThemeBg => &mut self.v.theme_bg,
             Field::ThemeFg => &mut self.v.theme_fg,
         };
@@ -322,7 +328,6 @@ impl SettingsWindow {
             Field::Font => &self.v.font,
             Field::Term => &self.v.term,
             Field::LogDir => &self.v.log_dir,
-            Field::WtScheme => &self.v.wt_scheme,
             Field::ThemeBg => &self.v.theme_bg,
             Field::ThemeFg => &self.v.theme_fg,
         };
@@ -400,6 +405,87 @@ impl SettingsWindow {
                     .border_color(rgb(c.input_border))
                     .when_some(parsed, |d, hex| d.bg(rgb(hex))),
             )
+    }
+
+    /// The wt-scheme picker button: current selection + ▾, opening the
+    /// overlay list.
+    fn scheme_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = sheet();
+        let empty = self.v.wt_scheme.is_empty();
+        let label = if empty {
+            "(なし)".to_string()
+        } else {
+            self.v.wt_scheme.clone()
+        };
+        div()
+            .id("sf-scheme-btn")
+            .flex_1()
+            .min_w_0()
+            .px(px(8.))
+            .py(px(4.))
+            .bg(rgb(c.input_bg))
+            .border_1()
+            .border_color(rgb(c.input_border))
+            .rounded(px(4.))
+            .text_size(px(13.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .cursor_pointer()
+            .child(
+                div()
+                    .text_color(if empty {
+                        rgba((c.text << 8) | 0x50)
+                    } else {
+                        rgb(c.text)
+                    })
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(label),
+            )
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(rgba((c.text << 8) | 0x80))
+                    .child("▾"),
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
+                cx.stop_propagation();
+                this.scheme_menu = true;
+                cx.notify();
+            }))
+    }
+
+    /// wt-style palette preview: bg / fg / selection + the 16 ANSI colors.
+    fn palette_strip(
+        pal: &rikka_terminal_core::theme::Palette,
+        c: &SearchColors,
+    ) -> impl IntoElement {
+        let pack = |col: rikka_terminal_core::theme::Rgb| {
+            ((col.r as u32) << 16) | ((col.g as u32) << 8) | col.b as u32
+        };
+        let mut colors: Vec<u32> = vec![
+            pack(pal.background),
+            pack(pal.foreground),
+            pack(pal.selection),
+        ];
+        colors.extend(pal.ansi.iter().map(|&col| pack(col)));
+        let border = rgb(c.input_border);
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(3.))
+            .children(colors.into_iter().map(move |col| {
+                div()
+                    .w(px(16.))
+                    .h(px(16.))
+                    .rounded(px(3.))
+                    .border_1()
+                    .border_color(border)
+                    .bg(rgb(col))
+            }))
     }
 
     fn small_btn(
@@ -648,11 +734,17 @@ impl Render for SettingsWindow {
                             )
                             .child(
                                 Self::card("テーマ", &c)
-                                    .child(Self::row(
-                                        "wt スキーム",
-                                        self.text_field(Field::WtScheme, 3, cx),
-                                        &c,
-                                    ))
+                                    .child(Self::row("wt スキーム", self.scheme_button(cx), &c))
+                                    .children({
+                                        // Preview from the cached catalog —
+                                        // a Vec lookup, no I/O per frame.
+                                        self.schemes
+                                            .iter()
+                                            .find(|(n, _)| {
+                                                n.eq_ignore_ascii_case(&self.v.wt_scheme)
+                                            })
+                                            .map(|(_, pal)| Self::palette_strip(pal, &c))
+                                    })
                                     .child(Self::row(
                                         "背景色",
                                         self.color_field(Field::ThemeBg, 4, cx),
@@ -767,6 +859,138 @@ impl Render for SettingsWindow {
                             .child("保存"),
                     ),
             )
+            // Scheme picker overlay: scrim + a centered list (rendered on
+            // the ROOT, never inside the scroll container — an absolute
+            // child of a scroll container inflates its content size).
+            .when(self.scheme_menu, |root| {
+                let names: Vec<(String, u32, u32)> = self
+                    .schemes
+                    .iter()
+                    .map(|(n, pal)| {
+                        let pack = |col: rikka_terminal_core::theme::Rgb| {
+                            ((col.r as u32) << 16) | ((col.g as u32) << 8) | col.b as u32
+                        };
+                        (n.clone(), pack(pal.background), pack(pal.foreground))
+                    })
+                    .collect();
+                let item = |id: usize, c: &SearchColors| {
+                    div()
+                        .id(("sf-scheme-item", id))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(10.))
+                        .py(px(5.))
+                        .rounded(px(4.))
+                        .text_size(px(13.))
+                        .text_color(rgba((c.text << 8) | 0xC0))
+                        .hover(|t| t.bg(rgba(0xFFFFFF14)))
+                        .cursor_pointer()
+                };
+                root.child(
+                    div()
+                        .id("sf-scheme-scrim")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
+                            this.scheme_menu = false;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(40.))
+                        .left(px(60.))
+                        .right(px(60.))
+                        .max_h(px(440.))
+                        .bg(rgb(c.bg))
+                        .border_1()
+                        .border_color(rgb(c.border))
+                        .rounded(px(8.))
+                        .shadow_lg()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .px(px(12.))
+                                .py(px(8.))
+                                .text_size(px(12.))
+                                .text_color(rgba((c.text << 8) | 0x70))
+                                .child("配色スキーム"),
+                        )
+                        .child(
+                            div()
+                                .id("sf-scheme-list")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scheme_scroll)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .p(px(4.))
+                                        .child(
+                                            item(usize::MAX, &c)
+                                                .child(
+                                                    div()
+                                                        .text_color(rgba((c.text << 8) | 0x70))
+                                                        .child("(なし — 既定の配色)"),
+                                                )
+                                                .on_click(cx.listener(
+                                                    |this, _: &ClickEvent, _win, cx| {
+                                                        cx.stop_propagation();
+                                                        this.v.wt_scheme.clear();
+                                                        this.scheme_menu = false;
+                                                        this.status = None;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        )
+                                        .children(names.into_iter().enumerate().map(
+                                            |(ix, (name, bg, fg))| {
+                                                let pick = name.clone();
+                                                item(ix, &c)
+                                                    .child(
+                                                        div()
+                                                            .w(px(14.))
+                                                            .h(px(14.))
+                                                            .flex_shrink_0()
+                                                            .rounded(px(3.))
+                                                            .border_1()
+                                                            .border_color(rgb(c.input_border))
+                                                            .bg(rgb(bg)),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .w(px(14.))
+                                                            .h(px(14.))
+                                                            .flex_shrink_0()
+                                                            .rounded(px(3.))
+                                                            .border_1()
+                                                            .border_color(rgb(c.input_border))
+                                                            .bg(rgb(fg)),
+                                                    )
+                                                    .child(name)
+                                                    .on_click(cx.listener(
+                                                        move |this, _: &ClickEvent, _win, cx| {
+                                                            cx.stop_propagation();
+                                                            this.v.wt_scheme = pick.clone();
+                                                            this.scheme_menu = false;
+                                                            this.status = None;
+                                                            cx.notify();
+                                                        },
+                                                    ))
+                                            },
+                                        )),
+                                ),
+                        ),
+                )
+            })
     }
 }
 
