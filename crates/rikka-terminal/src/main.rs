@@ -690,6 +690,97 @@ fn default_shell_dir() -> Option<String> {
 /// Tab from a CLI spec (wt semantics): an explicit commandline replaces the
 /// shell entirely; `-p` narrows the shell to one candidate; `--title` seeds
 /// the tab title until the application's OSC 0/2 takes over.
+/// One tab: a pane tree (a single leaf until the first split) plus which
+/// pane holds the focus. Pane ids are tab-local and never reused.
+struct Tab {
+    root: PaneNode,
+    active_pane: usize,
+    #[allow(dead_code)] // consumed by Phase B's split actions
+    next_pane_id: usize,
+}
+
+enum PaneNode {
+    Leaf(usize, TabEntry),
+    #[allow(dead_code)] // built by Phase B's split actions
+    Split {
+        horizontal: bool,
+        ratio: f32,
+        a: Box<PaneNode>,
+        b: Box<PaneNode>,
+    },
+}
+
+impl PaneNode {
+    fn first_leaf(&self) -> &TabEntry {
+        match self {
+            PaneNode::Leaf(_, e) => e,
+            PaneNode::Split { a, .. } => a.first_leaf(),
+        }
+    }
+
+    fn find(&self, id: usize) -> Option<&TabEntry> {
+        match self {
+            PaneNode::Leaf(pid, e) => (*pid == id).then_some(e),
+            PaneNode::Split { a, b, .. } => a.find(id).or_else(|| b.find(id)),
+        }
+    }
+
+    fn for_each(&self, f: &mut dyn FnMut(&TabEntry)) {
+        match self {
+            PaneNode::Leaf(_, e) => f(e),
+            PaneNode::Split { a, b, .. } => {
+                a.for_each(f);
+                b.for_each(f);
+            }
+        }
+    }
+}
+
+impl Tab {
+    fn single(entry: TabEntry) -> Self {
+        Tab {
+            root: PaneNode::Leaf(0, entry),
+            active_pane: 0,
+            next_pane_id: 1,
+        }
+    }
+
+    /// The top-left pane: the tab strip's face (title, icon, theme) and the
+    /// unit tab moves operate on while splits don't travel.
+    fn primary(&self) -> &TabEntry {
+        self.root.first_leaf()
+    }
+
+    /// The focused pane: where input, search, copy/paste and the IME go.
+    fn active_entry(&self) -> &TabEntry {
+        self.root
+            .find(self.active_pane)
+            .unwrap_or_else(|| self.root.first_leaf())
+    }
+
+    fn for_each_entry(&self, mut f: impl FnMut(&TabEntry)) {
+        self.root.for_each(&mut f);
+    }
+
+    /// More than one pane (Phase B). Gates tab moves — splits don't travel.
+    fn is_split(&self) -> bool {
+        !matches!(self.root, PaneNode::Leaf(..))
+    }
+
+    /// The sole pane of an unsplit tab; `None` (untouched drop would leak
+    /// drivers, so the caller must guard with [`Self::is_split`]) otherwise.
+    fn take_single(self) -> Option<TabEntry> {
+        match self.root {
+            PaneNode::Leaf(_, e) => Some(e),
+            PaneNode::Split { .. } => None,
+        }
+    }
+
+    fn shutdown_all(&self) {
+        self.for_each_entry(|e| e.0.shutdown());
+    }
+}
+
 fn create_tab_spec(cx: &mut App, spec: &cli::TabSpec) -> Option<TabEntry> {
     let candidates: Vec<String> = if !spec.cmdline.is_empty() {
         vec![spec.cmdline[0].clone()]
@@ -796,7 +887,7 @@ impl Render for TabDragGhost {
 }
 
 pub struct TabsWindow {
-    tabs: Vec<TabEntry>,
+    tabs: Vec<Tab>,
     active: usize,
     terminal_focus: FocusHandle,
     ime: Entity<TerminalIme<Self>>,
@@ -922,7 +1013,9 @@ impl TabsWindow {
     }
 
     fn active_session(&self) -> Option<&TerminalSession> {
-        self.tabs.get(self.active).map(|e| &e.0.session)
+        self.tabs
+            .get(self.active)
+            .map(|t| &t.active_entry().0.session)
     }
 
     /// Run one `[keys]` action — the single dispatch point for the
@@ -975,7 +1068,10 @@ impl TabsWindow {
             }
             OpenSettings => settings_window::open(cx),
             Search => {
-                let sess = self.tabs.get(self.active).map(|e| &e.0.session);
+                let sess = self
+                    .tabs
+                    .get(self.active)
+                    .map(|t| &t.active_entry().0.session);
                 self.search.toggle(sess);
                 cx.notify();
             }
@@ -985,7 +1081,10 @@ impl TabsWindow {
     /// Step the open search (↑/↓ buttons, Enter): shared helper for the
     /// button listeners.
     fn search_nav(&mut self, dir: i32, cx: &mut Context<Self>) {
-        let sess = self.tabs.get(self.active).map(|e| &e.0.session);
+        let sess = self
+            .tabs
+            .get(self.active)
+            .map(|t| &t.active_entry().0.session);
         self.search.nav(dir, sess);
         cx.notify();
     }
@@ -993,6 +1092,20 @@ impl TabsWindow {
     /// Take ownership of a tab: point its driver's waker at this window and
     /// make it the active tab. This is the whole "attach" operation — the
     /// session itself never moves threads.
+    fn adopt_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        let ix = self.tabs.len();
+        let weak = cx.weak_entity();
+        tab.for_each_entry(|entry| {
+            let weak = weak.clone();
+            *entry.0.waker.lock() = Some(Box::new(move |acx| {
+                let _ = weak.update(acx, |_, cx| cx.notify());
+            }));
+        });
+        self.tabs.insert(ix, tab);
+        self.switch_to(ix, cx);
+        cx.notify();
+    }
+
     fn adopt(&mut self, entry: TabEntry, cx: &mut Context<Self>) {
         self.adopt_at(entry, None, cx);
     }
@@ -1004,7 +1117,7 @@ impl TabsWindow {
             let _ = weak.update(acx, |_, cx| cx.notify());
         }));
         let ix = ix.unwrap_or(usize::MAX).min(self.tabs.len());
-        self.tabs.insert(ix, entry);
+        self.tabs.insert(ix, Tab::single(entry));
         self.active = ix;
         self.after_tab_change(cx);
     }
@@ -1098,14 +1211,18 @@ impl TabsWindow {
         // sweeps the highlight off every tab.
         if self.search.open {
             self.search.open = false;
-            for e in &self.tabs {
-                e.0.session.search_close();
+            for t in &self.tabs {
+                t.for_each_entry(|e| e.0.session.search_close());
             }
         }
         // Install the now-active tab's palette so the visible tab wears its
         // own colors (per-profile theming). Only the active tab renders, so
         // one global palette is enough.
-        apply_active_theme(self.tabs.get(self.active).and_then(|t| t.0.theme()));
+        apply_active_theme(
+            self.tabs
+                .get(self.active)
+                .and_then(|t| t.primary().0.theme()),
+        );
         cx.notify();
     }
 
@@ -1123,8 +1240,8 @@ impl TabsWindow {
             }
             return;
         }
-        let entry = self.tabs.remove(ix);
-        entry.0.shutdown();
+        let tab = self.tabs.remove(ix);
+        tab.shutdown_all();
         if self.tabs.is_empty() {
             window.remove_window();
             return;
@@ -1148,7 +1265,14 @@ impl TabsWindow {
         if self.tabs.len() < 2 || ix >= self.tabs.len() {
             return;
         }
-        let entry = self.tabs.remove(ix);
+        // Splits don't travel (Phase B): moving one pane of a split would
+        // orphan the rest, so a split tab simply stays put.
+        if self.tabs[ix].is_split() {
+            return;
+        }
+        let Some(entry) = self.tabs.remove(ix).take_single() else {
+            return;
+        };
         if ix < self.active {
             self.active -= 1;
         }
@@ -1167,9 +1291,12 @@ impl TabsWindow {
         if self.tabs.len() < 2 || ix >= self.tabs.len() {
             return;
         }
+        if self.tabs[ix].is_split() {
+            return;
+        }
         #[cfg(windows)]
         {
-            let entry = &self.tabs[ix];
+            let entry = self.tabs[ix].primary();
             if tab_move::is_transferable(&entry.0.session) {
                 let palette = entry.0.theme().map(|p| p.to_wire());
                 match tab_move::send_tab(
@@ -1228,9 +1355,14 @@ impl TabsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(entry) = self.tabs.get(ix) else {
+        let Some(tab) = self.tabs.get(ix) else {
             return true;
         };
+        if tab.is_split() {
+            log::warn!("drag-merge: split tabs don't travel yet — cancelled");
+            return true;
+        }
+        let entry = tab.primary();
         if !tab_move::is_transferable(&entry.0.session) {
             log::warn!("drag-merge: session is not transferable (legacy PTY) — cancelled");
             return true;
@@ -1262,9 +1394,14 @@ impl TabsWindow {
     /// closes this window — that is a window merge, and the point.
     #[cfg(windows)]
     fn move_active_to_other_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.tabs.get(self.active) else {
+        let Some(tab) = self.tabs.get(self.active) else {
             return;
         };
+        if tab.is_split() {
+            log::warn!("tab move: split tabs don't travel yet — cancelled");
+            return;
+        }
+        let entry = tab.primary();
         match tab_move::move_to_any_other_window(
             &entry.0.session,
             entry.0.theme().map(|p| p.to_wire()),
@@ -1284,12 +1421,12 @@ impl TabsWindow {
         let my_id = cx.entity_id();
         let others = hub::other_windows(cx, my_id);
         for (handle, weak) in others {
-            let moved: Vec<TabEntry> = weak
+            let moved: Vec<Tab> = weak
                 .upgrade()
                 .map(|e| e.update(cx, |other, _| std::mem::take(&mut other.tabs)))
                 .unwrap_or_default();
-            for entry in moved {
-                self.adopt(entry, cx);
+            for tab in moved {
+                self.adopt_tab(tab, cx);
             }
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
@@ -1412,7 +1549,7 @@ impl Render for TabsWindow {
         let agg = self
             .tabs
             .iter()
-            .map(|e| tab_progress(&e.0.session))
+            .map(|t| tab_progress(&t.primary().0.session))
             .fold(None, taskbar_aggregate);
         taskbar_progress::update(
             self.applied_title.as_deref().unwrap_or("RikkaTerminal"),
@@ -1436,8 +1573,10 @@ impl Render for TabsWindow {
                 // would never be re-fit — by the time it's activated the
                 // dims already "match" and it stays at its stale PTY size
                 // (wrong wrap column) until the next window resize.
-                for entry in &self.tabs {
-                    entry.0.session.resize(new_cols, new_rows, (cw, ch));
+                for tab in &self.tabs {
+                    tab.for_each_entry(|entry| {
+                        entry.0.session.resize(new_cols, new_rows, (cw, ch));
+                    });
                 }
             }
         }
@@ -1504,7 +1643,8 @@ impl Render for TabsWindow {
                 let last = this.tabs.len().saturating_sub(1);
                 this.reorder_tab(drag.ix, last, cx);
             }))
-            .children(self.tabs.iter().enumerate().flat_map(|(ix, entry)| {
+            .children(self.tabs.iter().enumerate().flat_map(|(ix, tab)| {
+                let entry = tab.primary();
                 let title = entry
                     .0
                     .session
@@ -1935,7 +2075,10 @@ impl Render for TabsWindow {
                 if this.search.open {
                     let close_chord =
                         keymap::resolve(m, ks.key.as_str()) == Some(keymap::Action::Search);
-                    let sess = this.tabs.get(this.active).map(|e| &e.0.session);
+                    let sess = this
+                        .tabs
+                        .get(this.active)
+                        .map(|t| &t.active_entry().0.session);
                     if this.search.key(ks, close_chord, sess, cx) {
                         cx.notify();
                         cx.stop_propagation();
@@ -2064,7 +2207,7 @@ impl Render for TabsWindow {
                 let status = self
                     .tabs
                     .get(self.active)
-                    .and_then(|e| e.0.session.search_status());
+                    .and_then(|t| t.active_entry().0.session.search_status());
                 let handlers = rikka_terminal_core::search_bar::SearchHandlers {
                     prev: Box::new(cx.listener(|this: &mut TabsWindow, _, _, cx| {
                         this.search_nav(-1, cx);
@@ -2073,17 +2216,26 @@ impl Render for TabsWindow {
                         this.search_nav(1, cx);
                     })),
                     close: Box::new(cx.listener(|this: &mut TabsWindow, _, _, cx| {
-                        let sess = this.tabs.get(this.active).map(|e| &e.0.session);
+                        let sess = this
+                            .tabs
+                            .get(this.active)
+                            .map(|t| &t.active_entry().0.session);
                         this.search.close(sess);
                         cx.notify();
                     })),
                     case: Box::new(cx.listener(|this: &mut TabsWindow, _, _, cx| {
-                        let sess = this.tabs.get(this.active).map(|e| &e.0.session);
+                        let sess = this
+                            .tabs
+                            .get(this.active)
+                            .map(|t| &t.active_entry().0.session);
                         this.search.toggle_case(sess);
                         cx.notify();
                     })),
                     regex: Box::new(cx.listener(|this: &mut TabsWindow, _, _, cx| {
-                        let sess = this.tabs.get(this.active).map(|e| &e.0.session);
+                        let sess = this
+                            .tabs
+                            .get(this.active)
+                            .map(|t| &t.active_entry().0.session);
                         this.search.toggle_regex(sess);
                         cx.notify();
                     })),
@@ -2183,7 +2335,7 @@ impl Render for TabsWindow {
                 let logging = self
                     .tabs
                     .get(menu_ix)
-                    .map(|e| e.0.session.logging_active())
+                    .map(|t| t.primary().0.session.logging_active())
                     .unwrap_or(false);
                 let vw = window.viewport_size().width / px(1.);
                 let left = at_x.min(vw - 200.).max(0.);
@@ -2238,8 +2390,8 @@ impl Render for TabsWindow {
                             .on_click(cx.listener(
                                 move |this, _: &ClickEvent, _win, cx| {
                                     cx.stop_propagation();
-                                    if let Some(entry) = this.tabs.get(menu_ix) {
-                                        session_log::toggle(&entry.0.session);
+                                    if let Some(tab) = this.tabs.get(menu_ix) {
+                                        session_log::toggle(&tab.primary().0.session);
                                     }
                                     this.tab_menu = None;
                                     cx.notify();
@@ -2374,7 +2526,7 @@ fn open_tabs_window_opts(cx: &mut App, initial: Vec<TabEntry>, launch: &cli::Lau
     // is the product's real close button and must end the process.
     cx.observe_release(&entity, |win: &mut TabsWindow, cx| {
         for tab in &win.tabs {
-            tab.0.shutdown();
+            tab.shutdown_all();
         }
         if hub::live_windows(cx) == 0 {
             cx.quit();
