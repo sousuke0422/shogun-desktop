@@ -3,14 +3,18 @@
 //! happens through the config hot-reload watcher, so UI edits and hand
 //! edits share one code path and can never fight. `toml_edit` keeps the
 //! user's comments and layout intact, and only the fields the user actually
-//! changed are written.
+//! changed are written (a value cleared back to empty removes its key).
+//!
+//! Layout: section cards inside a scrollable body, with a pinned footer
+//! (status + save) — the save button stays reachable however small the OS
+//! clamps the window.
 
 use gpui::AppContext as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Bounds, ClickEvent, Context, FocusHandle, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement, Render, StatefulInteractiveElement as _, Styled, TitlebarOptions,
-    Window, WindowBounds, WindowOptions, div, px, rgb, rgba, size,
+    KeyDownEvent, ParentElement, Render, ScrollHandle, StatefulInteractiveElement as _, Styled,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, rgb, rgba, size,
 };
 use rikka_terminal_core::search_bar::{SearchColors, sheet};
 
@@ -24,7 +28,7 @@ pub fn open(cx: &mut App) {
             return;
         }
     }
-    let bounds = Bounds::centered(None, size(px(500.), px(560.)), cx);
+    let bounds = Bounds::centered(None, size(px(500.), px(640.)), cx);
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -46,6 +50,9 @@ enum Field {
     Font,
     Term,
     LogDir,
+    WtScheme,
+    ThemeBg,
+    ThemeFg,
 }
 
 /// The values as loaded, for only-write-what-changed saves.
@@ -55,9 +62,13 @@ struct Values {
     font_size: f32,
     line_height: f32,
     search_vscode: bool,
+    acrylic: bool,
     scrollback: u32,
     term: String,
     identity_ghostty: bool,
+    wt_scheme: String,
+    theme_bg: String,
+    theme_fg: String,
     log_dir: String,
     log_input: bool,
     auto_start: bool,
@@ -67,8 +78,10 @@ pub struct SettingsWindow {
     v: Values,
     initial: Values,
     focused: Option<Field>,
-    status: Option<String>,
+    /// `(message, is_error)` — errors render rust red, successes muted.
+    status: Option<(String, bool)>,
     focus: FocusHandle,
+    scroll: ScrollHandle,
 }
 
 impl SettingsWindow {
@@ -79,6 +92,7 @@ impl SettingsWindow {
             font_size: cfg.appearance.font_size.unwrap_or(13.0),
             line_height: cfg.appearance.line_height.unwrap_or(1.2),
             search_vscode: cfg.appearance.search_style.as_deref() == Some("vscode"),
+            acrylic: cfg.appearance.acrylic.unwrap_or(false),
             scrollback: cfg.terminal.scrollback.unwrap_or(10_000),
             term: cfg
                 .terminal
@@ -86,6 +100,9 @@ impl SettingsWindow {
                 .clone()
                 .unwrap_or_else(|| "xterm-256color".into()),
             identity_ghostty: cfg.terminal.identity.as_deref() == Some("ghostty"),
+            wt_scheme: cfg.theme.wt_scheme.clone().unwrap_or_default(),
+            theme_bg: cfg.theme.background.clone().unwrap_or_default(),
+            theme_fg: cfg.theme.foreground.clone().unwrap_or_default(),
             log_dir: cfg.logging.directory.clone().unwrap_or_default(),
             log_input: cfg.logging.log_input.unwrap_or(false),
             auto_start: cfg.logging.auto_start.unwrap_or(false),
@@ -98,6 +115,7 @@ impl SettingsWindow {
             focused: None,
             status: None,
             focus,
+            scroll: ScrollHandle::default(),
         }
     }
 
@@ -113,6 +131,9 @@ impl SettingsWindow {
             Field::Font => &mut self.v.font,
             Field::Term => &mut self.v.term,
             Field::LogDir => &mut self.v.log_dir,
+            Field::WtScheme => &mut self.v.wt_scheme,
+            Field::ThemeBg => &mut self.v.theme_bg,
+            Field::ThemeFg => &mut self.v.theme_fg,
         };
         match ks.key.as_str() {
             "escape" | "enter" => self.focused = None,
@@ -150,7 +171,7 @@ impl SettingsWindow {
 
     fn save(&mut self, cx: &mut Context<Self>) {
         let Some(path) = config::config_path() else {
-            self.status = Some("設定パスを解決できませんでした".into());
+            self.status = Some(("設定パスを解決できませんでした".into(), true));
             return;
         };
         let raw = std::fs::read_to_string(&path).unwrap_or_default();
@@ -162,54 +183,69 @@ impl SettingsWindow {
                 match std::fs::write(&path, out) {
                     Ok(()) => {
                         self.initial = self.v.clone();
-                        self.status = Some("保存しました — 実行中の窓に自動反映されます".into());
+                        self.status =
+                            Some(("保存しました — 実行中の窓に自動反映されます".into(), false));
                     }
-                    Err(e) => self.status = Some(format!("書き込み失敗: {e}")),
+                    Err(e) => self.status = Some((format!("書き込み失敗: {e}"), true)),
                 }
             }
             Err(e) => {
-                self.status = Some(format!("config.toml を解析できません（手修正が必要）: {e}"))
+                self.status = Some((
+                    format!("config.toml を解析できません（手修正が必要）: {e}"),
+                    true,
+                ))
             }
         }
         cx.notify();
     }
 
-    /// The (section, key, value) writes this save needs: only fields that
-    /// differ from what the window loaded.
-    fn edits(&self) -> Vec<(&'static str, &'static str, toml_edit::Value)> {
+    /// The `(section, key, value)` writes this save needs: only fields that
+    /// differ from what the window loaded. `None` removes the key (a text
+    /// value cleared back to empty).
+    fn edits(&self) -> Vec<(&'static str, &'static str, Option<toml_edit::Value>)> {
         use toml_edit::Value;
-        let mut out: Vec<(&'static str, &'static str, Value)> = Vec::new();
+        let mut out: Vec<(&'static str, &'static str, Option<Value>)> = Vec::new();
         let (v, i) = (&self.v, &self.initial);
+        let text = |s: &str| {
+            if s.is_empty() {
+                None
+            } else {
+                Some(Value::from(s.to_string()))
+            }
+        };
         if v.font != i.font {
-            out.push(("appearance", "font", Value::from(v.font.clone())));
+            out.push(("appearance", "font", text(&v.font)));
         }
         if v.font_size != i.font_size {
             out.push((
                 "appearance",
                 "font_size",
-                Value::from(f64::from(v.font_size)),
+                Some(Value::from(f64::from(v.font_size))),
             ));
         }
         if v.line_height != i.line_height {
             out.push((
                 "appearance",
                 "line_height",
-                Value::from(f64::from(v.line_height)),
+                Some(Value::from(f64::from(v.line_height))),
             ));
         }
         if v.search_vscode != i.search_vscode {
             let s = if v.search_vscode { "vscode" } else { "winui" };
-            out.push(("appearance", "search_style", Value::from(s)));
+            out.push(("appearance", "search_style", Some(Value::from(s))));
+        }
+        if v.acrylic != i.acrylic {
+            out.push(("appearance", "acrylic", Some(Value::from(v.acrylic))));
         }
         if v.scrollback != i.scrollback {
             out.push((
                 "terminal",
                 "scrollback",
-                Value::from(i64::from(v.scrollback)),
+                Some(Value::from(i64::from(v.scrollback))),
             ));
         }
         if v.term != i.term {
-            out.push(("terminal", "term", Value::from(v.term.clone())));
+            out.push(("terminal", "term", text(&v.term)));
         }
         if v.identity_ghostty != i.identity_ghostty {
             let s = if v.identity_ghostty {
@@ -217,21 +253,50 @@ impl SettingsWindow {
             } else {
                 "honest"
             };
-            out.push(("terminal", "identity", Value::from(s)));
+            out.push(("terminal", "identity", Some(Value::from(s))));
+        }
+        if v.wt_scheme != i.wt_scheme {
+            out.push(("theme", "wt_scheme", text(&v.wt_scheme)));
+        }
+        if v.theme_bg != i.theme_bg {
+            out.push(("theme", "background", text(&v.theme_bg)));
+        }
+        if v.theme_fg != i.theme_fg {
+            out.push(("theme", "foreground", text(&v.theme_fg)));
         }
         if v.log_dir != i.log_dir {
-            out.push(("logging", "directory", Value::from(v.log_dir.clone())));
+            out.push(("logging", "directory", text(&v.log_dir)));
         }
         if v.log_input != i.log_input {
-            out.push(("logging", "log_input", Value::from(v.log_input)));
+            out.push(("logging", "log_input", Some(Value::from(v.log_input))));
         }
         if v.auto_start != i.auto_start {
-            out.push(("logging", "auto_start", Value::from(v.auto_start)));
+            out.push(("logging", "auto_start", Some(Value::from(v.auto_start))));
         }
         out
     }
 
     // ── UI pieces (search-bar sheet for a consistent look) ──────────────
+
+    /// A section card: raised warm panel with a heading; the caller stacks
+    /// rows into it.
+    fn card(title: &'static str, c: &SearchColors) -> gpui::Div {
+        div()
+            .bg(rgb(c.bg))
+            .border_1()
+            .border_color(rgb(c.border))
+            .rounded(px(6.))
+            .p(px(10.))
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(rgba((c.text << 8) | 0x70))
+                    .child(title),
+            )
+    }
 
     fn row(label: &'static str, control: impl IntoElement, c: &SearchColors) -> impl IntoElement {
         div()
@@ -241,21 +306,13 @@ impl SettingsWindow {
             .gap(px(10.))
             .child(
                 div()
-                    .w(px(130.))
+                    .w(px(120.))
                     .flex_shrink_0()
                     .text_size(px(13.))
                     .text_color(rgba((c.text << 8) | 0xC0))
                     .child(label),
             )
             .child(control)
-    }
-
-    fn section(title: &'static str, c: &SearchColors) -> impl IntoElement {
-        div()
-            .mt(px(5.))
-            .text_size(px(12.))
-            .text_color(rgba((c.text << 8) | 0x70))
-            .child(title)
     }
 
     fn text_field(&self, field: Field, seq: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -265,6 +322,9 @@ impl SettingsWindow {
             Field::Font => &self.v.font,
             Field::Term => &self.v.term,
             Field::LogDir => &self.v.log_dir,
+            Field::WtScheme => &self.v.wt_scheme,
+            Field::ThemeBg => &self.v.theme_bg,
+            Field::ThemeFg => &self.v.theme_fg,
         };
         div()
             .id(("sf-text", seq))
@@ -313,6 +373,35 @@ impl SettingsWindow {
             }))
     }
 
+    /// A `#RRGGBB` text field with a live color swatch beside it.
+    fn color_field(&self, field: Field, seq: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = sheet();
+        let value = match field {
+            Field::ThemeBg => &self.v.theme_bg,
+            Field::ThemeFg => &self.v.theme_fg,
+            _ => unreachable!(),
+        };
+        let parsed = parse_hex(value);
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .child(self.text_field(field, seq, cx))
+            .child(
+                div()
+                    .w(px(18.))
+                    .h(px(18.))
+                    .flex_shrink_0()
+                    .rounded(px(3.))
+                    .border_1()
+                    .border_color(rgb(c.input_border))
+                    .when_some(parsed, |d, hex| d.bg(rgb(hex))),
+            )
+    }
+
     fn small_btn(
         id: (&'static str, usize),
         label: &'static str,
@@ -336,6 +425,7 @@ impl SettingsWindow {
             .on_click(cx.listener(move |this, _: &ClickEvent, _win, cx| {
                 cx.stop_propagation();
                 on(this, cx);
+                this.status = None;
                 cx.notify();
             }))
             .child(label)
@@ -440,6 +530,7 @@ impl SettingsWindow {
                 div()
                     .w(px(16.))
                     .h(px(16.))
+                    .flex_shrink_0()
                     .rounded(px(3.))
                     .border_1()
                     .border_color(if on_state {
@@ -487,106 +578,175 @@ impl Render for SettingsWindow {
             .bg(rgb(0x1F1E1C))
             .flex()
             .flex_col()
-            .gap(px(5.))
-            .p(px(14.))
-            .child(Self::section("外観", &c))
-            .child(Self::row(
-                "フォント",
-                self.text_field(Field::Font, 0, cx),
-                &c,
-            ))
-            .child(Self::row(
-                "フォントサイズ",
-                self.stepper(
-                    0,
-                    format!("{:.1}", self.v.font_size),
-                    |t, _| t.v.font_size = (t.v.font_size - 1.0).max(6.0),
-                    |t, _| t.v.font_size = (t.v.font_size + 1.0).min(40.0),
-                    cx,
-                ),
-                &c,
-            ))
-            .child(Self::row(
-                "行の高さ",
-                self.stepper(
-                    1,
-                    format!("{:.2}", self.v.line_height),
-                    |t, _| t.v.line_height = ((t.v.line_height - 0.05) * 100.).round() / 100.,
-                    |t, _| t.v.line_height = ((t.v.line_height + 0.05) * 100.).round() / 100.,
-                    cx,
-                ),
-                &c,
-            ))
-            .child(Self::row(
-                "検索バーの意匠",
-                self.segment(
-                    0,
-                    ["WinUI", "VSCode"],
-                    self.v.search_vscode,
-                    |t, second| t.v.search_vscode = second,
-                    cx,
-                ),
-                &c,
-            ))
-            .child(Self::section("ターミナル", &c))
-            .child(Self::row(
-                "スクロールバック",
-                self.stepper(
-                    2,
-                    format!("{}", self.v.scrollback),
-                    |t, _| t.v.scrollback = t.v.scrollback.saturating_sub(5_000).max(1_000),
-                    |t, _| t.v.scrollback = (t.v.scrollback + 5_000).min(200_000),
-                    cx,
-                ),
-                &c,
-            ))
-            .child(Self::row("TERM", self.text_field(Field::Term, 1, cx), &c))
-            .child(Self::row(
-                "識別 (XTVERSION)",
-                self.segment(
-                    1,
-                    ["honest", "ghostty"],
-                    self.v.identity_ghostty,
-                    |t, second| t.v.identity_ghostty = second,
-                    cx,
-                ),
-                &c,
-            ))
-            .child(Self::section("セッションログ", &c))
-            .child(Self::row(
-                "保存先",
-                self.text_field(Field::LogDir, 2, cx),
-                &c,
-            ))
-            .child(self.checkbox(
-                0,
-                "入力も記録する（パスワードも写る・意図して有効に）",
-                self.v.log_input,
-                |t, on| t.v.log_input = on,
-                cx,
-            ))
-            .child(self.checkbox(
-                1,
-                "新しいタブで自動的にログを開始",
-                self.v.auto_start,
-                |t, on| t.v.auto_start = on,
-                cx,
-            ))
-            // Footer: status + save.
-            .child(div().flex_1())
+            // Scrollable body of section cards.
             .child(
                 div()
+                    .id("settings-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .p(px(14.))
+                            .child(
+                                Self::card("外観", &c)
+                                    .child(Self::row(
+                                        "フォント",
+                                        self.text_field(Field::Font, 0, cx),
+                                        &c,
+                                    ))
+                                    .child(Self::row(
+                                        "フォントサイズ",
+                                        self.stepper(
+                                            0,
+                                            format!("{:.1}", self.v.font_size),
+                                            |t, _| t.v.font_size = (t.v.font_size - 1.0).max(6.0),
+                                            |t, _| t.v.font_size = (t.v.font_size + 1.0).min(40.0),
+                                            cx,
+                                        ),
+                                        &c,
+                                    ))
+                                    .child(Self::row(
+                                        "行の高さ",
+                                        self.stepper(
+                                            1,
+                                            format!("{:.2}", self.v.line_height),
+                                            |t, _| {
+                                                t.v.line_height =
+                                                    ((t.v.line_height - 0.05) * 100.).round() / 100.
+                                            },
+                                            |t, _| {
+                                                t.v.line_height =
+                                                    ((t.v.line_height + 0.05) * 100.).round() / 100.
+                                            },
+                                            cx,
+                                        ),
+                                        &c,
+                                    ))
+                                    .child(Self::row(
+                                        "検索バーの意匠",
+                                        self.segment(
+                                            0,
+                                            ["WinUI", "VSCode"],
+                                            self.v.search_vscode,
+                                            |t, second| t.v.search_vscode = second,
+                                            cx,
+                                        ),
+                                        &c,
+                                    ))
+                                    .child(self.checkbox(
+                                        0,
+                                        "アクリル背景（再起動が必要）",
+                                        self.v.acrylic,
+                                        |t, on| t.v.acrylic = on,
+                                        cx,
+                                    )),
+                            )
+                            .child(
+                                Self::card("テーマ", &c)
+                                    .child(Self::row(
+                                        "wt スキーム",
+                                        self.text_field(Field::WtScheme, 3, cx),
+                                        &c,
+                                    ))
+                                    .child(Self::row(
+                                        "背景色",
+                                        self.color_field(Field::ThemeBg, 4, cx),
+                                        &c,
+                                    ))
+                                    .child(Self::row(
+                                        "文字色",
+                                        self.color_field(Field::ThemeFg, 5, cx),
+                                        &c,
+                                    )),
+                            )
+                            .child(
+                                Self::card("ターミナル", &c)
+                                    .child(Self::row(
+                                        "スクロールバック",
+                                        self.stepper(
+                                            2,
+                                            format!("{}", self.v.scrollback),
+                                            |t, _| {
+                                                t.v.scrollback =
+                                                    t.v.scrollback.saturating_sub(5_000).max(1_000)
+                                            },
+                                            |t, _| {
+                                                t.v.scrollback =
+                                                    (t.v.scrollback + 5_000).min(200_000)
+                                            },
+                                            cx,
+                                        ),
+                                        &c,
+                                    ))
+                                    .child(Self::row(
+                                        "TERM",
+                                        self.text_field(Field::Term, 1, cx),
+                                        &c,
+                                    ))
+                                    .child(Self::row(
+                                        "識別 (XTVERSION)",
+                                        self.segment(
+                                            1,
+                                            ["honest", "ghostty"],
+                                            self.v.identity_ghostty,
+                                            |t, second| t.v.identity_ghostty = second,
+                                            cx,
+                                        ),
+                                        &c,
+                                    )),
+                            )
+                            .child(
+                                Self::card("セッションログ", &c)
+                                    .child(Self::row(
+                                        "保存先",
+                                        self.text_field(Field::LogDir, 2, cx),
+                                        &c,
+                                    ))
+                                    .child(self.checkbox(
+                                        1,
+                                        "入力も記録する（パスワードも写る・意図して有効に）",
+                                        self.v.log_input,
+                                        |t, on| t.v.log_input = on,
+                                        cx,
+                                    ))
+                                    .child(self.checkbox(
+                                        2,
+                                        "新しいタブで自動的にログを開始",
+                                        self.v.auto_start,
+                                        |t, on| t.v.auto_start = on,
+                                        cx,
+                                    )),
+                            ),
+                    ),
+            )
+            // Pinned footer: status + save, always reachable.
+            .child(
+                div()
+                    .border_t_1()
+                    .border_color(rgb(c.border))
+                    .px(px(14.))
+                    .py(px(10.))
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(px(10.))
-                    .child(
+                    .child({
+                        let (msg, is_err) = self.status.clone().unwrap_or_default();
                         div()
                             .flex_1()
                             .text_size(px(12.))
-                            .text_color(rgba((c.text << 8) | 0x90))
-                            .child(self.status.clone().unwrap_or_default()),
-                    )
+                            .text_color(if is_err {
+                                rgb(c.error)
+                            } else {
+                                rgba((c.text << 8) | 0x90)
+                            })
+                            .child(msg)
+                    })
                     .child(
                         div()
                             .id("sf-save")
@@ -610,15 +770,32 @@ impl Render for SettingsWindow {
     }
 }
 
+/// `#RRGGBB` → `0xRRGGBB`.
+fn parse_hex(s: &str) -> Option<u32> {
+    let hex = s.strip_prefix('#')?;
+    (hex.len() == 6)
+        .then(|| u32::from_str_radix(hex, 16).ok())
+        .flatten()
+}
+
 /// Apply `(section, key, value)` writes to a config.toml source, keeping the
-/// user's comments and layout (toml_edit). Fails when the existing file is
-/// unparseable — the caller must NOT clobber a hand-broken config.
+/// user's comments and layout (toml_edit). `None` removes the key. Fails
+/// when the existing file is unparseable — the caller must NOT clobber a
+/// hand-broken config.
 fn apply_edits(
     raw: &str,
-    edits: &[(&'static str, &'static str, toml_edit::Value)],
+    edits: &[(&'static str, &'static str, Option<toml_edit::Value>)],
 ) -> Result<String, toml_edit::TomlError> {
     let mut doc: toml_edit::DocumentMut = raw.trim_start_matches('\u{feff}').parse()?;
     for (section, key, value) in edits {
+        let Some(value) = value else {
+            // Clearing a field removes its key (falling back to the
+            // built-in default); an absent section means nothing to do.
+            if let Some(table) = doc.get_mut(*section).and_then(|i| i.as_table_mut()) {
+                table.remove(key);
+            }
+            continue;
+        };
         // An absent section becomes an explicit [section] table at the end
         // — plain indexing would materialize an inline `section = {...}`
         // pinned to the top of the file instead.
@@ -641,7 +818,7 @@ fn apply_edits(
 
 #[cfg(test)]
 mod tests {
-    use super::apply_edits;
+    use super::{apply_edits, parse_hex};
 
     #[test]
     fn edits_preserve_comments_and_layout() {
@@ -649,8 +826,16 @@ mod tests {
         let out = apply_edits(
             raw,
             &[
-                ("appearance", "font_size", toml_edit::Value::from(18.0)),
-                ("terminal", "scrollback", toml_edit::Value::from(50_000_i64)),
+                (
+                    "appearance",
+                    "font_size",
+                    Some(toml_edit::Value::from(18.0)),
+                ),
+                (
+                    "terminal",
+                    "scrollback",
+                    Some(toml_edit::Value::from(50_000_i64)),
+                ),
             ],
         )
         .unwrap();
@@ -672,10 +857,33 @@ mod tests {
         let raw = "[appearance]\nfont_size = 13.0 # chosen with care\n";
         let out = apply_edits(
             raw,
-            &[("appearance", "font_size", toml_edit::Value::from(20.0))],
+            &[(
+                "appearance",
+                "font_size",
+                Some(toml_edit::Value::from(20.0)),
+            )],
         )
         .unwrap();
         assert!(out.contains("font_size = 20.0"), "{out}");
         assert!(out.contains("# chosen with care"), "{out}");
+    }
+
+    #[test]
+    fn cleared_value_removes_its_key() {
+        let raw = "[theme]\nwt_scheme = \"Ubuntu\"\nbackground = \"#300A24\"\n";
+        let out = apply_edits(raw, &[("theme", "wt_scheme", None)]).unwrap();
+        assert!(!out.contains("wt_scheme"), "{out}");
+        assert!(out.contains("background = \"#300A24\""), "{out}");
+        // Removing from an absent section is a no-op, not a crash.
+        let out2 = apply_edits("", &[("theme", "wt_scheme", None)]).unwrap();
+        assert_eq!(out2, "");
+    }
+
+    #[test]
+    fn hex_swatch_parsing() {
+        assert_eq!(parse_hex("#300A24"), Some(0x300A24));
+        assert_eq!(parse_hex("300A24"), None);
+        assert_eq!(parse_hex("#30A"), None);
+        assert_eq!(parse_hex("#GGGGGG"), None);
     }
 }
