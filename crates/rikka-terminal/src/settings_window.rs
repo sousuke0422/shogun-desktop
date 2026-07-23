@@ -1,20 +1,22 @@
-//! The settings window (設定UI 第二段): a small companion window that edits
-//! the main knobs of config.toml. Saving WRITES THE FILE ONLY — application
+//! The settings window (設定UI): a small companion window that edits the
+//! main knobs of config.toml. Saving WRITES THE FILE ONLY — application
 //! happens through the config hot-reload watcher, so UI edits and hand
 //! edits share one code path and can never fight. `toml_edit` keeps the
 //! user's comments and layout intact, and only the fields the user actually
 //! changed are written (a value cleared back to empty removes its key).
 //!
-//! Layout: section cards inside a scrollable body, with a pinned footer
-//! (status + save) — the save button stays reachable however small the OS
-//! clamps the window.
+//! Layout, wt-style: a nav rail of pages on the left, the selected page on
+//! the right (scrollable, for when the OS clamps the window absurdly
+//! small), and a pinned footer (status + save) that stays reachable
+//! regardless.
 
 use gpui::AppContext as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Bounds, ClickEvent, Context, FocusHandle, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement, Render, ScrollHandle, StatefulInteractiveElement as _, Styled,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, rgb, rgba, size,
+    AnyElement, App, Bounds, ClickEvent, Context, FocusHandle, InteractiveElement as _,
+    IntoElement, KeyDownEvent, ParentElement, Render, ScrollHandle,
+    StatefulInteractiveElement as _, Styled, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, px, rgb, rgba, size,
 };
 use rikka_terminal_core::search_bar::{SearchColors, sheet};
 
@@ -28,7 +30,7 @@ pub fn open(cx: &mut App) {
             return;
         }
     }
-    let bounds = Bounds::centered(None, size(px(500.), px(640.)), cx);
+    let bounds = Bounds::centered(None, size(px(580.), px(480.)), cx);
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -42,6 +44,15 @@ pub fn open(cx: &mut App) {
         |window, cx| cx.new(|cx| SettingsWindow::new(window, cx)),
     )
     .ok();
+}
+
+/// The nav rail's pages, wt-style groupings.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Appearance,
+    Theme,
+    Terminal,
+    Logging,
 }
 
 /// The text-editable fields (click to focus, type/backspace/Ctrl+V).
@@ -76,6 +87,7 @@ struct Values {
 pub struct SettingsWindow {
     v: Values,
     initial: Values,
+    page: Page,
     focused: Option<Field>,
     /// `(message, is_error)` — errors render rust red, successes muted.
     status: Option<(String, bool)>,
@@ -116,6 +128,7 @@ impl SettingsWindow {
         Self {
             initial: v.clone(),
             v,
+            page: Page::Appearance,
             focused: None,
             status: None,
             focus,
@@ -284,24 +297,47 @@ impl SettingsWindow {
 
     // ── UI pieces (search-bar sheet for a consistent look) ──────────────
 
-    /// A section card: raised warm panel with a heading; the caller stacks
-    /// rows into it.
-    fn card(title: &'static str, c: &SearchColors) -> gpui::Div {
+    /// A wt-style nav rail entry: accent bar + label, lit when selected.
+    fn nav_item(
+        &self,
+        page: Page,
+        label: &'static str,
+        seq: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let c = sheet();
+        let selected = self.page == page;
         div()
-            .bg(rgb(c.bg))
-            .border_1()
-            .border_color(rgb(c.border))
-            .rounded(px(6.))
-            .p(px(10.))
+            .id(("sf-nav", seq))
             .flex()
-            .flex_col()
-            .gap(px(6.))
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .px(px(8.))
+            .py(px(6.))
+            .rounded(px(4.))
+            .text_size(px(13.))
+            .when(selected, |d| d.bg(rgb(c.input_bg)).text_color(rgb(c.text)))
+            .when(!selected, |d| {
+                d.text_color(rgba((c.text << 8) | 0xA0))
+                    .hover(|t| t.bg(rgba(0xFFFFFF10)))
+            })
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _: &ClickEvent, _win, cx| {
+                cx.stop_propagation();
+                this.page = page;
+                this.focused = None;
+                this.scheme_menu = false;
+                cx.notify();
+            }))
             .child(
                 div()
-                    .text_size(px(11.5))
-                    .text_color(rgba((c.text << 8) | 0x70))
-                    .child(title),
+                    .w(px(3.))
+                    .h(px(14.))
+                    .rounded(px(2.))
+                    .when(selected, |d| d.bg(rgb(c.accent))),
             )
+            .child(label)
     }
 
     fn row(label: &'static str, control: impl IntoElement, c: &SearchColors) -> impl IntoElement {
@@ -639,6 +675,159 @@ impl SettingsWindow {
                     .child(label),
             )
     }
+
+    // ── Pages ───────────────────────────────────────────────────────────
+
+    /// Page header, wt-style: big title over the rows.
+    fn page_title(title: &'static str, c: &SearchColors) -> impl IntoElement {
+        div()
+            .text_size(px(16.))
+            .text_color(rgb(c.text))
+            .mb(px(4.))
+            .child(title)
+    }
+
+    fn page_appearance(&self, c: &SearchColors, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(Self::page_title("外観", c))
+            .child(Self::row(
+                "フォント",
+                self.text_field(Field::Font, 0, cx),
+                c,
+            ))
+            .child(Self::row(
+                "フォントサイズ",
+                self.stepper(
+                    0,
+                    format!("{:.1}", self.v.font_size),
+                    |t, _| t.v.font_size = (t.v.font_size - 1.0).max(6.0),
+                    |t, _| t.v.font_size = (t.v.font_size + 1.0).min(40.0),
+                    cx,
+                ),
+                c,
+            ))
+            .child(Self::row(
+                "行の高さ",
+                self.stepper(
+                    1,
+                    format!("{:.2}", self.v.line_height),
+                    |t, _| t.v.line_height = ((t.v.line_height - 0.05) * 100.).round() / 100.,
+                    |t, _| t.v.line_height = ((t.v.line_height + 0.05) * 100.).round() / 100.,
+                    cx,
+                ),
+                c,
+            ))
+            .child(Self::row(
+                "検索バーの意匠",
+                self.segment(
+                    0,
+                    ["WinUI", "VSCode"],
+                    self.v.search_vscode,
+                    |t, second| t.v.search_vscode = second,
+                    cx,
+                ),
+                c,
+            ))
+            .child(self.checkbox(
+                0,
+                "アクリル背景（再起動が必要）",
+                self.v.acrylic,
+                |t, on| t.v.acrylic = on,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn page_theme(&self, c: &SearchColors, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(Self::page_title("テーマ", c))
+            .child(Self::row("wt スキーム", self.scheme_button(cx), c))
+            .children({
+                // Preview from the cached catalog — a Vec lookup, no I/O
+                // per frame.
+                self.schemes
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(&self.v.wt_scheme))
+                    .map(|(_, pal)| Self::palette_strip(pal, c))
+            })
+            .child(Self::row(
+                "背景色",
+                self.color_field(Field::ThemeBg, 4, cx),
+                c,
+            ))
+            .child(Self::row(
+                "文字色",
+                self.color_field(Field::ThemeFg, 5, cx),
+                c,
+            ))
+            .into_any_element()
+    }
+
+    fn page_terminal(&self, c: &SearchColors, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(Self::page_title("ターミナル", c))
+            .child(Self::row(
+                "スクロールバック",
+                self.stepper(
+                    2,
+                    format!("{}", self.v.scrollback),
+                    |t, _| t.v.scrollback = t.v.scrollback.saturating_sub(5_000).max(1_000),
+                    |t, _| t.v.scrollback = (t.v.scrollback + 5_000).min(200_000),
+                    cx,
+                ),
+                c,
+            ))
+            .child(Self::row("TERM", self.text_field(Field::Term, 1, cx), c))
+            .child(Self::row(
+                "識別 (XTVERSION)",
+                self.segment(
+                    1,
+                    ["honest", "ghostty"],
+                    self.v.identity_ghostty,
+                    |t, second| t.v.identity_ghostty = second,
+                    cx,
+                ),
+                c,
+            ))
+            .into_any_element()
+    }
+
+    fn page_logging(&self, c: &SearchColors, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(Self::page_title("セッションログ", c))
+            .child(Self::row(
+                "保存先",
+                self.text_field(Field::LogDir, 2, cx),
+                c,
+            ))
+            .child(self.checkbox(
+                1,
+                "入力も記録する（パスワードも写る・意図して有効に）",
+                self.v.log_input,
+                |t, on| t.v.log_input = on,
+                cx,
+            ))
+            .child(self.checkbox(
+                2,
+                "新しいタブで自動的にログを開始",
+                self.v.auto_start,
+                |t, on| t.v.auto_start = on,
+                cx,
+            ))
+            .into_any_element()
+    }
 }
 
 impl Render for SettingsWindow {
@@ -664,156 +853,42 @@ impl Render for SettingsWindow {
             .bg(rgb(0x1F1E1C))
             .flex()
             .flex_col()
-            // Scrollable body of section cards.
+            // Body: nav rail + the selected page.
             .child(
                 div()
-                    .id("settings-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
+                    .flex()
+                    .flex_row()
                     .child(
                         div()
+                            .w(px(140.))
+                            .flex_shrink_0()
+                            .border_r_1()
+                            .border_color(rgb(c.border))
                             .flex()
                             .flex_col()
-                            .gap(px(10.))
-                            .p(px(14.))
-                            .child(
-                                Self::card("外観", &c)
-                                    .child(Self::row(
-                                        "フォント",
-                                        self.text_field(Field::Font, 0, cx),
-                                        &c,
-                                    ))
-                                    .child(Self::row(
-                                        "フォントサイズ",
-                                        self.stepper(
-                                            0,
-                                            format!("{:.1}", self.v.font_size),
-                                            |t, _| t.v.font_size = (t.v.font_size - 1.0).max(6.0),
-                                            |t, _| t.v.font_size = (t.v.font_size + 1.0).min(40.0),
-                                            cx,
-                                        ),
-                                        &c,
-                                    ))
-                                    .child(Self::row(
-                                        "行の高さ",
-                                        self.stepper(
-                                            1,
-                                            format!("{:.2}", self.v.line_height),
-                                            |t, _| {
-                                                t.v.line_height =
-                                                    ((t.v.line_height - 0.05) * 100.).round() / 100.
-                                            },
-                                            |t, _| {
-                                                t.v.line_height =
-                                                    ((t.v.line_height + 0.05) * 100.).round() / 100.
-                                            },
-                                            cx,
-                                        ),
-                                        &c,
-                                    ))
-                                    .child(Self::row(
-                                        "検索バーの意匠",
-                                        self.segment(
-                                            0,
-                                            ["WinUI", "VSCode"],
-                                            self.v.search_vscode,
-                                            |t, second| t.v.search_vscode = second,
-                                            cx,
-                                        ),
-                                        &c,
-                                    ))
-                                    .child(self.checkbox(
-                                        0,
-                                        "アクリル背景（再起動が必要）",
-                                        self.v.acrylic,
-                                        |t, on| t.v.acrylic = on,
-                                        cx,
-                                    )),
-                            )
-                            .child(
-                                Self::card("テーマ", &c)
-                                    .child(Self::row("wt スキーム", self.scheme_button(cx), &c))
-                                    .children({
-                                        // Preview from the cached catalog —
-                                        // a Vec lookup, no I/O per frame.
-                                        self.schemes
-                                            .iter()
-                                            .find(|(n, _)| {
-                                                n.eq_ignore_ascii_case(&self.v.wt_scheme)
-                                            })
-                                            .map(|(_, pal)| Self::palette_strip(pal, &c))
-                                    })
-                                    .child(Self::row(
-                                        "背景色",
-                                        self.color_field(Field::ThemeBg, 4, cx),
-                                        &c,
-                                    ))
-                                    .child(Self::row(
-                                        "文字色",
-                                        self.color_field(Field::ThemeFg, 5, cx),
-                                        &c,
-                                    )),
-                            )
-                            .child(
-                                Self::card("ターミナル", &c)
-                                    .child(Self::row(
-                                        "スクロールバック",
-                                        self.stepper(
-                                            2,
-                                            format!("{}", self.v.scrollback),
-                                            |t, _| {
-                                                t.v.scrollback =
-                                                    t.v.scrollback.saturating_sub(5_000).max(1_000)
-                                            },
-                                            |t, _| {
-                                                t.v.scrollback =
-                                                    (t.v.scrollback + 5_000).min(200_000)
-                                            },
-                                            cx,
-                                        ),
-                                        &c,
-                                    ))
-                                    .child(Self::row(
-                                        "TERM",
-                                        self.text_field(Field::Term, 1, cx),
-                                        &c,
-                                    ))
-                                    .child(Self::row(
-                                        "識別 (XTVERSION)",
-                                        self.segment(
-                                            1,
-                                            ["honest", "ghostty"],
-                                            self.v.identity_ghostty,
-                                            |t, second| t.v.identity_ghostty = second,
-                                            cx,
-                                        ),
-                                        &c,
-                                    )),
-                            )
-                            .child(
-                                Self::card("セッションログ", &c)
-                                    .child(Self::row(
-                                        "保存先",
-                                        self.text_field(Field::LogDir, 2, cx),
-                                        &c,
-                                    ))
-                                    .child(self.checkbox(
-                                        1,
-                                        "入力も記録する（パスワードも写る・意図して有効に）",
-                                        self.v.log_input,
-                                        |t, on| t.v.log_input = on,
-                                        cx,
-                                    ))
-                                    .child(self.checkbox(
-                                        2,
-                                        "新しいタブで自動的にログを開始",
-                                        self.v.auto_start,
-                                        |t, on| t.v.auto_start = on,
-                                        cx,
-                                    )),
-                            ),
+                            .gap(px(2.))
+                            .p(px(8.))
+                            .child(self.nav_item(Page::Appearance, "外観", 0, cx))
+                            .child(self.nav_item(Page::Theme, "テーマ", 1, cx))
+                            .child(self.nav_item(Page::Terminal, "ターミナル", 2, cx))
+                            .child(self.nav_item(Page::Logging, "セッションログ", 3, cx)),
+                    )
+                    .child(
+                        div()
+                            .id("settings-scroll")
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .child(div().p(px(14.)).child(match self.page {
+                                Page::Appearance => self.page_appearance(&c, cx),
+                                Page::Theme => self.page_theme(&c, cx),
+                                Page::Terminal => self.page_terminal(&c, cx),
+                                Page::Logging => self.page_logging(&c, cx),
+                            })),
                     ),
             )
             // Pinned footer: status + save, always reachable.
@@ -904,9 +979,9 @@ impl Render for SettingsWindow {
                     div()
                         .absolute()
                         .top(px(40.))
-                        .left(px(60.))
-                        .right(px(60.))
-                        .max_h(px(440.))
+                        .left(px(80.))
+                        .right(px(80.))
+                        .max_h(px(380.))
                         .bg(rgb(c.bg))
                         .border_1()
                         .border_color(rgb(c.border))
