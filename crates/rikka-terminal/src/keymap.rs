@@ -8,7 +8,7 @@
 //! string keeps that action's default and logs a warning, so a typo can
 //! never lock the user out of their tabs.
 
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use gpui::Modifiers;
 
@@ -136,20 +136,21 @@ impl KeyMap {
     }
 }
 
-static KEYMAP: OnceLock<KeyMap> = OnceLock::new();
+static KEYMAP: RwLock<Option<KeyMap>> = RwLock::new(None);
 
-/// Stash the parsed `[keys]` config at startup (same lifecycle as
-/// `apply_appearance`).
+/// Stash the parsed `[keys]` config — at startup AND on config hot-reload
+/// (the RwLock, not a OnceLock, exists for the reload).
 pub fn init(keys: &KeysSection) {
-    let _ = KEYMAP.set(KeyMap::from_config(keys));
+    *KEYMAP.write().unwrap() = Some(KeyMap::from_config(keys));
 }
 
 /// The action bound to this keystroke, if any. Falls back to the built-in
 /// defaults when `init` never ran (tests, early input).
 pub fn resolve(m: &Modifiers, key: &str) -> Option<Action> {
-    KEYMAP
-        .get_or_init(|| KeyMap::from_config(&KeysSection::default()))
-        .resolve(m, key)
+    if let Some(map) = KEYMAP.read().unwrap().as_ref() {
+        return map.resolve(m, key);
+    }
+    KeyMap::from_config(&KeysSection::default()).resolve(m, key)
 }
 
 #[cfg(test)]

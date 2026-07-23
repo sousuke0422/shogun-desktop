@@ -213,8 +213,15 @@ monarch 再選出）・OSC 9;4 プログレス UI。ghostty は現時点 Windows
 
 - [ ] **ペイン分割** — ghostty ギャップと共通の最大物（broadcast input も
       この上に乗る）。cli.rs の TODO 宣言参照。
-- [ ] **設定 UI＋保存即反映** — 現状 config.toml 手編集＋再起動。まず
-      テーマ/設定のライブリロード（file watcher）から。
+- [ ] **設定 UI＋保存即反映** — **第一段（ライブリロード）済 2026-07-23**:
+      `notify`(ReadDirectoryChangesW・イベント駆動・120ms デバウンス・親 dir
+      監視で atomic save 耐性・render パス無変更) で config.toml 保存が即
+      反映（フォント/テーマ/keys/プロファイルメニュー/検索スタイル/
+      logging。acrylic は再起動・term/identity と profile command は新規
+      タブから）。keymap/session_log は OnceLock→RwLock 化。実機で起動中
+      書き換え→背景紫+font_size 18 追従を確認。**残: 第二段の設定
+      ウィンドウ v1**（保存は toml_edit でコメント保持書き出し・適用は
+      watcher に一本化）。
 - [ ] **コマンドパレット**（Ctrl+Shift+P） — アクションの発見性で wt が上。
 - Quake モード / グローバルホットキー — ghostty ギャップの
   **Quick terminal と同一物**（そちらを参照）。

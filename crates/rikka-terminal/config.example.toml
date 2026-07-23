@@ -1,6 +1,9 @@
 # RikkaTerminal config — copy to %APPDATA%\rikka-terminal\config.toml to use.
 # Every field is optional; with no config the new-tab menu simply mirrors
 # Windows Terminal's profiles and opens wt's default profile.
+# Saving this file applies LIVE (fonts, theme, keys, profiles, search style,
+# logging). Exceptions: acrylic needs a restart; [terminal] term/identity
+# and profile command/dir apply to tabs opened after the save.
 
 [profiles]
 # Pull Windows Terminal's profiles into the new-tab (⌄) menu. Default: true.

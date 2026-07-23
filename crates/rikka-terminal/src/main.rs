@@ -2834,6 +2834,104 @@ fn monarch_accept_loop(
 /// after the monarch window closes, instead of stalling until the next cold
 /// start. Losing the race (or a mere blip) needs nothing special: the
 /// heartbeat IS the re-registration with whoever won.
+/// Re-read config.toml and re-apply everything hot-reloadable: the engine
+/// globals (typography, theme, font features, search sheet), keymap,
+/// logging, identity, and the shared new-tab menu; then nudge every window
+/// so the active tab's per-profile theme wins again and the chrome
+/// repaints. acrylic stays start-time-only (window attribute).
+fn reload_config(cx: &mut App) {
+    let cfg = config::Config::load();
+    apply_appearance(&cfg);
+    apply_theme(&cfg);
+    apply_identity(&cfg);
+    session_log::init(cfg.logging.clone());
+    keymap::init(&cfg.keys);
+    let (wt, wt_default) = wt_profiles::discover();
+    let menu = cfg.build_menu(wt, wt_default);
+    let profile_icons: Vec<Option<tab_icon::TabIcon>> = menu
+        .profiles
+        .iter()
+        .map(|p| {
+            tab_icon::resolve(
+                p.argv.first().map(String::as_str).unwrap_or(""),
+                p.argv.get(1..).unwrap_or(&[]),
+                Some(&p.name),
+            )
+        })
+        .collect();
+    cx.set_global(hub::ProfileMenu(menu));
+    cx.set_global(hub::ProfileIcons(profile_icons));
+    for (_, weak) in hub::all_windows(cx) {
+        let _ = weak.update(cx, |view, cx| {
+            view.after_tab_change(cx);
+            cx.notify();
+        });
+    }
+}
+
+/// Watch config.toml and hot-reload on change. Event-driven end to end
+/// (ReadDirectoryChangesW via `notify`) — no polling and nothing on the
+/// render path; a save burst is debounced to one reload. Watches the
+/// PARENT directory: editors atomic-save via rename, which would drop a
+/// watch held on the file itself.
+fn spawn_config_watcher(cx: &mut App) {
+    use notify::Watcher as _;
+    let Some(path) = config::config_path() else {
+        return;
+    };
+    let Some(dir) = path.parent().map(std::path::Path::to_path_buf) else {
+        return;
+    };
+    let file_name = path.file_name().map(std::ffi::OsStr::to_os_string);
+    let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
+    std::thread::Builder::new()
+        .name("rikka-config-watch".into())
+        .spawn(move || {
+            let (ev_tx, ev_rx) = std::sync::mpsc::channel();
+            let Ok(mut watcher) = notify::recommended_watcher(move |res| {
+                let _ = ev_tx.send(res);
+            }) else {
+                return;
+            };
+            if watcher
+                .watch(&dir, notify::RecursiveMode::NonRecursive)
+                .is_err()
+            {
+                return;
+            }
+            // Blocks between events; exits when the watcher backend dies.
+            while let Ok(ev) = ev_rx.recv() {
+                let relevant = match &ev {
+                    Ok(ev) => ev
+                        .paths
+                        .iter()
+                        .any(|p| p.file_name() == file_name.as_deref()),
+                    Err(_) => false,
+                };
+                if !relevant {
+                    continue;
+                }
+                // Editors save in bursts (truncate+write+rename); coalesce
+                // them into one reload.
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                while ev_rx.try_recv().is_ok() {}
+                if tx.unbounded_send(()).is_err() {
+                    return;
+                }
+            }
+        })
+        .ok();
+    let async_cx = cx.to_async();
+    async_cx
+        .spawn(async move |cx| {
+            use futures::StreamExt as _;
+            while rx.next().await.is_some() {
+                let _ = cx.update(reload_config);
+            }
+        })
+        .detach();
+}
+
 fn spawn_monarch_watcher(cx: &mut App, endpoint: String, window_endpoint: Option<String>) {
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<Forwarded>();
     std::thread::Builder::new()
@@ -3230,6 +3328,7 @@ fn main() {
             .collect();
         hub::init(cx, menu);
         cx.set_global(hub::ProfileIcons(profile_icons));
+        spawn_config_watcher(cx);
         // A cold-start handoff rides in this launch (IPC.md "attach cold"):
         // adopt the inherited handles as the initial window. On failure fall
         // through to a normal launch — a visible window beats a silent death

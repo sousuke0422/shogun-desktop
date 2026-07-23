@@ -9,22 +9,22 @@
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use rikka_terminal_core::TerminalSession;
 
 use crate::config::LoggingSection;
 
-static CFG: OnceLock<LoggingSection> = OnceLock::new();
+static CFG: RwLock<Option<LoggingSection>> = RwLock::new(None);
 
-/// Stash the `[logging]` config at startup (same lifecycle as
-/// `apply_appearance`).
+/// Stash the `[logging]` config — at startup AND on config hot-reload
+/// (the RwLock, not a OnceLock, exists for the reload).
 pub fn init(cfg: LoggingSection) {
-    let _ = CFG.set(cfg);
+    *CFG.write().unwrap() = Some(cfg);
 }
 
 fn config() -> LoggingSection {
-    CFG.get().cloned().unwrap_or_default()
+    CFG.read().unwrap().clone().unwrap_or_default()
 }
 
 /// Ctrl+Shift+L: stop when recording, start otherwise. Outcome goes to the
