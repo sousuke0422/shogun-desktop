@@ -62,6 +62,9 @@ pub struct AppearanceSection {
     /// things OFF or to pick stylistic sets.
     #[serde(default)]
     pub font_features: Option<Vec<String>>,
+    /// Search-bar design: "winui" (default) or "vscode".
+    #[serde(default)]
+    pub search_style: Option<String>,
 }
 
 /// Parse the ghostty-style feature list into `(tag, value)` pairs for

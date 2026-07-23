@@ -39,6 +39,9 @@ hidden = ["Azure Cloud Shell"]
 # Cascadia Mono have none); "-calt" turns them off, "ss19" etc. picks
 # stylistic sets ("tag", "-tag", "tag=N").
 # font_features = ["-calt"]
+# Search-bar design: "winui" (default) or "vscode" (the original
+# blue-accent flavor).
+# search_style = "vscode"
 # Blurred (acrylic) window background. Default: off.
 # acrylic = true
 

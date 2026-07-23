@@ -116,6 +116,13 @@ fn apply_appearance(cfg: &config::Config) {
     if let Some(features) = &cfg.appearance.font_features {
         rikka_terminal_core::renderer::set_font_features(config::parse_font_features(features));
     }
+    match cfg.appearance.search_style.as_deref() {
+        Some("vscode") => rikka_terminal_core::search_bar::set_sheet(
+            rikka_terminal_core::search_bar::SearchColors::vscode(),
+        ),
+        None | Some("winui") => {}
+        Some(other) => log::warn!("[config] search_style {other:?} unknown (winui|vscode)"),
+    }
     let _ = ACRYLIC_CFG.set(cfg.appearance.acrylic.unwrap_or(false));
     let _ = SCROLLBACK_CFG.set(cfg.terminal.scrollback.map(|n| n as usize));
 }
@@ -2079,7 +2086,7 @@ impl Render for TabsWindow {
                         cx.notify();
                     })),
                 };
-                let colors = Default::default();
+                let colors = rikka_terminal_core::search_bar::sheet();
                 self.search.render(status, handlers, &colors).map(|bar| {
                     div()
                         .absolute()

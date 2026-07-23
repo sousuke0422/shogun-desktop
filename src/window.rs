@@ -897,7 +897,7 @@ impl ShogunWindow {
                             })),
                         };
                         self.search
-                            .render(status, handlers, &Default::default())
+                            .render(status, handlers, &rikka_terminal_core::search_bar::sheet())
                             .map(|bar| div().absolute().top(px(10.)).right(px(14.)).child(bar))
                     })
                     .into_any_element()

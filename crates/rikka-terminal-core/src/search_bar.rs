@@ -35,11 +35,27 @@ pub struct SearchHandlers {
     pub regex: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
 }
 
-/// The bar's color sheet (`0xRRGGBB` each), injected by the host so the
-/// widget can match the app's look. Both apps ride the warm default today;
-/// the injection point stays for theme-following hosts.
+/// Which design language the bar renders in. Two fixed looks keep the
+/// verification surface at exactly two states (a token soup would not).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum SearchLook {
+    /// WinUI 3: 8px corners, subtle input frame + 2px bottom underline,
+    /// solid-fill toggles, 28×24 buttons. The default.
+    #[default]
+    WinUi,
+    /// The VSCode-flavored original: 6px corners, full accent input frame
+    /// (no underline), outlined translucent toggles, 22×22 buttons.
+    VsCode,
+}
+
+/// The bar's color sheet (`0xRRGGBB` each) plus its design look, injected
+/// by the host so the widget can match the app. Both apps ride the
+/// process-global sheet today; the injection point stays for
+/// theme-following hosts.
 #[derive(Clone, Copy)]
 pub struct SearchColors {
+    /// Design language (shapes, not colors).
+    pub look: SearchLook,
     /// Bar box fill.
     pub bg: u32,
     /// Bar box border.
@@ -65,6 +81,7 @@ impl Default for SearchColors {
     /// already speaks.
     fn default() -> Self {
         Self {
+            look: SearchLook::WinUi,
             bg: 0x2B2A28,
             border: 0x45403A,
             input_bg: 0x1F1E1C,
@@ -77,6 +94,40 @@ impl Default for SearchColors {
             error: 0xBE5A50,
         }
     }
+}
+
+impl SearchColors {
+    /// The VSCode-flavored sheet the bar originally shipped with
+    /// (`[appearance] search_style = "vscode"`).
+    pub fn vscode() -> Self {
+        Self {
+            look: SearchLook::VsCode,
+            bg: 0x252526,
+            border: 0x454545,
+            input_bg: 0x313131,
+            input_border: 0x007FD4,
+            underline: 0x007FD4,
+            accent: 0x007FD4,
+            text: 0xEDEDED,
+            error: 0xF14C4C,
+        }
+    }
+}
+
+/// Process-global sheet selection — same lifecycle as the engine theme:
+/// the embedder sets it once at startup (rikka: `[appearance]
+/// search_style`), hosts read it per render. Unset = the warm WinUI
+/// default.
+static SHEET: parking_lot::RwLock<Option<SearchColors>> = parking_lot::RwLock::new(None);
+
+/// Install the bar sheet process-wide.
+pub fn set_sheet(c: SearchColors) {
+    *SHEET.write() = Some(c);
+}
+
+/// The active bar sheet (installed, or the default).
+pub fn sheet() -> SearchColors {
+    SHEET.read().unwrap_or_default()
 }
 
 /// `0xRRGGBB` + alpha → gpui rgba.
@@ -267,7 +318,7 @@ impl SearchBar {
         true
     }
 
-    /// A 28×24 hover-highlighted icon button (WinUI subtle style).
+    /// A hover-highlighted icon button (28×24 WinUI subtle / 22×22 VSCode).
     fn button(
         id: &'static str,
         label: &'static str,
@@ -275,10 +326,14 @@ impl SearchBar {
         on: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
     ) -> impl gpui::IntoElement {
         let (text, hover_bg) = (a(c.text, 0xB8), a(c.text, 0x14));
+        let (w, h) = match c.look {
+            SearchLook::WinUi => (28., 24.),
+            SearchLook::VsCode => (22., 22.),
+        };
         div()
             .id(id)
-            .w(px(28.))
-            .h(px(24.))
+            .w(px(w))
+            .h(px(h))
             .flex()
             .items_center()
             .justify_center()
@@ -291,8 +346,8 @@ impl SearchBar {
             .child(label)
     }
 
-    /// A 28×24 toggle button (`Aa` / `.*`): solid accent fill when on
-    /// (WinUI ToggleButton style).
+    /// A toggle button (`Aa` / `.*`): solid accent fill when on (WinUI
+    /// ToggleButton) or outlined translucent fill (VSCode).
     fn toggle_button(
         id: &'static str,
         label: &'static str,
@@ -301,16 +356,29 @@ impl SearchBar {
         on: Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
     ) -> impl gpui::IntoElement {
         let hover_bg = a(c.text, 0x14);
+        let (w, h) = match c.look {
+            SearchLook::WinUi => (28., 24.),
+            SearchLook::VsCode => (24., 22.),
+        };
+        let look = c.look;
+        let (accent, text) = (c.accent, c.text);
         div()
             .id(id)
-            .w(px(28.))
-            .h(px(24.))
+            .w(px(w))
+            .h(px(h))
             .flex()
             .items_center()
             .justify_center()
             .rounded(px(4.))
             .text_size(px(11.))
-            .when(on_state, |d| d.bg(rgb(c.accent)).text_color(rgb(c.text)))
+            .when(on_state, move |d| match look {
+                SearchLook::WinUi => d.bg(rgb(accent)).text_color(rgb(text)),
+                SearchLook::VsCode => d
+                    .bg(a(accent, 0x52))
+                    .border_1()
+                    .border_color(rgb(accent))
+                    .text_color(rgb(text)),
+            })
             .when(!on_state, |d| {
                 d.text_color(a(c.text, 0xA0)).hover(move |s| s.bg(hover_bg))
             })
@@ -356,36 +424,52 @@ impl SearchBar {
         };
         let case_on = self.case_sensitive;
         let regex_on = self.regex;
+        let winui = c.look == SearchLook::WinUi;
+        // Box + input geometry per look; error goes to the underline
+        // (WinUI) or the input frame (VSCode).
+        let (box_round, box_pad, gap, input_round, input_min_w) = if winui {
+            (8., (8., 6.), 6., 4., 190.)
+        } else {
+            (6., (6., 4.), 4., 3., 170.)
+        };
+        let input_frame = if winui {
+            rgb(c.input_border)
+        } else if error {
+            rgb(c.error)
+        } else {
+            rgb(c.input_border)
+        };
         Some(
             div()
                 .bg(rgb(c.bg))
                 .border_1()
                 .border_color(rgb(c.border))
-                .rounded(px(8.))
+                .rounded(px(box_round))
                 .shadow_lg()
-                .px(px(8.))
-                .py(px(6.))
+                .px(px(box_pad.0))
+                .py(px(box_pad.1))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(6.))
+                .gap(px(gap))
                 .text_size(px(13.))
-                // Input field, WinUI TextBox-shaped: subtle resting frame
-                // with the signature 2px accent underline — red = no match.
+                // Input field: WinUI = subtle resting frame + signature 2px
+                // underline (red on no match); VSCode = full accent frame
+                // (red on no match), no underline.
                 .child(
                     div()
                         .bg(rgb(c.input_bg))
                         .border_1()
-                        .border_color(rgb(c.input_border))
-                        .rounded(px(4.))
-                        .min_w(px(190.))
+                        .border_color(input_frame)
+                        .rounded(px(input_round))
+                        .min_w(px(input_min_w))
                         .max_w(px(340.))
                         .flex()
                         .flex_col()
                         .child(
                             div()
-                                .px(px(8.))
-                                .py(px(3.))
+                                .px(px(if winui { 8. } else { 7. }))
+                                .py(px(if winui { 3. } else { 2. }))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -406,11 +490,13 @@ impl SearchBar {
                                     div().w(px(1.5)).h(px(15.)).ml(px(1.)).bg(a(c.text, 0xC8)),
                                 ),
                         )
-                        .child(div().h(px(2.)).rounded_b(px(3.)).bg(if error {
-                            rgb(c.error)
-                        } else {
-                            rgb(c.underline)
-                        })),
+                        .when(winui, |d| {
+                            d.child(div().h(px(2.)).rounded_b(px(3.)).bg(if error {
+                                rgb(c.error)
+                            } else {
+                                rgb(c.underline)
+                            }))
+                        }),
                 )
                 // Aa case / .* regex toggles (Alt+C / Alt+R).
                 .child(Self::toggle_button("search-case", "Aa", case_on, c, h.case))
