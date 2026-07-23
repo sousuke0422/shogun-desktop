@@ -122,6 +122,11 @@
       子に `TERM`/`COLORTERM` が届くのを確認。**マルチプラットフォーム化の
       布石** — SD の TermName/TerminalIdentity 相当を rikka にも移植済み。
       残: rikka 独自 terminfo（xterm-rikka）配布と SSH 経路の詐称活用。
+- [x] ~~タブの右クリックメニュー~~ — 初版済 (2026-07-23)。profile-menu
+      流の自前実装（scrim＋絶対配置・gpui-component 不使用）。項目は
+      「ログ開始/停止」（状態追従ラベル・タブ●と連動）と「閉じる」。実機で
+      3 段（表示/ログ●/停止ラベル/閉じ）確認。残: 項目追加（複製・
+      色変更・移送系）はタブ機能の育ちに合わせて。
 - [ ] フォント同梱（Cascadia 等）。
 - [ ] **dingbat スピナー（✢✳✶✻✽）の幾何化** — Claude Code のメインスピナー。
       compaction バー（▰▱）と braille 全域は幾何化済（engine 共有ゆえ

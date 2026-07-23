@@ -804,6 +804,8 @@ pub struct TabsWindow {
     applied_title: Option<String>,
     /// The new-tab profile dropdown is open (rendered below the strip).
     profile_menu: bool,
+    /// Open tab context menu: (tab index, menu-left in logical px).
+    tab_menu: Option<(usize, f32)>,
     /// Scrollback search bar (Ctrl+Shift+F) — shared engine widget.
     search: rikka_terminal_core::search_bar::SearchBar,
     /// Horizontal scroll of the tab viewport (Firefox-style overflow: when
@@ -900,6 +902,7 @@ impl TabsWindow {
             rows: 0,
             applied_title: None,
             profile_menu: false,
+            tab_menu: None,
             search: Default::default(),
             strip_scroll: ScrollHandle::default(),
             dragging_tab: None,
@@ -1602,6 +1605,15 @@ impl Render for TabsWindow {
                     .on_click(cx.listener(move |this, _: &ClickEvent, _win, cx| {
                         this.switch_to(ix, cx);
                     }))
+                    // Right-click: the tab context menu (close / logging).
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
+                            cx.stop_propagation();
+                            this.tab_menu = Some((ix, ev.position.x / px(1.)));
+                            cx.notify();
+                        }),
+                    )
                     // Tab DnD: drop on a tab = reorder there; drop on the
                     // pane below = detach into a fresh window (see the pane).
                     .on_drag(
@@ -2126,6 +2138,91 @@ impl Render for TabsWindow {
                                     cx.notify();
                                 }))
                         })),
+                )
+            })
+            .when_some(self.tab_menu, |root, (menu_ix, at_x)| {
+                // Tab context menu, profile-menu-shaped: click-away scrim
+                // behind an absolutely placed list under the strip.
+                let logging = self
+                    .tabs
+                    .get(menu_ix)
+                    .map(|e| e.0.session.logging_active())
+                    .unwrap_or(false);
+                let vw = window.viewport_size().width / px(1.);
+                let left = at_x.min(vw - 200.).max(0.);
+                let item = |id: &'static str, label: &'static str| {
+                    div()
+                        .id(id)
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .px(px(12.))
+                        .py(px(6.))
+                        .text_size(px(13.))
+                        .text_color(gpui::rgba(TEXT_SECONDARY))
+                        .hover(|t| t.bg(gpui::rgba(TAB_HOVER)).text_color(rgb(TEXT_PRIMARY)))
+                        .child(label)
+                };
+                root.child(
+                    div()
+                        .id("tab-menu-scrim")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
+                            this.tab_menu = None;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(TAB_STRIP_H))
+                        .left(px(left))
+                        .flex()
+                        .flex_col()
+                        .min_w(px(180.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .bg(rgb(CHROME_BG))
+                        .border_1()
+                        .border_color(gpui::rgba(DIVIDER))
+                        .shadow_lg()
+                        .child(
+                            item(
+                                "tab-menu-log",
+                                if logging {
+                                    "ログ停止"
+                                } else {
+                                    "ログ開始"
+                                },
+                            )
+                            .on_click(cx.listener(
+                                move |this, _: &ClickEvent, _win, cx| {
+                                    cx.stop_propagation();
+                                    if let Some(entry) = this.tabs.get(menu_ix) {
+                                        session_log::toggle(&entry.0.session);
+                                    }
+                                    this.tab_menu = None;
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                        .child(
+                            div()
+                                .h(px(1.))
+                                .mx(px(8.))
+                                .my(px(3.))
+                                .bg(gpui::rgba(DIVIDER)),
+                        )
+                        .child(item("tab-menu-close", "閉じる").on_click(cx.listener(
+                            move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.tab_menu = None;
+                                this.close_at(menu_ix, window, cx);
+                            },
+                        ))),
                 )
             })
     }
