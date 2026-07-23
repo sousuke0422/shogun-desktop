@@ -93,6 +93,8 @@ hidden = ["Azure Cloud Shell"]
 # regex, Aa (Alt+C) forces case-sensitive (off = smart-case). Enter = next,
 # Shift+Enter = prev, Esc closes.
 # search = "ctrl+shift+f"
+# The settings window (also in the new-tab ⌄ menu).
+# settings = "ctrl+,"
 
 # ── Shell integration ────────────────────────────────────────────────────
 # rikka reads two things your shell can emit (no config needed here):

@@ -27,6 +27,7 @@ mod keymap;
 #[cfg(windows)]
 mod pty_local;
 mod session_log;
+mod settings_window;
 mod tab_icon;
 #[cfg(windows)]
 mod tab_move;
@@ -972,6 +973,7 @@ impl TabsWindow {
                     s.jump_prompt(1);
                 }
             }
+            OpenSettings => settings_window::open(cx),
             Search => {
                 let sess = self.tabs.get(self.active).map(|e| &e.0.session);
                 self.search.toggle(sess);
@@ -2124,6 +2126,34 @@ impl Render for TabsWindow {
                         .bg(rgb(CHROME_BG))
                         .border_1()
                         .border_color(gpui::rgba(DIVIDER))
+                        .child(
+                            div()
+                                .id("menu-settings")
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .px(px(12.))
+                                .py(px(6.))
+                                .text_size(px(13.))
+                                .text_color(gpui::rgba(TEXT_SECONDARY))
+                                .hover(|t| {
+                                    t.bg(gpui::rgba(TAB_HOVER)).text_color(rgb(TEXT_PRIMARY))
+                                })
+                                .child("設定...")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
+                                    cx.stop_propagation();
+                                    this.profile_menu = false;
+                                    settings_window::open(cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .h(px(1.))
+                                .mx(px(8.))
+                                .my(px(3.))
+                                .bg(gpui::rgba(DIVIDER)),
+                        )
                         .children(profiles.into_iter().map(|(idx, name, icon)| {
                             div()
                                 .id(("profile", idx))

@@ -36,6 +36,7 @@ pub enum Action {
     JumpPromptNext,
     /// Open/close the scrollback search bar.
     Search,
+    OpenSettings,
 }
 
 /// One parsed binding: exact modifier set + gpui key name (lowercase).
@@ -125,6 +126,28 @@ impl KeyMap {
             };
             bindings.push((chord, action));
         }
+        // Settings opens with Ctrl+, (VSCode's chord). It cannot live in
+        // the Ctrl+Shift family above: gpui-Windows normalizes Shift+comma
+        // to key "<" WITH SHIFT EATEN, so a ctrl+shift+"," binding never
+        // matches a real keystroke.
+        let ctrl_comma = || Chord {
+            control: true,
+            shift: false,
+            alt: false,
+            key: ",".into(),
+        };
+        let settings_chord = match keys.settings.as_deref().map(Chord::parse) {
+            Some(Some(c)) => c,
+            Some(None) => {
+                log::warn!(
+                    "[keys] unparsable chord {:?} for OpenSettings — keeping the default",
+                    keys.settings.as_deref().unwrap_or_default()
+                );
+                ctrl_comma()
+            }
+            None => ctrl_comma(),
+        };
+        bindings.push((settings_chord, Action::OpenSettings));
         KeyMap { bindings }
     }
 
@@ -156,6 +179,18 @@ pub fn resolve(m: &Modifiers, key: &str) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comma_chord_opens_settings() {
+        // Ctrl+, — NOT Ctrl+Shift+,: gpui-Windows turns Shift+comma into
+        // key "<" with shift eaten, so the shifted spelling can never
+        // match. VSCode's settings chord, conveniently.
+        assert_eq!(
+            resolve(&mods(true, false, false), ","),
+            Some(Action::OpenSettings)
+        );
+        assert_eq!(resolve(&mods(true, true, false), ","), None);
+    }
 
     fn mods(control: bool, shift: bool, alt: bool) -> Modifiers {
         Modifiers {

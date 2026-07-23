@@ -219,9 +219,17 @@ monarch 再選出）・OSC 9;4 プログレス UI。ghostty は現時点 Windows
       反映（フォント/テーマ/keys/プロファイルメニュー/検索スタイル/
       logging。acrylic は再起動・term/identity と profile command は新規
       タブから）。keymap/session_log は OnceLock→RwLock 化。実機で起動中
-      書き換え→背景紫+font_size 18 追従を確認。**残: 第二段の設定
-      ウィンドウ v1**（保存は toml_edit でコメント保持書き出し・適用は
-      watcher に一本化）。
+      書き換え→背景紫+font_size 18 追従を確認。**第二段（設定ウィンドウ v1）済
+      2026-07-23**: Ctrl+Shift+,（[keys] settings）/⌄メニュー「設定...」で
+      別窓（singleton・OS タイトルバー・検索バーシート統一）。項目=外観
+      (フォント/サイズ/行高/検索意匠)・ターミナル(スクロールバック/TERM/
+      識別)・ログ(保存先/入力記録/自動開始)。テキスト欄は search-bar 流
+      自前入力(クリックfocus・Ctrl+Vペースト・日本語はペーストで)。**保存
+      は toml_edit でコメント保持書き出しのみ**（decor 移植で行末コメント
+      生存・新セクションは明示 [table]・壊れた config は絶対 clobber しない
+      — 全てユニットテスト済）・適用は hot-reload watcher に一本化。dirty
+      項目だけ書く。残: キーバインド/テーマの本格エディタ (v2)・フォント
+      候補リスト。
 - [ ] **コマンドパレット**（Ctrl+Shift+P） — アクションの発見性で wt が上。
 - Quake モード / グローバルホットキー — ghostty ギャップの
   **Quick terminal と同一物**（そちらを参照）。
