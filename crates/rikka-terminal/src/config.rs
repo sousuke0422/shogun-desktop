@@ -277,8 +277,21 @@ fn default_true() -> bool {
     true
 }
 
+/// Portable mode: a `.portable` marker beside the exe (wt-style) keeps
+/// everything — config, the default log dir — in the exe's own folder, so
+/// a zip drop never touches %APPDATA%.
+pub fn portable_root() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    dir.join(".portable").exists().then(|| dir.to_path_buf())
+}
+
+/// `config.toml` beside the exe in portable mode, else
 /// `%APPDATA%/rikka-terminal/config.toml`.
 pub fn config_path() -> Option<std::path::PathBuf> {
+    if let Some(root) = portable_root() {
+        return Some(root.join("config.toml"));
+    }
     std::env::var_os("APPDATA")
         .map(|base| std::path::PathBuf::from(base).join("rikka-terminal/config.toml"))
 }

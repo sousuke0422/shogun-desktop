@@ -76,6 +76,10 @@ fn start(session: &TerminalSession) -> io::Result<PathBuf> {
 /// files are findable without knowing the config; the folder is only
 /// created when logging actually starts).
 fn default_dir() -> PathBuf {
+    // Portable mode: logs live beside the exe, not in the user profile.
+    if let Some(root) = crate::config::portable_root() {
+        return root.join("logs");
+    }
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)

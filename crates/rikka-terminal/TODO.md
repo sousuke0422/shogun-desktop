@@ -127,6 +127,13 @@
       「ログ開始/停止」（状態追従ラベル・タブ●と連動）と「閉じる」。実機で
       3 段（表示/ログ●/停止ラベル/閉じ）確認。残: 項目追加（複製・
       色変更・移送系）はタブ機能の育ちに合わせて。
+- [x] ~~ポータブル配布~~ — 済 (2026-07-23)。wt 流 **`.portable` マーカー**
+      （exe 隣にあれば config.toml・既定ログ dir とも exe 隣・%APPDATA%
+      完全不可侵）。`packaging/build-portable.ps1` が zip 生成（exe＋
+      ConPTY ペア＋rt/handoff＋config.example＋マーカー＋README）。
+      hot-reload watcher も portable パス追従。defterm 統合は意図的に
+      非対応（要レジストリ＝MSI の領分）。実機 3 点確認（exe 隣 config
+      起動読み・実行中書き換え反映・APPDATA before/after 不変）。
 - [ ] フォント同梱（Cascadia 等）。
 - [ ] **dingbat スピナー（✢✳✶✻✽）の幾何化** — Claude Code のメインスピナー。
       compaction バー（▰▱）と braille 全域は幾何化済（engine 共有ゆえ

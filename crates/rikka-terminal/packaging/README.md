@@ -225,3 +225,15 @@ it keeps working even if a handoff regression breaks console launches.
 Whether the explicit `com:Extension` (comServer) block is required, or the
 FullTrust exe self-registering its class factory (`-Embedding`) suffices, needs
 a Win11 check — the manifest includes the explicit form as the safe default.
+
+## ポータブル配布 (build-portable.ps1)
+
+`build-portable.ps1` が `out/RikkaTerminal-<ver>-portable-x64.zip` を生成する。
+zip には exe・ConPTY ペア（OpenConsole.exe / conpty.dll）・rt / rikka-handoff・
+config.example.toml・`.portable` マーカー・README-portable.txt が入る。
+
+- **`.portable` マーカーが同じフォルダにあると portable モード**: config.toml
+  と既定ログ保存先（logs\）が exe 隣になり、%APPDATA% とレジストリには一切
+  触れない。config のホットリロードも exe 隣を監視する。
+- 既定ターミナル統合（defterm）は意図的に非対応 — パッケージ登録が必要で
+  ポータブルの思想に反する。必要なら MSI/MSIX 経路を使う。
