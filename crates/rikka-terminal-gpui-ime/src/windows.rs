@@ -33,8 +33,8 @@ use windows::Win32::UI::TextServices::{
     ITfContext, ITfContextOwnerCompositionSink, ITfContextOwnerCompositionSink_Impl,
     ITfDocumentMgr, ITfRange, ITfThreadMgr, TEXT_STORE_LOCK_FLAGS, TEXT_STORE_TEXT_CHANGE_FLAGS,
     TF_E_DISCONNECTED, TS_AE_NONE, TS_ATTRVAL, TS_E_NOLAYOUT, TS_E_NOLOCK, TS_E_SYNCHRONOUS,
-    TS_LC_CHANGE, TS_LF_SYNC, TS_RT_PLAIN, TS_RUNINFO, TS_S_ASYNC, TS_SELECTION_ACP, TS_STATUS,
-    TS_TEXTCHANGE,
+    TS_IAS_NOQUERY, TS_IAS_QUERYONLY, TS_LC_CHANGE, TS_LF_SYNC, TS_RT_PLAIN, TS_RUNINFO,
+    TS_S_ASYNC, TS_SELECTION_ACP, TS_STATUS, TS_TEXTCHANGE,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use windows::core::{
@@ -217,7 +217,15 @@ impl WindowsTsf {
         let context = context.ok_or_else(|| WindowsError::from(E_FAIL))?;
         unsafe {
             self.document_mgr.Push(&context)?;
-            self.thread_mgr.SetFocus(&self.document_mgr)?;
+        }
+        // A SetFocus failure must roll the Push back: blur() only pops when
+        // `self.document` was set, so leaving the context on the stack here
+        // would strand it — and every focus retry would stack another.
+        if let Err(e) = unsafe { self.thread_mgr.SetFocus(&self.document_mgr) } {
+            unsafe {
+                let _ = self.document_mgr.Pop(0);
+            }
+            return Err(e);
         }
         self.document = Some(ActiveDocument {
             _context: context,
@@ -743,14 +751,41 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         pacpEnd: *mut i32,
         pChange: *mut TS_TEXTCHANGE,
     ) -> WindowsResult<()> {
-        if pacpStart.is_null() || pacpEnd.is_null() {
+        // The out offsets are optional exactly when the caller opted out of
+        // them (TS_IAS_NOQUERY).
+        if dwFlags & TS_IAS_NOQUERY == 0 && (pacpStart.is_null() || pacpEnd.is_null()) {
             return Err(WindowsError::from(E_INVALIDARG));
         }
-        let acp = to_i32(self.state_ref()?.selection.start);
-        let change = self.SetText(dwFlags, acp, acp, pchText, cch)?;
+        let (start, end) = {
+            let state = self.state_ref()?;
+            (state.selection.start, state.selection.end)
+        };
+        if dwFlags & TS_IAS_QUERYONLY != 0 {
+            // Probe only: report where the text WOULD land (the selection is
+            // replaced, so the result is its start plus the new length) and
+            // leave the document untouched.
+            self.state_ref()?.require_read()?;
+            unsafe {
+                if !pacpStart.is_null() {
+                    *pacpStart = to_i32(start);
+                }
+                if !pacpEnd.is_null() {
+                    *pacpEnd = to_i32(start + cch as usize);
+                }
+            }
+            return Ok(());
+        }
+        // Insertion REPLACES the current selection — reconversion hands the
+        // corrected string back for the selected range, so inserting at its
+        // start would keep (duplicate) the old text after it.
+        let change = self.SetText(0, to_i32(start), to_i32(end), pchText, cch)?;
         unsafe {
-            *pacpStart = change.acpStart;
-            *pacpEnd = change.acpNewEnd;
+            if !pacpStart.is_null() {
+                *pacpStart = change.acpStart;
+            }
+            if !pacpEnd.is_null() {
+                *pacpEnd = change.acpNewEnd;
+            }
             if !pChange.is_null() {
                 *pChange = change;
             }

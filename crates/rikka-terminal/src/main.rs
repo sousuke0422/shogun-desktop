@@ -1171,6 +1171,10 @@ pub struct TabsWindow {
     /// of this window (iTerm2's "all panes in all tabs"). Independent of
     /// the per-tab toggle; either one being on broadcasts.
     broadcast_all: bool,
+    /// The active tab changed with the TSF store possibly mid-composition;
+    /// the next render recycles the store's document so that composition
+    /// cannot commit into the newly active tab's PTY.
+    ime_reset_pending: bool,
 }
 
 impl ImeHost for TabsWindow {
@@ -1229,8 +1233,19 @@ impl TabsWindow {
                 }));
             })
             .detach();
+        let blur_ime = ime.clone();
         window
-            .on_focus_out(&terminal_focus, cx, |_, _, _| tsf::on_input_blur())
+            .on_focus_out(&terminal_focus, cx, move |_, _, cx| {
+                tsf::on_input_blur();
+                // The backend just dropped any in-flight composition; drop
+                // its inline echo too, or a cancelled preedit stays on
+                // screen after focus loss.
+                blur_ime.update(cx, |ime, cx| {
+                    if ime.marked.take().is_some() {
+                        cx.notify();
+                    }
+                });
+            })
             .detach();
         // Re-assert TSF focus once the OS window is FOREGROUND. The store's
         // SetFocus must run while our window is active for the active TIP to
@@ -1274,6 +1289,7 @@ impl TabsWindow {
             dragging_pane: None,
             divider_drag: None,
             broadcast_all: false,
+            ime_reset_pending: false,
         };
         for entry in initial {
             this.adopt(entry, cx);
@@ -2221,6 +2237,10 @@ impl TabsWindow {
         self.cols = 0;
         self.rows = 0;
         self.applied_title = None;
+        // An IME composition in flight belongs to the tab we just left; the
+        // next render (which has the Window needed to check focus and
+        // activation) cancels it so its commit cannot land in this tab's PTY.
+        self.ime_reset_pending = true;
         // The search bar is per-session state — a tab switch closes it and
         // sweeps the highlight off every tab.
         if self.search.open {
@@ -2238,6 +2258,22 @@ impl TabsWindow {
                 .and_then(|t| t.primary().0.theme()),
         );
         cx.notify();
+    }
+
+    /// Run the TSF focus cycle again for this window: the backend pops the
+    /// current document (the TIP abandons any in-flight composition with
+    /// it, and queued events are discarded) and pushes a fresh focused one.
+    fn tsf_refocus(&self, cx: &mut Context<Self>) {
+        let view = cx.weak_entity();
+        let async_cx = cx.to_async();
+        tsf::on_input_focus(Box::new(move || {
+            let view = view.clone();
+            async_cx
+                .spawn(async move |cx| {
+                    let _ = view.update(cx, |_, cx| cx.notify());
+                })
+                .detach();
+        }));
     }
 
     /// Close the active tab; closing the last one closes the window.
@@ -2526,10 +2562,31 @@ fn caption_button(glyph: &'static str, area: WindowControlArea) -> impl IntoElem
 
 impl Render for TabsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A tab change may have left a composition in flight: recycle the
+        // TSF document (as a focus cycle would) so the TIP abandons it and
+        // queued events are discarded — both belong to the tab we left. The
+        // recycle only makes sense while the store is actually bound to us
+        // (OS-active window, terminal focused); the stale inline preedit is
+        // cleared either way.
+        if self.ime_reset_pending {
+            self.ime_reset_pending = false;
+            if window.is_window_active() && self.terminal_focus.is_focused(window) {
+                self.tsf_refocus(cx);
+            }
+            self.ime.update(cx, |ime, cx| {
+                if ime.marked.take().is_some() {
+                    cx.notify();
+                }
+            });
+        }
+
         // TSF: apply queued IME events while our terminal input owns focus —
         // preedit renders inline via ime.marked, commits go to the active
-        // tab's PTY.
-        if self.terminal_focus.is_focused(window) {
+        // tab's PTY. Also gated on OS-window activation: the store is
+        // thread-global, and a background window of this process (whose own
+        // focus tree still reports its terminal focused) would otherwise
+        // drain — and steal — the active window's events.
+        if window.is_window_active() && self.terminal_focus.is_focused(window) {
             for ev in tsf::drain() {
                 match ev {
                     rikka_terminal_gpui_ime::ImeEvent::Preedit(s) => {
