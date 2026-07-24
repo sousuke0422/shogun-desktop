@@ -36,7 +36,7 @@ use windows::Win32::UI::TextServices::{
     TS_IAS_NOQUERY, TS_IAS_QUERYONLY, TS_LC_CHANGE, TS_LF_SYNC, TS_RT_PLAIN, TS_RUNINFO,
     TS_S_ASYNC, TS_SELECTION_ACP, TS_STATUS, TS_TEXTCHANGE,
 };
-use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetForegroundWindow};
 use windows::core::{
     BOOL, Error as WindowsError, GUID, HRESULT, IUnknown, Interface, PCWSTR, PWSTR, Ref,
     Result as WindowsResult, implement,
@@ -126,17 +126,50 @@ impl Shared {
     }
 }
 
-/// Map a TSF ACP offset (`-1` = end of document) to a clamped UTF-16 index.
+/// Map a TSF ACP offset to a clamped UTF-16 index. `-1` is the documented
+/// "end of document" sentinel; any other negative value is a caller bug and
+/// clamps to the START — aliasing it to the end would move garbage input to
+/// the most destructive position.
 fn acp_to_off(acp: i32, len: usize) -> usize {
-    if acp < 0 {
+    if acp == -1 {
         len
+    } else if acp < 0 {
+        0
     } else {
         (acp as usize).min(len)
     }
 }
 
+/// Snap an offset off the middle of a surrogate pair (mutating or selecting
+/// there would strand half the pair, which later lossy conversions corrupt
+/// to U+FFFD).
+fn snap_surrogate(text: &[u16], off: usize) -> usize {
+    if off > 0
+        && off < text.len()
+        && (0xDC00..=0xDFFF).contains(&text[off])
+        && (0xD800..=0xDBFF).contains(&text[off - 1])
+    {
+        off - 1
+    } else {
+        off
+    }
+}
+
 fn to_i32(v: usize) -> i32 {
     i32::try_from(v).unwrap_or(i32::MAX)
+}
+
+// olectl.h connection-point HRESULTs — windows-rs keeps them behind the
+// Win32_System_Ole feature; two constants do not justify enabling it.
+const CONNECT_E_NOCONNECTION: HRESULT = HRESULT(0x8004_0200_u32 as i32);
+const CONNECT_E_ADVISELIMIT: HRESULT = HRESULT(0x8004_0201_u32 as i32);
+
+/// COM identity of a sink: QI to IUnknown must yield the identical pointer
+/// for the same object, so raw-pointer equality is the identity test.
+fn com_identity(sink: &ITextStoreACPSink) -> *mut core::ffi::c_void {
+    sink.cast::<IUnknown>()
+        .map(|u| u.as_raw())
+        .unwrap_or(ptr::null_mut())
 }
 
 // ── COM apartment RAII ─────────────────────────────────────────────────────
@@ -438,16 +471,38 @@ impl ITextStoreACP_Impl for TextStore_Impl {
             return Err(WindowsError::from(E_INVALIDARG));
         };
         let sink: ITextStoreACPSink = punk.cast()?;
-        self.state()?.sink = Some(sink);
+        let mut state = self.state()?;
+        if let Some(existing) = &state.sink {
+            // The same object re-advising only updates its event mask (which
+            // we do not use); a SECOND sink is refused — silently replacing
+            // the live one would disconnect TSF's notifications mid-session.
+            return if com_identity(existing) == com_identity(&sink) {
+                Ok(())
+            } else {
+                Err(WindowsError::from(CONNECT_E_ADVISELIMIT))
+            };
+        }
+        state.sink = Some(sink);
         crate::tsf_log!("store: AdviseSink");
         Ok(())
     }
 
     fn UnadviseSink(&self, punk: Ref<'_, IUnknown>) -> WindowsResult<()> {
-        if punk.as_ref().is_none() {
+        let Some(punk) = punk.as_ref() else {
             return Err(WindowsError::from(E_INVALIDARG));
+        };
+        let mut state = self.state()?;
+        let advised = state.sink.as_ref().is_some_and(|s| {
+            punk.cast::<IUnknown>()
+                .map(|u| u.as_raw() == com_identity(s))
+                .unwrap_or(false)
+        });
+        // Only the advised sink may disconnect; a stale caller must not be
+        // able to sever the live TSF connection.
+        if !advised {
+            return Err(WindowsError::from(CONNECT_E_NOCONNECTION));
         }
-        self.state()?.sink = None;
+        state.sink = None;
         Ok(())
     }
 
@@ -468,6 +523,10 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         }
         let mut flags = dwlockflags;
         let mut first_result: Option<HRESULT> = None;
+        // A sink that queues a fresh upgrade from inside every grant would
+        // spin this loop forever on the UI thread; no real TIP needs more
+        // than a couple of grants per request.
+        let mut grants_left = 16;
         loop {
             let sink = {
                 let mut state = self.state()?;
@@ -494,7 +553,14 @@ impl ITextStoreACP_Impl for TextStore_Impl {
                 state.pending_lock.take()
             };
             match next {
-                Some(f) => flags = f, // grant the queued upgrade now
+                Some(f) => {
+                    grants_left -= 1;
+                    if grants_left == 0 {
+                        crate::tsf_log!("store: RequestLock upgrade storm; dropping queued lock");
+                        return Ok(first_result.unwrap_or(HRESULT(0)));
+                    }
+                    flags = f; // grant the queued upgrade now
+                }
                 None => return Ok(first_result.unwrap_or(HRESULT(0))),
             }
         }
@@ -530,8 +596,8 @@ impl ITextStoreACP_Impl for TextStore_Impl {
 
     fn GetSelection(
         &self,
-        _ulIndex: u32,
-        _ulCount: u32,
+        ulIndex: u32,
+        ulCount: u32,
         pSelection: *mut TS_SELECTION_ACP,
         pcFetched: *mut u32,
     ) -> WindowsResult<()> {
@@ -540,6 +606,16 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         }
         let state = self.state_ref()?;
         state.require_read()?;
+        unsafe {
+            *pcFetched = 0;
+        }
+        // One selection exists: index 0, also addressed by the
+        // TF_DEFAULT_SELECTION sentinel (-1 as u32). A zero-length buffer or
+        // an out-of-range index fetches nothing — writing a record anyway
+        // would overrun the caller's buffer.
+        if ulCount == 0 || (ulIndex != 0 && ulIndex != u32::MAX) {
+            return Ok(());
+        }
         unsafe {
             (*pSelection).acpStart = to_i32(state.selection.start);
             (*pSelection).acpEnd = to_i32(state.selection.end);
@@ -558,8 +634,8 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         state.require_write()?;
         let native = unsafe { *pSelection };
         let len = state.len();
-        let start = acp_to_off(native.acpStart, len);
-        let end = acp_to_off(native.acpEnd, len);
+        let start = snap_surrogate(&state.text, acp_to_off(native.acpStart, len));
+        let end = snap_surrogate(&state.text, acp_to_off(native.acpEnd, len));
         state.selection = start.min(end)..start.max(end);
         Ok(())
     }
@@ -615,8 +691,8 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         let mut state = self.state()?;
         state.require_write()?;
         let len = state.len();
-        let start = acp_to_off(acpStart, len);
-        let end = acp_to_off(acpEnd, len).max(start);
+        let start = snap_surrogate(&state.text, acp_to_off(acpStart, len));
+        let end = snap_surrogate(&state.text, acp_to_off(acpEnd, len)).max(start);
         let text: Vec<u16> = if pchText.0.is_null() || cch == 0 {
             Vec::new()
         } else {
@@ -690,12 +766,35 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     }
 
     fn GetScreenExt(&self, _vcView: u32) -> WindowsResult<RECT> {
-        let state = self.state_ref()?;
-        let hwnd = state.hwnd;
-        let caret = state
-            .caret
-            .ok_or_else(|| WindowsError::from(TS_E_NOLAYOUT))?;
-        Ok(client_rect_to_screen(hwnd, caret))
+        // The screen extent of the VIEW — the window's client area, not the
+        // caret cell: TIPs clip candidate UI against this rect, and a
+        // one-cell extent forces wrong fallback placement near screen edges.
+        let hwnd_raw = self.state_ref()?.hwnd;
+        let hwnd = if hwnd_raw != 0 {
+            HWND(hwnd_raw as *mut core::ffi::c_void)
+        } else {
+            unsafe { GetForegroundWindow() }
+        };
+        let mut rc = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut rc) }.map_err(|_| WindowsError::from(TS_E_NOLAYOUT))?;
+        let mut lt = POINT {
+            x: rc.left,
+            y: rc.top,
+        };
+        let mut rb = POINT {
+            x: rc.right,
+            y: rc.bottom,
+        };
+        unsafe {
+            let _ = ClientToScreen(hwnd, &mut lt);
+            let _ = ClientToScreen(hwnd, &mut rb);
+        }
+        Ok(RECT {
+            left: lt.x,
+            top: lt.y,
+            right: rb.x,
+            bottom: rb.y,
+        })
     }
 
     fn GetWnd(&self, _vcView: u32) -> WindowsResult<HWND> {
@@ -949,4 +1048,28 @@ pub(crate) fn self_check() -> String {
     drop(tsf);
     let _ = writeln!(out, "  deactivate/teardown: ok");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{acp_to_off, snap_surrogate};
+
+    #[test]
+    fn acp_minus_one_is_end_and_other_negatives_clamp_to_start() {
+        assert_eq!(acp_to_off(-1, 5), 5);
+        assert_eq!(acp_to_off(-2, 5), 0);
+        assert_eq!(acp_to_off(i32::MIN, 5), 0);
+        assert_eq!(acp_to_off(3, 5), 3);
+        assert_eq!(acp_to_off(9, 5), 5);
+    }
+
+    #[test]
+    fn mutation_offsets_never_split_surrogate_pairs() {
+        // "a𝄞b" = [0x0061, 0xD834, 0xDD1E, 0x0062]
+        let text: Vec<u16> = "a\u{1D11E}b".encode_utf16().collect();
+        assert_eq!(snap_surrogate(&text, 2), 1); // mid-pair snaps left
+        for off in [0usize, 1, 3, 4] {
+            assert_eq!(snap_surrogate(&text, off), off);
+        }
+    }
 }

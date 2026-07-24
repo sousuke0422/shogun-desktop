@@ -130,8 +130,11 @@ where
                 cx,
             );
             // Feed the caret rect (client physical px) so an IME candidate
-            // window opens at the terminal cursor.
-            if caret_enabled && focus_handle.is_focused(window) {
+            // window opens at the terminal cursor. Only the OS-active window
+            // may publish: the TSF caret slot is thread-global, and a
+            // background window's paint would yank the candidate window to
+            // its own coordinates.
+            if caret_enabled && window.is_window_active() && focus_handle.is_focused(window) {
                 let caret =
                     ime.update(cx, |ime, cx| ime.bounds_for_range(0..0, bounds, window, cx));
                 let scale = window.scale_factor();
