@@ -92,7 +92,10 @@ const DIVIDER: u32 = 0xFFFFFF15;
 /// PTY-burst coalescing window (same rationale/value as shogun-desktop).
 pub(crate) const FRAME_COALESCE: Duration = Duration::from_millis(8);
 
-gpui::actions!(rikka_terminal, [TerminalCopy, TerminalPaste]);
+gpui::actions!(
+    rikka_terminal,
+    [TerminalCopy, TerminalPaste, PaneToTab, PaneToWindow]
+);
 
 /// Appearance/terminal settings resolved once at startup from
 /// `%APPDATA%/rikka-terminal/config.toml` (see `config.rs`).
@@ -1005,6 +1008,15 @@ struct TabDrag {
     title: String,
 }
 
+/// A pane grabbed by its hover handle (split tabs) — dropped on the strip
+/// it becomes a tab, on another pane's edge it rearranges, outside the
+/// window it detaches.
+#[derive(Clone)]
+struct PaneDrag {
+    pane: usize,
+    title: String,
+}
+
 /// The floating preview under the pointer while a tab is dragged.
 struct TabDragGhost {
     title: String,
@@ -1056,6 +1068,7 @@ pub struct TabsWindow {
     /// system cannot see anything. Cleared by every in-window resolution
     /// (the drop handlers and the root mouse-up).
     dragging_tab: Option<usize>,
+    dragging_pane: Option<usize>,
 }
 
 impl ImeHost for TabsWindow {
@@ -1150,6 +1163,7 @@ impl TabsWindow {
             search: Default::default(),
             strip_scroll: ScrollHandle::default(),
             dragging_tab: None,
+            dragging_pane: None,
         };
         for entry in initial {
             this.adopt(entry, cx);
@@ -1268,6 +1282,98 @@ impl TabsWindow {
         cx.notify();
     }
 
+    /// Pull the focused pane out of a split tab. `None` when the tab is
+    /// not split (nothing to pull) — shared by the menu detach paths and
+    /// pane drags.
+    fn take_active_pane(&mut self) -> Option<TabEntry> {
+        let tab = self.tabs.get_mut(self.active)?;
+        if !tab.is_split() {
+            return None;
+        }
+        let entry = tab.close_active_pane()?;
+        Some(entry)
+    }
+
+    /// Right-click: the focused pane leaves the split and becomes its own
+    /// tab right after the current one (which keeps the rest).
+    fn pane_to_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.take_active_pane() else {
+            return;
+        };
+        let weak = cx.weak_entity();
+        *entry.0.waker.lock() = Some(Box::new(move |acx| {
+            let _ = weak.update(acx, |_, cx| cx.notify());
+        }));
+        let ix = (self.active + 1).min(self.tabs.len());
+        self.tabs.insert(ix, Tab::single(entry));
+        self.active = ix;
+        self.after_tab_change(cx);
+        cx.notify();
+    }
+
+    /// Right-click: the focused pane leaves the split into a fresh window
+    /// of this process (same shape as the in-process tab detach).
+    fn pane_to_window(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.take_active_pane() else {
+            return;
+        };
+        self.after_tab_change(cx);
+        cx.notify();
+        open_tabs_window(cx, vec![entry]);
+    }
+
+    /// A pane dropped on the tab strip: it leaves the split and becomes a
+    /// tab at `ix`.
+    fn pane_drop_to_tab_slot(&mut self, pane: usize, ix: usize, cx: &mut Context<Self>) {
+        self.dragging_pane = None;
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        if !tab.is_split() {
+            return;
+        }
+        tab.active_pane = pane;
+        let Some(entry) = tab.close_active_pane() else {
+            return;
+        };
+        let weak = cx.weak_entity();
+        *entry.0.waker.lock() = Some(Box::new(move |acx| {
+            let _ = weak.update(acx, |_, cx| cx.notify());
+        }));
+        let ix = ix.min(self.tabs.len());
+        self.tabs.insert(ix, Tab::single(entry));
+        self.active = ix;
+        self.after_tab_change(cx);
+        cx.notify();
+    }
+
+    /// A pane dropped on another pane's edge: pull it out of its slot and
+    /// split-join it there.
+    fn pane_rearrange(
+        &mut self,
+        src: usize,
+        target: usize,
+        horizontal: bool,
+        new_first: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.dragging_pane = None;
+        if src == target {
+            return;
+        }
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        if !tab.is_split() {
+            return;
+        }
+        let Some(entry) = tab.root.remove(src) else {
+            return;
+        };
+        tab.split_at(target, horizontal, new_first, entry);
+        cx.notify();
+    }
+
     /// Close the focused pane of a split tab; its sibling takes the space.
     fn close_active_pane(&mut self, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get_mut(self.active)
@@ -1355,7 +1461,8 @@ impl TabsWindow {
     fn pane_drop_zones(
         &self,
         pane_id: usize,
-        can_join: bool,
+        can_join_tab: bool,
+        can_join_pane: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let zone = |top: f32, left: f32, w: f32, h: f32| {
@@ -1366,36 +1473,64 @@ impl TabsWindow {
                 .w(gpui::relative(w))
                 .h(gpui::relative(h))
         };
-        let wash = |d: gpui::Div| d.drag_over::<TabDrag>(|s, _, _, _| s.bg(gpui::rgba(0x3465A455)));
+        let wash = |d: gpui::Div| {
+            d.drag_over::<TabDrag>(|s, _, _, _| s.bg(gpui::rgba(0x3465A455)))
+                .drag_over::<PaneDrag>(|s, _, _, _| s.bg(gpui::rgba(0x3465A455)))
+        };
         div()
             .absolute()
             .top_0()
             .left_0()
             .size_full()
-            // Left / right / top / bottom quarters → split-join. Only shown
-            // when the dragged tab can actually join (not the active tab
-            // itself, not a split) — a wash that would do nothing misleads.
-            .when(can_join, |d| {
-                d.child(wash(zone(0.0, 0.0, 0.25, 1.0)).on_drop(cx.listener(
-                    move |this: &mut Self, drag: &TabDrag, _w, cx| {
-                        this.drop_tab_into_pane(drag.ix, pane_id, true, true, cx);
-                    },
-                )))
-                .child(wash(zone(0.0, 0.75, 0.25, 1.0)).on_drop(cx.listener(
-                    move |this: &mut Self, drag: &TabDrag, _w, cx| {
-                        this.drop_tab_into_pane(drag.ix, pane_id, true, false, cx);
-                    },
-                )))
-                .child(wash(zone(0.0, 0.25, 0.5, 0.25)).on_drop(cx.listener(
-                    move |this: &mut Self, drag: &TabDrag, _w, cx| {
-                        this.drop_tab_into_pane(drag.ix, pane_id, false, true, cx);
-                    },
-                )))
-                .child(wash(zone(0.75, 0.25, 0.5, 0.25)).on_drop(cx.listener(
-                    move |this: &mut Self, drag: &TabDrag, _w, cx| {
-                        this.drop_tab_into_pane(drag.ix, pane_id, false, false, cx);
-                    },
-                )))
+            // Left / right / top / bottom quarters → split-join (a dragged
+            // tab joins as a pane; a dragged pane rearranges). Only shown
+            // when the drag can actually land — a wash that would do
+            // nothing misleads.
+            .when(can_join_tab || can_join_pane, |d| {
+                d.child(
+                    wash(zone(0.0, 0.0, 0.25, 1.0))
+                        .on_drop(cx.listener(move |this: &mut Self, drag: &TabDrag, _w, cx| {
+                            this.drop_tab_into_pane(drag.ix, pane_id, true, true, cx);
+                        }))
+                        .on_drop(
+                            cx.listener(move |this: &mut Self, drag: &PaneDrag, _w, cx| {
+                                this.pane_rearrange(drag.pane, pane_id, true, true, cx);
+                            }),
+                        ),
+                )
+                .child(
+                    wash(zone(0.0, 0.75, 0.25, 1.0))
+                        .on_drop(cx.listener(move |this: &mut Self, drag: &TabDrag, _w, cx| {
+                            this.drop_tab_into_pane(drag.ix, pane_id, true, false, cx);
+                        }))
+                        .on_drop(
+                            cx.listener(move |this: &mut Self, drag: &PaneDrag, _w, cx| {
+                                this.pane_rearrange(drag.pane, pane_id, true, false, cx);
+                            }),
+                        ),
+                )
+                .child(
+                    wash(zone(0.0, 0.25, 0.5, 0.25))
+                        .on_drop(cx.listener(move |this: &mut Self, drag: &TabDrag, _w, cx| {
+                            this.drop_tab_into_pane(drag.ix, pane_id, false, true, cx);
+                        }))
+                        .on_drop(
+                            cx.listener(move |this: &mut Self, drag: &PaneDrag, _w, cx| {
+                                this.pane_rearrange(drag.pane, pane_id, false, true, cx);
+                            }),
+                        ),
+                )
+                .child(
+                    wash(zone(0.75, 0.25, 0.5, 0.25))
+                        .on_drop(cx.listener(move |this: &mut Self, drag: &TabDrag, _w, cx| {
+                            this.drop_tab_into_pane(drag.ix, pane_id, false, false, cx);
+                        }))
+                        .on_drop(
+                            cx.listener(move |this: &mut Self, drag: &PaneDrag, _w, cx| {
+                                this.pane_rearrange(drag.pane, pane_id, false, false, cx);
+                            }),
+                        ),
+                )
             })
             // Center → the classic detach-into-a-window, dashed like the
             // old whole-pane affordance.
@@ -1593,14 +1728,68 @@ impl TabsWindow {
                         .bg(gpui::rgba(0x0000002E)),
                 )
             })
-            // Drop zones appear only while a tab is being dragged, so they
-            // never sit in normal hit-testing.
-            .when(self.dragging_tab.is_some(), |d| {
-                let can_join = self.dragging_tab.is_some_and(|ix| {
-                    ix != self.active && self.tabs.get(ix).is_some_and(|t| !t.is_split())
-                });
-                d.child(self.pane_drop_zones(pane_id, can_join, cx))
+            // The grabbed pane's original fades, like a dragged tab's.
+            .when(self.dragging_pane == Some(pane_id), |d| d.opacity(0.5))
+            // Split tabs: a hover handle at the top center grabs this pane
+            // (drag to the strip = tab, to another pane's edge = rearrange,
+            // out of the window = new window).
+            .when(tab_is_split, |d| {
+                let title = session
+                    .title
+                    .lock()
+                    .clone()
+                    .unwrap_or_else(|| "ペイン".to_string());
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .h(px(12.))
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .id(("pane-handle", pane_id))
+                                .w(px(48.))
+                                .h(px(12.))
+                                .rounded_b(px(5.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(9.))
+                                .text_color(gpui::rgba(0xFFFFFF00))
+                                .hover(|s| {
+                                    s.bg(gpui::rgba(0x3465A4CC))
+                                        .text_color(gpui::rgba(0xFFFFFFD0))
+                                })
+                                .cursor_grab()
+                                .child("⋯")
+                                .on_drag(
+                                    PaneDrag {
+                                        pane: pane_id,
+                                        title,
+                                    },
+                                    |drag, _offset, _window, cx| {
+                                        let title = drag.title.clone();
+                                        cx.new(|_| TabDragGhost { title })
+                                    },
+                                ),
+                        ),
+                )
             })
+            // Drop zones appear only while a tab or pane drag is live, so
+            // they never sit in normal hit-testing.
+            .when(
+                self.dragging_tab.is_some() || self.dragging_pane.is_some(),
+                |d| {
+                    let can_join_tab = self.dragging_tab.is_some_and(|ix| {
+                        ix != self.active && self.tabs.get(ix).is_some_and(|t| !t.is_split())
+                    });
+                    let can_join_pane = self.dragging_pane.is_some_and(|p| p != pane_id);
+                    d.child(self.pane_drop_zones(pane_id, can_join_tab, can_join_pane, cx))
+                },
+            )
             .into_any_element()
     }
 
@@ -2157,6 +2346,11 @@ impl Render for TabsWindow {
             // the dragged tab to the end — drops ON a tab are consumed by
             // that tab's own handler and never bubble here.
             .drag_over::<TabDrag>(|style, _, _, _| style.bg(gpui::rgba(TAB_HOVER)))
+            .drag_over::<PaneDrag>(|style, _, _, _| style.bg(gpui::rgba(TAB_HOVER)))
+            .on_drop(cx.listener(|this, drag: &PaneDrag, _window, cx| {
+                let end = this.tabs.len();
+                this.pane_drop_to_tab_slot(drag.pane, end, cx);
+            }))
             .on_drop(cx.listener(|this, drag: &TabDrag, _window, cx| {
                 let last = this.tabs.len().saturating_sub(1);
                 this.reorder_tab(drag.ix, last, cx);
@@ -2304,8 +2498,17 @@ impl Render for TabsWindow {
                             .border_l_2()
                             .border_color(rgb(0x3465A4))
                     })
+                    .drag_over::<PaneDrag>(|style, _, _, _| {
+                        style
+                            .bg(gpui::rgba(TAB_HOVER))
+                            .border_l_2()
+                            .border_color(rgb(0x3465A4))
+                    })
                     .on_drop(cx.listener(move |this, drag: &TabDrag, _window, cx| {
                         this.reorder_tab(drag.ix, ix, cx);
+                    }))
+                    .on_drop(cx.listener(move |this, drag: &PaneDrag, _window, cx| {
+                        this.pane_drop_to_tab_slot(drag.pane, ix, cx);
                     }))
                     .into_any_element();
                 sep.into_iter().chain(std::iter::once(tab))
@@ -2477,6 +2680,12 @@ impl Render for TabsWindow {
                         s.paste(&text);
                     }
                 }))
+                .on_action(cx.listener(|this, _: &PaneToTab, _window, cx| {
+                    this.pane_to_tab(cx);
+                }))
+                .on_action(cx.listener(|this, _: &PaneToWindow, _window, cx| {
+                    this.pane_to_window(cx);
+                }))
                 .child({
                     let tab = &self.tabs[self.active];
                     self.render_pane_node(&tab.root, tab.active_pane, tab.is_split(), cw, ch, cx)
@@ -2490,10 +2699,19 @@ impl Render for TabsWindow {
                 // "right-click blanks the alt screen" bug, fixed 2026-07-10).
                 .context_menu({
                     let menu_focus = self.terminal_focus.clone();
+                    let split = self.tabs.get(self.active).is_some_and(Tab::is_split);
                     move |menu, _window, _cx| {
-                        menu.action_context(menu_focus.clone())
+                        let menu = menu
+                            .action_context(menu_focus.clone())
                             .menu("コピー", Box::new(TerminalCopy))
-                            .menu("ペースト", Box::new(TerminalPaste))
+                            .menu("ペースト", Box::new(TerminalPaste));
+                        if split {
+                            menu.separator()
+                                .menu("ペインをタブへ分離", Box::new(PaneToTab))
+                                .menu("ペインを新しい窓へ分離", Box::new(PaneToWindow))
+                        } else {
+                            menu
+                        }
                     }
                 })
                 .into_any_element()
@@ -2521,12 +2739,17 @@ impl Render for TabsWindow {
                     this.dragging_tab = Some(ev.drag(cx).ix);
                 },
             ))
+            .on_drag_move::<PaneDrag>(cx.listener(
+                |this, ev: &gpui::DragMoveEvent<PaneDrag>, _w, cx| {
+                    this.dragging_pane = Some(ev.drag(cx).pane);
+                },
+            ))
             .on_mouse_up(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _ev, _w, cx| {
-                    if this.dragging_tab.take().is_some() {
-                        // A cancelled drag must repaint NOW — the faded tab
-                        // and the drop zones would linger otherwise.
+                    if this.dragging_tab.take().is_some() | this.dragging_pane.take().is_some() {
+                        // A cancelled drag must repaint NOW — the faded
+                        // source and the drop zones would linger otherwise.
                         cx.notify();
                     }
                 }),
@@ -2534,6 +2757,21 @@ impl Render for TabsWindow {
             .on_mouse_up_out(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _ev: &gpui::MouseUpEvent, window, cx| {
+                    // A pane released outside the window detaches into a
+                    // fresh window of this process.
+                    if let Some(pane) = this.dragging_pane.take() {
+                        if let Some(tab) = this.tabs.get_mut(this.active)
+                            && tab.is_split()
+                        {
+                            tab.active_pane = pane;
+                            if let Some(entry) = tab.close_active_pane() {
+                                this.after_tab_change(cx);
+                                cx.notify();
+                                open_tabs_window(cx, vec![entry]);
+                            }
+                        }
+                        return;
+                    }
                     let Some(ix) = this.dragging_tab.take() else {
                         return;
                     };
