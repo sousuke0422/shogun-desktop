@@ -758,24 +758,36 @@ impl PaneNode {
         }
     }
 
-    /// Split leaf `id` in place: it becomes `Split{old, new}`. Returns the
-    /// leaf back when `id` is not in this subtree.
-    fn split(&mut self, id: usize, horizontal: bool, new_leaf: Leaf) -> Option<Leaf> {
+    /// Split leaf `id` in place: it becomes `Split{old, new}` (or
+    /// `{new, old}` with `new_first` — a drop on the left/top edge).
+    /// Returns the leaf back when `id` is not in this subtree.
+    fn split(
+        &mut self,
+        id: usize,
+        horizontal: bool,
+        new_leaf: Leaf,
+        new_first: bool,
+    ) -> Option<Leaf> {
         match self {
             PaneNode::Leaf(l) if l.id == id => {
                 let old = std::mem::replace(self, PaneNode::Empty);
+                let (a, b) = if new_first {
+                    (PaneNode::Leaf(new_leaf), old)
+                } else {
+                    (old, PaneNode::Leaf(new_leaf))
+                };
                 *self = PaneNode::Split {
                     horizontal,
                     ratio: 0.5,
-                    a: Box::new(old),
-                    b: Box::new(PaneNode::Leaf(new_leaf)),
+                    a: Box::new(a),
+                    b: Box::new(b),
                 };
                 None
             }
             PaneNode::Leaf(..) | PaneNode::Empty => Some(new_leaf),
             PaneNode::Split { a, b, .. } => {
-                let leftover = a.split(id, horizontal, new_leaf)?;
-                b.split(id, horizontal, leftover)
+                let leftover = a.split(id, horizontal, new_leaf, new_first)?;
+                b.split(id, horizontal, leftover, new_first)
             }
         }
     }
@@ -876,7 +888,21 @@ impl Tab {
         self.next_pane_id += 1;
         if self
             .root
-            .split(self.active_pane, horizontal, Leaf::new(id, entry))
+            .split(self.active_pane, horizontal, Leaf::new(id, entry), false)
+            .is_none()
+        {
+            self.active_pane = id;
+        }
+    }
+
+    /// Split pane `target` with `entry` on the `new_first` side (a tab
+    /// dropped onto a pane edge); the new pane takes the focus.
+    fn split_at(&mut self, target: usize, horizontal: bool, new_first: bool, entry: TabEntry) {
+        let id = self.next_pane_id;
+        self.next_pane_id += 1;
+        if self
+            .root
+            .split(target, horizontal, Leaf::new(id, entry), new_first)
             .is_none()
         {
             self.active_pane = id;
@@ -1291,6 +1317,102 @@ impl TabsWindow {
         }
     }
 
+    /// A strip tab dropped onto a pane edge: the tab leaves the strip and
+    /// joins the active tab as a new pane in that direction (wt/VSCode's
+    /// editor-drop). Same-window, unsplit source tabs only (v1).
+    fn drop_tab_into_pane(
+        &mut self,
+        drag_ix: usize,
+        target_pane: usize,
+        horizontal: bool,
+        new_first: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.dragging_tab = None;
+        if drag_ix >= self.tabs.len() || drag_ix == self.active {
+            return;
+        }
+        if self.tabs[drag_ix].is_split() {
+            log::warn!("pane drop: split tabs can't join as a pane yet");
+            return;
+        }
+        let Some(entry) = self.tabs.remove(drag_ix).take_single() else {
+            return;
+        };
+        if drag_ix < self.active {
+            self.active -= 1;
+        }
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.split_at(target_pane, horizontal, new_first, entry);
+        }
+        cx.notify();
+    }
+
+    /// The five drop zones over a pane while a tab drag is live: edge
+    /// quarters split-join in that direction (steel-blue wash advertises
+    /// the side), the center keeps the classic detach. Mounted ONLY during
+    /// a drag, so normal hit-testing never sees these.
+    fn pane_drop_zones(
+        &self,
+        pane_id: usize,
+        can_join: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let zone = |top: f32, left: f32, w: f32, h: f32| {
+            div()
+                .absolute()
+                .top(gpui::relative(top))
+                .left(gpui::relative(left))
+                .w(gpui::relative(w))
+                .h(gpui::relative(h))
+        };
+        let wash = |d: gpui::Div| d.drag_over::<TabDrag>(|s, _, _, _| s.bg(gpui::rgba(0x3465A455)));
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            // Left / right / top / bottom quarters → split-join. Only shown
+            // when the dragged tab can actually join (not the active tab
+            // itself, not a split) — a wash that would do nothing misleads.
+            .when(can_join, |d| {
+                d.child(wash(zone(0.0, 0.0, 0.25, 1.0)).on_drop(cx.listener(
+                    move |this: &mut Self, drag: &TabDrag, _w, cx| {
+                        this.drop_tab_into_pane(drag.ix, pane_id, true, true, cx);
+                    },
+                )))
+                .child(wash(zone(0.0, 0.75, 0.25, 1.0)).on_drop(cx.listener(
+                    move |this: &mut Self, drag: &TabDrag, _w, cx| {
+                        this.drop_tab_into_pane(drag.ix, pane_id, true, false, cx);
+                    },
+                )))
+                .child(wash(zone(0.0, 0.25, 0.5, 0.25)).on_drop(cx.listener(
+                    move |this: &mut Self, drag: &TabDrag, _w, cx| {
+                        this.drop_tab_into_pane(drag.ix, pane_id, false, true, cx);
+                    },
+                )))
+                .child(wash(zone(0.75, 0.25, 0.5, 0.25)).on_drop(cx.listener(
+                    move |this: &mut Self, drag: &TabDrag, _w, cx| {
+                        this.drop_tab_into_pane(drag.ix, pane_id, false, false, cx);
+                    },
+                )))
+            })
+            // Center → the classic detach-into-a-window, dashed like the
+            // old whole-pane affordance.
+            .child(
+                zone(0.25, 0.25, 0.5, 0.5)
+                    .drag_over::<TabDrag>(|s, _, _, _| {
+                        s.border_2()
+                            .border_dashed()
+                            .border_color(gpui::rgba(0x8A9CC880))
+                    })
+                    .on_drop(cx.listener(|this: &mut Self, drag: &TabDrag, window, cx| {
+                        this.detach_at(drag.ix, window, cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// Render the pane tree: splits become ratio-sized flex children with a
     /// 1px divider; leaves paint their own grid + overlay.
     fn render_pane_node(
@@ -1470,6 +1592,14 @@ impl TabsWindow {
                         .size_full()
                         .bg(gpui::rgba(0x0000002E)),
                 )
+            })
+            // Drop zones appear only while a tab is being dragged, so they
+            // never sit in normal hit-testing.
+            .when(self.dragging_tab.is_some(), |d| {
+                let can_join = self.dragging_tab.is_some_and(|ix| {
+                    ix != self.active && self.tabs.get(ix).is_some_and(|t| !t.is_split())
+                });
+                d.child(self.pane_drop_zones(pane_id, can_join, cx))
             })
             .into_any_element()
     }
@@ -2026,6 +2156,7 @@ impl Render for TabsWindow {
             // A drop on the strip's empty space (past the last tab) moves
             // the dragged tab to the end — drops ON a tab are consumed by
             // that tab's own handler and never bubble here.
+            .drag_over::<TabDrag>(|style, _, _, _| style.bg(gpui::rgba(TAB_HOVER)))
             .on_drop(cx.listener(|this, drag: &TabDrag, _window, cx| {
                 let last = this.tabs.len().saturating_sub(1);
                 this.reorder_tab(drag.ix, last, cx);
@@ -2162,7 +2293,14 @@ impl Render for TabsWindow {
                             cx.new(|_| TabDragGhost { title })
                         },
                     )
-                    .drag_over::<TabDrag>(|style, _, _, _| style.bg(gpui::rgba(TAB_HOVER)))
+                    .drag_over::<TabDrag>(|style, _, _, _| {
+                        // The drop lands AT this tab's slot — the steel-blue
+                        // left edge says exactly that.
+                        style
+                            .bg(gpui::rgba(TAB_HOVER))
+                            .border_l_2()
+                            .border_color(rgb(0x3465A4))
+                    })
                     .on_drop(cx.listener(move |this, drag: &TabDrag, _window, cx| {
                         this.reorder_tab(drag.ix, ix, cx);
                     }))
