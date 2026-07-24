@@ -2237,6 +2237,9 @@ impl Render for TabsWindow {
                             .text_color(gpui::rgba(TEXT_SECONDARY))
                             .hover(|t| t.bg(gpui::rgba(TAB_HOVER))),
                     })
+                    // The dragged tab's strip original fades — the ghost is
+                    // what you're holding, this is where it came from.
+                    .when(self.dragging_tab == Some(ix), |t| t.opacity(0.35))
                     .children(icon_el)
                     .children(rec_dot)
                     .child(
@@ -2520,8 +2523,12 @@ impl Render for TabsWindow {
             ))
             .on_mouse_up(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _ev, _w, _cx| {
-                    this.dragging_tab = None;
+                cx.listener(|this, _ev, _w, cx| {
+                    if this.dragging_tab.take().is_some() {
+                        // A cancelled drag must repaint NOW — the faded tab
+                        // and the drop zones would linger otherwise.
+                        cx.notify();
+                    }
                 }),
             )
             .on_mouse_up_out(
