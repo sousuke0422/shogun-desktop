@@ -22,7 +22,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use gpui::{AnyWindowHandle, App, AsyncApp, Global, WeakEntity};
+use gpui::{AnyWindowHandle, App, AsyncApp, Entity, Global, WeakEntity};
 use parking_lot::Mutex;
 use rikka_terminal_core::TerminalSession;
 
@@ -259,16 +259,81 @@ pub fn all_windows(cx: &mut App) -> Vec<(AnyWindowHandle, WeakEntity<TabsWindow>
         .collect()
 }
 
-/// Every live window except `except`, pruning the dead.
+fn pin_live_entities<K, T: 'static>(
+    entries: impl IntoIterator<Item = (K, WeakEntity<T>)>,
+) -> Vec<(K, Entity<T>)> {
+    entries
+        .into_iter()
+        .filter_map(|(key, weak)| weak.upgrade().map(|entity| (key, entity)))
+        .collect()
+}
+
+/// Take a merge source only when it owns something worth retaining. Callers
+/// may close the source window only for `Some`; `None` is never a successful
+/// merge.
+pub(crate) fn take_for_merge<T>(source: &mut Vec<T>) -> Option<Vec<T>> {
+    let moved = std::mem::take(source);
+    (!moved.is_empty()).then_some(moved)
+}
+
+/// Every live window except `except`, pruning the dead. Return strong entity
+/// handles so a merge pins each source until its tabs have been extracted;
+/// closing a window from a stale weak snapshot must never destroy its tabs.
 pub fn other_windows(
     cx: &mut App,
     except: gpui::EntityId,
-) -> Vec<(AnyWindowHandle, WeakEntity<TabsWindow>)> {
+) -> Vec<(AnyWindowHandle, Entity<TabsWindow>)> {
     let reg = cx.global_mut::<WindowRegistry>();
     prune(reg);
-    reg.windows
-        .iter()
-        .filter(|(_, _, w)| w.entity_id() != except)
-        .map(|(_, h, w)| (*h, w.clone()))
-        .collect()
+    pin_live_entities(
+        reg.windows
+            .iter()
+            .filter(|(_, _, w)| w.entity_id() != except)
+            .map(|(_, h, w)| (*h, w.clone())),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MergeSource<T> {
+        tabs: Vec<T>,
+    }
+
+    #[gpui::test]
+    fn pinned_merge_source_retains_tabs_and_empty_sources_do_not_close(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::AppContext as _;
+
+        let tab = Arc::new(());
+        let tab_liveness = Arc::downgrade(&tab);
+        let source = cx.new(|_| MergeSource { tabs: vec![tab] });
+        let source_weak = source.downgrade();
+        let mut pinned = pin_live_entities([((), source_weak.clone())]);
+        drop(source);
+
+        let (_, source) = pinned.pop().expect("live source must be pinned");
+        assert!(
+            source_weak.upgrade().is_some(),
+            "the merge snapshot must keep its source entity alive"
+        );
+        let mut target = Vec::new();
+        let moved = source
+            .update(cx, |source, _| take_for_merge(&mut source.tabs))
+            .expect("a source holding a tab must produce a merge payload");
+        target.extend(moved);
+        drop(source);
+
+        assert_eq!(target.len(), 1);
+        assert!(
+            tab_liveness.upgrade().is_some(),
+            "the target must retain the moved tab after the source is released"
+        );
+        assert!(
+            take_for_merge::<Arc<()>>(&mut Vec::new()).is_none(),
+            "an empty source must not authorize closing its window"
+        );
+    }
 }

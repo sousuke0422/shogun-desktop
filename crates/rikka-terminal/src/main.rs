@@ -2434,11 +2434,14 @@ impl TabsWindow {
     fn merge_all(&mut self, cx: &mut Context<Self>) {
         let my_id = cx.entity_id();
         let others = hub::other_windows(cx, my_id);
-        for (handle, weak) in others {
-            let moved: Vec<Tab> = weak
-                .upgrade()
-                .map(|e| e.update(cx, |other, _| std::mem::take(&mut other.tabs)))
-                .unwrap_or_default();
+        for (handle, entity) in others {
+            let Some(moved) = entity.update(cx, |other, _| hub::take_for_merge(&mut other.tabs))
+            else {
+                // Never close a source from which no tab was retained. This
+                // is the load-bearing guard against a stale/closing window
+                // snapshot turning merge-all into close-all.
+                continue;
+            };
             for tab in moved {
                 self.adopt_tab(tab, cx);
             }

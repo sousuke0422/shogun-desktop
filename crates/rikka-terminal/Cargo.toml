@@ -39,6 +39,9 @@ image = "0.25"
 [dev-dependencies]
 # Attach-validation tests encode synthetic kitty-graphics PNG payloads as base64.
 base64 = "0.22"
+# Hub lifecycle tests use real GPUI Entity/WeakEntity refcounts without
+# constructing platform windows.
+gpui = { version = "0.2.2", features = ["test-support"] }
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.61"
