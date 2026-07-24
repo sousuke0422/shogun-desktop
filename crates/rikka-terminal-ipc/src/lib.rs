@@ -217,6 +217,14 @@ pub enum Request {
     Ping,
     Spawn(SpawnArgs),
     Attach(AttachArgs),
+    /// Phase 1 of a tab move. The receiver duplicates handles without
+    /// consuming the source and answers only after validation succeeds.
+    PrepareAttach(AttachArgs),
+    /// Receiver promises to retain the prepared copies while the source
+    /// commits its paused reader.
+    CommitAttach,
+    /// Source reader is gone; the receiver may start consuming the PTY.
+    FinalizeAttach,
     RegisterWindow(RegisterWindow),
     /// Replace ALL of `pid`'s directory entries with `windows` — the
     /// heartbeat form for per-window addressing: one process, every live
@@ -277,6 +285,7 @@ impl Response {
 #[derive(Deserialize)]
 struct Envelope<T> {
     v: u32,
+    auth: String,
     #[serde(flatten)]
     body: T,
 }
@@ -284,6 +293,7 @@ struct Envelope<T> {
 #[derive(Serialize)]
 struct EnvelopeRef<'a, T> {
     v: u32,
+    auth: &'a str,
     #[serde(flatten)]
     body: &'a T,
 }
@@ -295,11 +305,19 @@ fn json_err(e: serde_json::Error) -> io::Error {
 /// Write `body` inside a `{ "v": PROTOCOL_VERSION, … }` envelope as one
 /// length-prefixed frame.
 pub fn write_frame<W: Write, T: Serialize>(w: &mut W, body: &T) -> io::Result<()> {
+    let auth = security::capability()?;
     let json = serde_json::to_vec(&EnvelopeRef {
         v: PROTOCOL_VERSION,
+        auth,
         body,
     })
     .map_err(json_err)?;
+    if json.len() > MAX_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame exceeds MAX_FRAME_BYTES",
+        ));
+    }
     let len = u32::try_from(json.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame exceeds u32"))?;
     w.write_all(&len.to_le_bytes())?;
@@ -321,6 +339,12 @@ pub fn read_frame<R: Read, T: DeserializeOwned>(r: &mut R) -> io::Result<(u32, T
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     let env: Envelope<T> = serde_json::from_slice(&buf).map_err(json_err)?;
+    if !security::capability_matches(&env.auth)? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "IPC capability mismatch",
+        ));
+    }
     Ok((env.v, env.body))
 }
 
@@ -336,8 +360,10 @@ mod tests {
             argv: vec!["pwsh".into()],
             ..Default::default()
         });
+        let auth = security::capability().unwrap();
         let s = serde_json::to_string(&EnvelopeRef {
             v: PROTOCOL_VERSION,
+            auth,
             body: &req,
         })
         .unwrap();
@@ -377,7 +403,12 @@ mod tests {
 
     #[test]
     fn unit_requests_roundtrip() {
-        for req in [Request::Ping, Request::ListWindows] {
+        for req in [
+            Request::Ping,
+            Request::ListWindows,
+            Request::CommitAttach,
+            Request::FinalizeAttach,
+        ] {
             let mut buf = Vec::new();
             write_frame(&mut buf, &req).unwrap();
             let (_, got): (u32, Request) = read_frame(&mut Cursor::new(&buf)).unwrap();
@@ -443,5 +474,20 @@ mod tests {
         buf.extend_from_slice(&u32::MAX.to_le_bytes());
         let e = read_frame::<_, Request>(&mut Cursor::new(&buf)).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn frame_with_wrong_capability_is_rejected() {
+        let json = serde_json::to_vec(&serde_json::json!({
+            "v": PROTOCOL_VERSION,
+            "auth": "00",
+            "op": "ping"
+        }))
+        .unwrap();
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&json);
+        let err = read_frame::<_, Request>(&mut Cursor::new(frame)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     }
 }

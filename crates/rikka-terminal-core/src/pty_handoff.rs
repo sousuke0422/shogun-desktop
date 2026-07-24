@@ -64,6 +64,60 @@ pub struct TransferKit {
     pub keepalive: Vec<OwnedHandle>,
 }
 
+#[derive(Clone)]
+pub struct ReaderGate {
+    state: Arc<(std::sync::Mutex<Option<bool>>, std::sync::Condvar)>,
+}
+
+impl ReaderGate {
+    fn new() -> Self {
+        Self {
+            state: Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new())),
+        }
+    }
+
+    pub fn start(&self) {
+        *self.state.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(true);
+        self.state.1.notify_all();
+    }
+}
+
+struct GatedReader {
+    inner: File,
+    gate: ReaderGate,
+}
+
+impl Read for GatedReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut state = self.gate.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        while state.is_none() {
+            state = self
+                .gate
+                .state
+                .1
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        if *state == Some(false) {
+            return Ok(0);
+        }
+        drop(state);
+        self.inner.read(buf)
+    }
+}
+
+impl Drop for ReaderGate {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.state) == 2 {
+            let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+            if state.is_none() {
+                *state = Some(false);
+                self.state.1.notify_all();
+            }
+        }
+    }
+}
+
 impl TransferKit {
     fn stock(pty: &HandoffPty) -> std::io::Result<TransferKit> {
         Ok(TransferKit {
@@ -71,6 +125,19 @@ impl TransferKit {
             output: pty.output.try_clone()?,
             signal: pty.signal.as_ref().map(|h| h.try_clone()).transpose()?,
             keepalive: pty
+                .keepalive
+                .iter()
+                .map(|h| h.try_clone())
+                .collect::<std::io::Result<_>>()?,
+        })
+    }
+
+    pub fn try_clone(&self) -> std::io::Result<TransferKit> {
+        Ok(TransferKit {
+            input: self.input.try_clone()?,
+            output: self.output.try_clone()?,
+            signal: self.signal.as_ref().map(|h| h.try_clone()).transpose()?,
+            keepalive: self
                 .keepalive
                 .iter()
                 .map(|h| h.try_clone())
@@ -497,11 +564,49 @@ pub fn build_handoff_session_with_preface(
     preface: Vec<u8>,
     xtversion_identity: &str,
 ) -> Result<TerminalSession> {
+    build_handoff_session_inner(cols, rows, pty, preface, xtversion_identity, None)
+        .map(|(session, _)| session)
+}
+
+pub fn build_handoff_session_with_gated_preface(
+    cols: u16,
+    rows: u16,
+    pty: HandoffPty,
+    preface: Vec<u8>,
+    xtversion_identity: &str,
+) -> Result<(TerminalSession, ReaderGate)> {
+    let gate = ReaderGate::new();
+    let (session, _) = build_handoff_session_inner(
+        cols,
+        rows,
+        pty,
+        preface,
+        xtversion_identity,
+        Some(gate.clone()),
+    )?;
+    Ok((session, gate))
+}
+
+fn build_handoff_session_inner(
+    cols: u16,
+    rows: u16,
+    pty: HandoffPty,
+    preface: Vec<u8>,
+    xtversion_identity: &str,
+    gate: Option<ReaderGate>,
+) -> Result<(TerminalSession, Option<ReaderGate>)> {
     // Stock the transfer duplicates before the handles disappear into File
     // boxes and worker threads — this is the only moment the full set is
     // still in one hand.
     let transfer = TransferKit::stock(&pty)?;
-    let reader: Box<dyn Read + Send> = Box::new(File::from(pty.output));
+    let output = File::from(pty.output);
+    let reader: Box<dyn Read + Send> = match &gate {
+        Some(gate) => Box::new(GatedReader {
+            inner: output,
+            gate: gate.clone(),
+        }),
+        None => Box::new(output),
+    };
     let writer: Box<dyn Write + Send> = Box::new(File::from(pty.input));
     let resizer: Arc<dyn PtyResizer> = Arc::new(SignalResizer {
         signal: pty.signal.map(|h| FairMutex::new(File::from(h))),
@@ -520,7 +625,7 @@ pub fn build_handoff_session_with_preface(
     // advertise kitty keyboard (see mark_conpty's docs in lib.rs).
     session.mark_conpty();
     *session.transfer.lock() = Some(transfer);
-    Ok(session)
+    Ok((session, gate))
 }
 
 #[cfg(test)]

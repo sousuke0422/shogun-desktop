@@ -37,7 +37,10 @@ mod wt_profiles;
 mod wt_schemes;
 
 use std::io::{Read, Write};
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -3726,9 +3729,12 @@ fn attach_request(a: &cli::AttachSpec, launch: &cli::Launch) -> ipc::AttachArgs 
         .state_path
         .as_ref()
         .and_then(|p| {
-            let bytes = std::fs::read(p);
+            let bytes = std::fs::metadata(p)
+                .ok()
+                .filter(|m| m.len() <= ipc::MAX_FRAME_BYTES as u64)
+                .and_then(|_| std::fs::read(p).ok());
             let _ = std::fs::remove_file(p);
-            bytes.ok()
+            bytes
         })
         .map(|bytes| {
             serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -3988,6 +3994,50 @@ impl WindowDirectory {
     }
 }
 
+fn validate_registration(peer_pid: u32, r: &ipc::RegisterWindow) -> Result<()> {
+    anyhow::ensure!(
+        r.pid == peer_pid,
+        "registration pid {} does not match connected peer {peer_pid}",
+        r.pid
+    );
+    let owns_id = r.window_id == u64::from(peer_pid) || (r.window_id >> 20) == u64::from(peer_pid);
+    anyhow::ensure!(owns_id, "window id does not belong to the registering pid");
+    anyhow::ensure!(
+        r.endpoint.is_empty() || r.endpoint == ipc::transport::window_endpoint_name(peer_pid),
+        "window endpoint is not canonical for the registering pid"
+    );
+    Ok(())
+}
+
+fn validate_registrations(peer_pid: u32, pid: u32, windows: &[ipc::RegisterWindow]) -> Result<()> {
+    anyhow::ensure!(
+        pid == peer_pid,
+        "registration pid {pid} does not match connected peer {peer_pid}"
+    );
+    windows
+        .iter()
+        .try_for_each(|r| validate_registration(peer_pid, r))
+}
+
+const MAX_IPC_WORKERS: usize = 32;
+
+struct IpcWorkerPermit(Arc<AtomicUsize>);
+
+impl Drop for IpcWorkerPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
+fn acquire_ipc_worker(active: &Arc<AtomicUsize>) -> Option<IpcWorkerPermit> {
+    active
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            (n < MAX_IPC_WORKERS).then_some(n + 1)
+        })
+        .ok()
+        .map(|_| IpcWorkerPermit(Arc::clone(active)))
+}
+
 /// Forward a targeted spawn (`rt -w`) to a window process's own socket.
 /// `Ok` only when the window answered ok — anything else lets the caller
 /// fall open to the new-window path.
@@ -4059,11 +4109,15 @@ fn monarch_accept_loop(
     tx: futures::channel::mpsc::UnboundedSender<Forwarded>,
     directory: Arc<FairMutex<WindowDirectory>>,
 ) {
+    let active_workers = Arc::new(AtomicUsize::new(0));
     {
         {
             loop {
                 let Ok(mut conn) = monarch.accept() else {
                     break;
+                };
+                let Some(permit) = acquire_ipc_worker(&active_workers) else {
+                    continue;
                 };
                 // One worker per connection: a client that connects but
                 // never sends its frame (dying process, wedged pipe) must
@@ -4072,85 +4126,115 @@ fn monarch_accept_loop(
                 let directory = Arc::clone(&directory);
                 std::thread::Builder::new()
                     .name("rikka-ipc-conn".into())
-                    .spawn(move || match conn.recv_request() {
-                        Ok(ipc::Request::Spawn(mut s)) => {
-                            // Targeted spawn (`rt -w`): resolve the addressed
-                            // window and forward to its own socket, rewriting
-                            // 0/pid forms to the concrete per-window id. Any
-                            // failure falls open to the normal new-window
-                            // path — a launch must never be lost.
-                            let routed = match s.window {
-                                Some(q) => match directory.lock().resolve_target(q) {
-                                    Some((id, endpoint)) => {
-                                        s.window = Some(id);
-                                        forward_spawn_to_window(&endpoint, &s).is_ok()
-                                    }
+                    .spawn(move || {
+                        match {
+                            let _permit = &permit;
+                            conn.recv_request()
+                        } {
+                            Ok(ipc::Request::Spawn(mut s)) => {
+                                // Targeted spawn (`rt -w`): resolve the addressed
+                                // window and forward to its own socket, rewriting
+                                // 0/pid forms to the concrete per-window id. Any
+                                // failure falls open to the normal new-window
+                                // path — a launch must never be lost.
+                                let routed = match s.window {
+                                    Some(q) => match directory.lock().resolve_target(q) {
+                                        Some((id, endpoint)) => {
+                                            s.window = Some(id);
+                                            forward_spawn_to_window(&endpoint, &s).is_ok()
+                                        }
+                                        None => false,
+                                    },
                                     None => false,
-                                },
-                                None => false,
-                            };
-                            // Crash isolation first; in-process only as
-                            // fallback (a monarch-resident window beats a
-                            // dead launch).
-                            if !routed {
-                                if let Err(e) = spawn_window_process(&s) {
-                                    log::warn!(
-                                        "window-process spawn failed, opening in-process: {e}"
-                                    );
-                                    let _ = tx.unbounded_send(Forwarded::Spawn(s.argv));
+                                };
+                                // Crash isolation first; in-process only as
+                                // fallback (a monarch-resident window beats a
+                                // dead launch).
+                                if !routed {
+                                    if let Err(e) = spawn_window_process(&s) {
+                                        log::warn!(
+                                            "window-process spawn failed, opening in-process: {e}"
+                                        );
+                                        let _ = tx.unbounded_send(Forwarded::Spawn(s.argv));
+                                    }
                                 }
+                                let _ = conn.send_response(&ipc::Response::ok());
                             }
-                            let _ = conn.send_response(&ipc::Response::ok());
-                        }
-                        Ok(ipc::Request::Attach(a)) => {
-                            // Handle transfer is gated on the OS-attested
-                            // peer PID; an unattestable peer is refused
-                            // (fail closed).
-                            let resp = match conn.peer_pid() {
-                                Some(peer) => match handle_attach(&tx, a, peer) {
-                                    Ok(()) => ipc::Response::ok(),
+                            Ok(ipc::Request::Attach(a)) => {
+                                // Handle transfer is gated on the OS-attested
+                                // peer PID; an unattestable peer is refused
+                                // (fail closed).
+                                let resp = match conn.peer_pid() {
+                                    Some(peer) => match handle_attach(&tx, a, peer) {
+                                        Ok(()) => ipc::Response::ok(),
+                                        Err(e) => ipc::Response::error(e.to_string()),
+                                    },
+                                    None => ipc::Response::error(
+                                        "attach refused: peer identity could not be verified",
+                                    ),
+                                };
+                                let _ = conn.send_response(&resp);
+                            }
+                            Ok(ipc::Request::RegisterWindow(r)) => {
+                                let resp = match conn
+                                    .peer_pid()
+                                    .ok_or_else(|| anyhow::anyhow!("unattested registration peer"))
+                                    .and_then(|peer| validate_registration(peer, &r))
+                                {
+                                    Ok(()) => {
+                                        directory.lock().register(r);
+                                        ipc::Response::ok()
+                                    }
                                     Err(e) => ipc::Response::error(e.to_string()),
-                                },
-                                None => ipc::Response::error(
-                                    "attach refused: peer identity could not be verified",
-                                ),
-                            };
-                            let _ = conn.send_response(&resp);
-                        }
-                        Ok(ipc::Request::RegisterWindow(r)) => {
-                            directory.lock().register(r);
-                            let _ = conn.send_response(&ipc::Response::ok());
-                        }
-                        Ok(ipc::Request::RegisterWindows { pid, windows }) => {
-                            directory.lock().register_all(pid, windows);
-                            let _ = conn.send_response(&ipc::Response::ok());
-                        }
-                        Ok(ipc::Request::ListWindows) => {
-                            let windows = directory.lock().list();
-                            let _ = conn.send_response(&ipc::Response {
-                                ok: true,
-                                windows: Some(windows),
-                                ..Default::default()
-                            });
-                        }
-                        Ok(ipc::Request::ResolveWindow { window }) => {
-                            let resolved = directory.lock().resolve(window);
-                            let resp = match resolved {
-                                Some(endpoint) => ipc::Response {
+                                };
+                                let _ = conn.send_response(&resp);
+                            }
+                            Ok(ipc::Request::RegisterWindows { pid, windows }) => {
+                                let resp = match conn
+                                    .peer_pid()
+                                    .ok_or_else(|| anyhow::anyhow!("unattested registration peer"))
+                                    .and_then(|peer| validate_registrations(peer, pid, &windows))
+                                {
+                                    Ok(()) => {
+                                        directory.lock().register_all(pid, windows);
+                                        ipc::Response::ok()
+                                    }
+                                    Err(e) => ipc::Response::error(e.to_string()),
+                                };
+                                let _ = conn.send_response(&resp);
+                            }
+                            Ok(ipc::Request::ListWindows) => {
+                                let windows = directory.lock().list();
+                                let _ = conn.send_response(&ipc::Response {
                                     ok: true,
-                                    endpoint: Some(endpoint),
+                                    windows: Some(windows),
                                     ..Default::default()
-                                },
-                                None => ipc::Response::error(format!(
-                                    "window {window} is unknown or unreachable"
-                                )),
-                            };
-                            let _ = conn.send_response(&resp);
+                                });
+                            }
+                            Ok(ipc::Request::ResolveWindow { window }) => {
+                                let resolved = directory.lock().resolve(window);
+                                let resp = match resolved {
+                                    Some(endpoint) => ipc::Response {
+                                        ok: true,
+                                        endpoint: Some(endpoint),
+                                        ..Default::default()
+                                    },
+                                    None => ipc::Response::error(format!(
+                                        "window {window} is unknown or unreachable"
+                                    )),
+                                };
+                                let _ = conn.send_response(&resp);
+                            }
+                            Ok(ipc::Request::Ping) => {
+                                let _ = conn.send_response(&ipc::Response::ok());
+                            }
+                            Ok(_) => {
+                                let _ = conn.send_response(&ipc::Response::error(
+                                    "request is not valid on the monarch socket",
+                                ));
+                            }
+                            Err(_) => {} // client hung up before sending a frame
                         }
-                        Ok(ipc::Request::Ping) => {
-                            let _ = conn.send_response(&ipc::Response::ok());
-                        }
-                        Err(_) => {} // client hung up before sending a frame
                     })
                     .ok();
             }
@@ -4333,48 +4417,120 @@ fn window_accept_loop(
     listener: ipc::transport::Monarch,
     tx: futures::channel::mpsc::UnboundedSender<Forwarded>,
 ) {
+    let active_workers = Arc::new(AtomicUsize::new(0));
     loop {
         let Ok(mut conn) = listener.accept() else {
             break;
+        };
+        let Some(permit) = acquire_ipc_worker(&active_workers) else {
+            continue;
         };
         // One worker per connection — same reasoning as the monarch loop: a
         // silent client must not block the next tab move behind it.
         let tx = tx.clone();
         std::thread::Builder::new()
             .name("rikka-win-conn".into())
-            .spawn(move || match conn.recv_request() {
-                Ok(ipc::Request::Attach(a)) => {
-                    // Same fail-closed peer gate as the monarch socket.
-                    let resp = match conn.peer_pid() {
-                        Some(peer) => match adopt_attach(&tx, a, peer) {
-                            Ok(()) => ipc::Response::ok(),
-                            Err(e) => ipc::Response::error(e.to_string()),
-                        },
-                        None => ipc::Response::error(
-                            "attach refused: peer identity could not be verified",
-                        ),
-                    };
-                    let _ = conn.send_response(&resp);
+            .spawn(move || {
+                match {
+                    let _permit = &permit;
+                    conn.recv_request()
+                } {
+                    Ok(ipc::Request::PrepareAttach(a)) => {
+                        let peer = conn.peer_pid();
+                        let drop_at = a.drop_at;
+                        let target = match a.target {
+                            ipc::Target::Window(id) => Some(id),
+                            _ => None,
+                        };
+                        let prepared = peer
+                            .ok_or_else(|| anyhow::anyhow!("unattested tab-move peer"))
+                            .and_then(|peer| attach::prepare_attach(&a, peer));
+                        let pulled = match prepared {
+                            Ok(pulled) => pulled,
+                            Err(error) => {
+                                let _ =
+                                    conn.send_response(&ipc::Response::error(error.to_string()));
+                                return;
+                            }
+                        };
+                        let startup = pulled.startup.clone();
+                        let palette = pulled.palette();
+                        let (session, gate) = match pulled.into_gated_session() {
+                            Ok(prepared) => prepared,
+                            Err(error) => {
+                                let _ =
+                                    conn.send_response(&ipc::Response::error(error.to_string()));
+                                return;
+                            }
+                        };
+                        if conn.send_response(&ipc::Response::ok()).is_err() {
+                            return;
+                        }
+                        if !matches!(conn.recv_request(), Ok(ipc::Request::CommitAttach)) {
+                            let _ = conn.send_response(&ipc::Response::error(
+                                "tab-move commit was not received",
+                            ));
+                            return;
+                        }
+                        if conn.send_response(&ipc::Response::ok()).is_err() {
+                            return;
+                        }
+                        if !matches!(conn.recv_request(), Ok(ipc::Request::FinalizeAttach)) {
+                            let _ = conn.send_response(&ipc::Response::error(
+                                "tab-move finalize was not received",
+                            ));
+                            return;
+                        }
+                        gate.start();
+                        let resp = if tx
+                            .unbounded_send(Forwarded::AdoptTab(
+                                Box::new(session),
+                                startup,
+                                drop_at,
+                                palette,
+                                target,
+                            ))
+                            .is_ok()
+                        {
+                            ipc::Response::ok()
+                        } else {
+                            ipc::Response::error("window is shutting down")
+                        };
+                        let _ = conn.send_response(&resp);
+                    }
+                    Ok(ipc::Request::Attach(a)) => {
+                        // Same fail-closed peer gate as the monarch socket.
+                        let resp = match conn.peer_pid() {
+                            Some(peer) => match adopt_attach(&tx, a, peer) {
+                                Ok(()) => ipc::Response::ok(),
+                                Err(e) => ipc::Response::error(e.to_string()),
+                            },
+                            None => ipc::Response::error(
+                                "attach refused: peer identity could not be verified",
+                            ),
+                        };
+                        let _ = conn.send_response(&resp);
+                    }
+                    Ok(ipc::Request::Spawn(s)) => {
+                        // A targeted spawn the monarch routed here (`rt -w`):
+                        // the pump opens its tabs in the addressed window.
+                        let resp = if tx.unbounded_send(Forwarded::SpawnInWindow(s)).is_ok() {
+                            ipc::Response::ok()
+                        } else {
+                            ipc::Response::error("window is shutting down")
+                        };
+                        let _ = conn.send_response(&resp);
+                    }
+                    Ok(ipc::Request::Ping) => {
+                        let _ = conn.send_response(&ipc::Response::ok());
+                    }
+                    Ok(_) => {
+                        let _ = conn.send_response(&ipc::Response::error(
+                            "window socket: attach, spawn and ping only",
+                        ));
+                    }
+                    Err(_) => {}
                 }
-                Ok(ipc::Request::Spawn(s)) => {
-                    // A targeted spawn the monarch routed here (`rt -w`):
-                    // the pump opens its tabs in the addressed window.
-                    let resp = if tx.unbounded_send(Forwarded::SpawnInWindow(s)).is_ok() {
-                        ipc::Response::ok()
-                    } else {
-                        ipc::Response::error("window is shutting down")
-                    };
-                    let _ = conn.send_response(&resp);
-                }
-                Ok(ipc::Request::Ping) => {
-                    let _ = conn.send_response(&ipc::Response::ok());
-                }
-                Ok(_) => {
-                    let _ = conn.send_response(&ipc::Response::error(
-                        "window socket: attach, spawn and ping only",
-                    ));
-                }
-                Err(_) => {}
             })
             .ok();
     }
@@ -4398,6 +4554,16 @@ fn adopt_attach(
         _ => None,
     };
     let pulled = attach::pull_attach(&args, peer_pid)?;
+    adopt_prepared_attach(tx, pulled, drop_at, target)
+}
+
+#[cfg(windows)]
+fn adopt_prepared_attach(
+    tx: &futures::channel::mpsc::UnboundedSender<Forwarded>,
+    pulled: attach::LocalAttach,
+    drop_at: Option<(i32, i32)>,
+    target: Option<u64>,
+) -> Result<()> {
     let startup = pulled.startup.clone();
     let palette = pulled.palette();
     let session = pulled.into_session()?;
@@ -4803,6 +4969,39 @@ mod tests {
         assert_eq!(dir.resolve(9), None, "unknown ids resolve to nothing");
     }
 
+    #[test]
+    fn window_registration_is_bound_to_peer_pid_id_and_endpoint() {
+        let pid = 4242;
+        let valid = ipc::RegisterWindow {
+            pid,
+            window_id: (u64::from(pid) << 20) | 7,
+            endpoint: ipc::transport::window_endpoint_name(pid),
+        };
+        assert!(validate_registration(pid, &valid).is_ok());
+
+        let mut forged = valid.clone();
+        forged.pid += 1;
+        assert!(validate_registration(pid, &forged).is_err());
+        let mut forged = valid.clone();
+        forged.window_id = (u64::from(pid + 1) << 20) | 7;
+        assert!(validate_registration(pid, &forged).is_err());
+        let mut forged = valid;
+        forged.endpoint = ipc::transport::window_endpoint_name(pid + 1);
+        assert!(validate_registration(pid, &forged).is_err());
+    }
+
+    #[test]
+    fn bulk_registration_cannot_replace_another_process() {
+        let peer = 4242;
+        let windows = vec![ipc::RegisterWindow {
+            pid: peer,
+            window_id: u64::from(peer) << 20,
+            endpoint: ipc::transport::window_endpoint_name(peer),
+        }];
+        assert!(validate_registrations(peer, peer, &windows).is_ok());
+        assert!(validate_registrations(peer, peer + 1, &windows).is_err());
+    }
+
     /// A window's own socket adopts a direct-routed attach as a tab: the
     /// handles are pulled while the sender waits on the response, and the
     /// live session reaches the gpui pump as `AdoptTab` — never a new
@@ -4874,21 +5073,25 @@ mod tests {
 
         // A surviving window's next heartbeat = RegisterWindow upsert…
         let mut conn = ipc::transport::connect(&name).expect("connect the re-elected monarch");
+        let pid = std::process::id();
+        let endpoint = ipc::transport::window_endpoint_name(pid);
         conn.send_request(&ipc::Request::RegisterWindow(ipc::RegisterWindow {
-            pid: 4242,
-            window_id: 4242,
-            endpoint: "win-4242".into(),
+            pid,
+            window_id: u64::from(pid),
+            endpoint: endpoint.clone(),
         }))
         .unwrap();
         assert!(conn.recv_response().unwrap().ok);
 
         // …and routing works again through the fresh directory.
         let mut conn = ipc::transport::connect(&name).unwrap();
-        conn.send_request(&ipc::Request::ResolveWindow { window: 4242 })
-            .unwrap();
+        conn.send_request(&ipc::Request::ResolveWindow {
+            window: u64::from(pid),
+        })
+        .unwrap();
         let resp = conn.recv_response().unwrap();
         assert!(resp.ok);
-        assert_eq!(resp.endpoint.as_deref(), Some("win-4242"));
+        assert_eq!(resp.endpoint.as_deref(), Some(endpoint.as_str()));
         drop(accept); // detach: the loop parks in accept() until process exit
     }
 

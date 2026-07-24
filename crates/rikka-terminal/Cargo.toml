@@ -36,6 +36,10 @@ toml = "1"
 # `RenderImage::new` (tab icons extracted from program resources become frames).
 image = "0.25"
 
+[dev-dependencies]
+# Attach-validation tests encode synthetic kitty-graphics PNG payloads as base64.
+base64 = "0.22"
+
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.61"
 features = [

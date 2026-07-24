@@ -18,7 +18,7 @@ pub mod xtversion;
 use std::io::Write;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering},
 };
 
 use alacritty_terminal::grid::Dimensions;
@@ -301,6 +301,8 @@ pub struct TerminalSession {
     /// sender's teardown would fight the receiver's geometry, and ConPTY
     /// never repaints, so it would be permanent. Shared with the settler.
     pub pty_sealed: Arc<AtomicBool>,
+    #[cfg(windows)]
+    pub(crate) transfer_pause: Arc<TransferPause>,
     /// Session log sinks (Tera Term-style). `output_log` is fed every raw
     /// PTY byte by the reader thread; `input_log` receives what the user
     /// sends via [`Self::send_bytes`]. Set through [`Self::set_logging`].
@@ -314,6 +316,51 @@ pub struct TerminalSession {
     /// the reader/writer threads hold stay valid for the teardown.
     #[cfg(windows)]
     pub transfer: FairMutex<Option<pty_handoff::TransferKit>>,
+}
+
+#[cfg(windows)]
+pub(crate) struct TransferPause {
+    state: AtomicU8,
+    drained: std::sync::Mutex<bool>,
+    wake: std::sync::Condvar,
+}
+
+#[cfg(windows)]
+impl TransferPause {
+    const RUNNING: u8 = 0;
+    const PAUSED: u8 = 1;
+    const STOPPED: u8 = 2;
+
+    pub(crate) fn new() -> Self {
+        Self {
+            state: AtomicU8::new(Self::RUNNING),
+            drained: std::sync::Mutex::new(false),
+            wake: std::sync::Condvar::new(),
+        }
+    }
+
+    pub(crate) fn reader_pause_point(&self, signal: impl FnOnce() -> bool) -> bool {
+        if self.state.load(Ordering::Acquire) != Self::PAUSED {
+            return self.state.load(Ordering::Acquire) == Self::STOPPED;
+        }
+        if !signal() {
+            return true;
+        }
+        let mut drained = self.drained.lock().unwrap_or_else(|e| e.into_inner());
+        while self.state.load(Ordering::Acquire) == Self::PAUSED {
+            drained = self.wake.wait(drained).unwrap_or_else(|e| e.into_inner());
+        }
+        self.state.load(Ordering::Acquire) == Self::STOPPED
+    }
+
+    pub(crate) fn pause_requested(&self) -> bool {
+        self.state.load(Ordering::Acquire) == Self::PAUSED
+    }
+
+    pub(crate) fn mark_drained(&self) {
+        *self.drained.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.wake.notify_all();
+    }
 }
 
 /// The grid's font size, settable once by the embedding app before any
@@ -406,6 +453,77 @@ impl TerminalSession {
         self.output_log.lock().is_some() || self.input_log.lock().is_some()
     }
 
+    /// Pause this session for a cross-process tab move while retaining a
+    /// resumable source reader. The parser drains everything consumed before
+    /// acknowledging the pause, so replay serialization sees a stable Term.
+    #[cfg(windows)]
+    pub fn pause_for_transfer(&self) -> anyhow::Result<()> {
+        use std::os::windows::io::AsRawHandle as _;
+        self.pty_sealed.store(true, Ordering::Release);
+        *self
+            .transfer_pause
+            .drained
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = false;
+        self.transfer_pause
+            .state
+            .store(TransferPause::PAUSED, Ordering::Release);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if *self
+                .transfer_pause
+                .drained
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+            {
+                return Ok(());
+            }
+            if let Some(handle) = self.reader_thread.lock().as_ref() {
+                #[link(name = "kernel32")]
+                unsafe extern "system" {
+                    fn CancelSynchronousIo(thread: *mut std::ffi::c_void) -> i32;
+                }
+                unsafe {
+                    CancelSynchronousIo(handle.as_raw_handle());
+                }
+            } else {
+                anyhow::bail!("PTY reader is not running");
+            }
+            if std::time::Instant::now() >= deadline {
+                self.resume_after_failed_transfer();
+                anyhow::bail!("PTY reader did not pause within 5s");
+            }
+            let guard = self
+                .transfer_pause
+                .drained
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let _ = self
+                .transfer_pause
+                .wake
+                .wait_timeout(guard, std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn resume_after_failed_transfer(&self) {
+        self.transfer_pause
+            .state
+            .store(TransferPause::RUNNING, Ordering::Release);
+        self.pty_sealed.store(false, Ordering::Release);
+        self.transfer_pause.wake.notify_all();
+    }
+
+    /// Commit a prepared transfer by permanently stopping the source reader.
+    #[cfg(windows)]
+    pub fn commit_transfer(&self) -> anyhow::Result<()> {
+        self.transfer_pause
+            .state
+            .store(TransferPause::STOPPED, Ordering::Release);
+        self.transfer_pause.wake.notify_all();
+        self.finish_transfer_threads()
+    }
+
     /// Quiesce this session for a cross-process tab move: stop the blocking
     /// PTY reader (two readers on one pipe shred the VT stream, so ours must
     /// be provably dead BEFORE the receiver assembles its session and starts
@@ -418,8 +536,13 @@ impl TerminalSession {
     /// until the loop observes a cancelled read and exits.
     #[cfg(windows)]
     pub fn quiesce_for_transfer(&self) -> anyhow::Result<()> {
+        self.pause_for_transfer()?;
+        self.commit_transfer()
+    }
+
+    #[cfg(windows)]
+    fn finish_transfer_threads(&self) -> anyhow::Result<()> {
         use std::os::windows::io::AsRawHandle as _;
-        self.pty_sealed.store(true, Ordering::Relaxed);
         let Some(handle) = self.reader_thread.lock().take() else {
             return Ok(()); // no reader spawned, or already quiesced
         };

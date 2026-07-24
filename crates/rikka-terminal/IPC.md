@@ -47,6 +47,13 @@ One local IPC shared by three binaries:
   - macOS: `$TMPDIR/rikka-terminal.sock`
   - Windows: `\\.\pipe\rikka-terminal.<SID>`
 - **Framing:** `[u32 LE byte-length][UTF-8 JSON]`, one request → one response.
+- **Authentication:** every frame carries a 256-bit random capability from
+  `%LOCALAPPDATA%\RikkaTerminal\ipc.cap` (owner-only DACL). Before sending a
+  frame, Windows clients also verify the named-pipe server PID, token SID,
+  install directory, and executable name. Servers apply the symmetric
+  component-image check to clients.
+- **Deadlines:** frame reads/writes have a 5-second deadline; each listener
+  serves at most 32 concurrent connection workers.
 - **Election:** first process to create the endpoint = monarch; others become
   clients (forward their request, exit). Windows: `FILE_FLAG_FIRST_PIPE_INSTANCE`.
   Unix: exclusive bind (unlink stale socket first, guarded by a lock file).
@@ -109,10 +116,14 @@ Strings only. `target:"new"` → monarch spawns a new window process.
   handle.
 - **Handle transfer** = out-of-band, receiver-pulls:
   `OpenProcess(pid, PROCESS_DUP_HANDLE)` then
-  `DuplicateHandle(sender → me, DUPLICATE_CLOSE_SOURCE)` per handle (ownership
-  moves; the sender's handles are closed by the dup). The sender waits for `ok`,
-  then exits. On Unix the equivalent for tab-move is `SCM_RIGHTS` fd-passing over
-  the socket — same message shape, transfer mechanism is `#[cfg(…)]`.
+  OS handoff uses `DuplicateHandle(sender → me, DUPLICATE_CLOSE_SOURCE)`.
+  Tab move is transactional: the sender pauses and drains its reader, then the
+  receiver duplicates without `DUPLICATE_CLOSE_SOURCE`, validates the complete
+  payload, and ACKs readiness. The sender commits only after that ACK and
+  finally tells the receiver to start. A timeout/NACK before commit drops the
+  receiver copies and resumes the still-owned source handles.
+  On Unix the equivalent for tab-move is `SCM_RIGHTS` fd-passing over the
+  socket — same message shape, transfer mechanism is `#[cfg(…)]`.
 - `state` **absent** → OS handoff (a fresh PTY; there is no scrollback to carry).
   `state` **present** → cross-window tab-move (carry the grid/scrollback). v1 may
   ship without `state` (move the PTY, drop scrollback) and add it later.
@@ -224,29 +235,23 @@ own socket).
   given, so it must consume independent duplicates, never the session's own
   handles. No kit (SSH, legacy portable-pty) = not movable, refused before
   quiescing.
-- **Connect first, then quiesce**: the destination socket is opened BEFORE
-  the irreversible quiesce — a stale directory entry or a closed window
-  (there is no liveness pruning) must abort the move while the tab is
-  still fully alive. Connecting early cannot race the still-running
-  reader: the receiver only starts reading once the attach frame arrives.
-- **Quiesce before the handles leave**: the receiver starts reading the
-  moment its session assembles, and two readers on one pipe shred the VT
-  stream. `CancelSynchronousIo` on the reader thread, retried until the
-  loop exits (between reads it misses with `ERROR_NOT_FOUND`); then the
-  parser thread is joined — chunks the reader consumed may still sit in
-  the channel or an open ?2026 sync buffer, and a replay serialized
-  without them would lose them for good (the pipe no longer holds them
-  for the receiver). Quiesce also SEALS the resize settler: a straggler
-  resize settling during the sender's teardown (even the pending-flush on
-  drop) would fight the receiver's geometry, and ConPTY never repaints.
-  Irreversible — a move that fails afterwards leaves the tab honestly
-  disconnected.
+- **Pause, serialize, then connect**: the destination is resolved before
+  entering `send_tab`, but its socket is opened only after the source reader
+  is paused and the replay is ready. This keeps the receiver's bounded
+  first-frame read from racing the sender's independently bounded pause.
+  A stale endpoint resumes the paused source and restores its transfer kit.
+- **Pause before the handles leave**: two readers on one pipe shred the VT
+  stream. `CancelSynchronousIo` wakes the reader into a pause point, and the
+  parser acknowledges only after every queued chunk (including an open ?2026
+  sync buffer) has landed in the grid. The pause also seals the resize
+  settler. It remains reversible until the receiver prepares independent
+  handle copies and acknowledges commit; only then does the sender stop and
+  join its reader/parser before finalizing the destination reader.
 - **Ownership across the wire**: relay (eject) transfers by inheritance =
-  copies, so the kit keeps ownership on every path. A window-socket push is
-  consumed by the receiver's pull — once the request is on the wire the
-  sender must never close those values again (kernel handle reuse: closing
-  a consumed value can hit an unrelated handle); the rare failure path
-  leaks a few pipe handles by design.
+  copies, so the kit keeps ownership on every path. A window-socket prepare
+  duplicates without `DUPLICATE_CLOSE_SOURCE`; a timeout or NACK drops the
+  destination copies and resumes the still-owned source. After commit, the
+  destination keeps its independent copies and the sender drops its kit.
 - **After `ok`**: the sender closes the tab normally. Its remaining handles
   are independent duplicates — dropping them cannot break the pipes or EOF
   the console's signal pipe (the receiver holds live copies of both ends'
@@ -266,6 +271,12 @@ own socket).
   `state = { "vt_b64": … }`; the relay launch carries the same bytes via
   `--attach-state <tempfile>` (bulk bytes cannot ride handle inheritance).
   Absent/corrupt state degrades to a blank start, never an error.
+  The receiver runs these bytes through a restoration-only sanitizer:
+  clipboard/query replies, notifications, OSC/APC/DCS image protocols, and
+  all non-restoration CSI forms are removed before the parser sees them.
+- **Resource limits:** attach geometry is capped at 512×256 / 128K cells.
+  Restored images are capped at 32 entries, 2 MiB encoded total, 8192 pixels
+  per dimension, and 128 MiB cumulative decoded RGBA.
 - **Alt screen**: BOTH screens travel — the hidden primary (with its
   scrollback) replays first, ?1049h saves its parked cursor, then the alt
   content paints on top; leaving the alt screen after the move shows

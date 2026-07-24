@@ -28,6 +28,115 @@ use crate::{
     take_snapshot,
 };
 
+/// Reduce an untrusted tab-transfer replay to the passive restoration subset
+/// emitted by `pty_handoff::replay_bytes`. OSC, DCS, APC, C1 controls and
+/// query-capable CSI forms are dropped; only text, line motion, SGR, cursor
+/// placement/shape and the finite mode set needed to restore a grid survive.
+pub fn sanitize_replay(bytes: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(bytes);
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' | b'\n' | b'\t' => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+            0x20..=0x7e if bytes[i] != 0x1b => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+            0x80..=0xff => {
+                let width = utf8_char_width(bytes[i]);
+                if width != 0 && i + width <= bytes.len() {
+                    out.extend_from_slice(&bytes[i..i + width]);
+                    i += width;
+                } else {
+                    i += 1;
+                }
+            }
+            0x1b if i + 1 < bytes.len() && bytes[i + 1] == b'[' => {
+                let start = i;
+                i += 2;
+                while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                    let seq = &bytes[start..i];
+                    if replay_csi_allowed(seq) {
+                        out.extend_from_slice(seq);
+                    }
+                }
+            }
+            0x1b if i + 1 < bytes.len() && bytes[i + 1] == b'=' => {
+                out.extend_from_slice(b"\x1b=");
+                i += 2;
+            }
+            0x1b if i + 1 < bytes.len() && matches!(bytes[i + 1], b']' | b'P' | b'_') => {
+                let introducer = bytes[i + 1];
+                i += 2;
+                while i < bytes.len() {
+                    if introducer == b']' && bytes[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+fn utf8_char_width(first: u8) -> usize {
+    match first {
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => 0,
+    }
+}
+
+fn replay_csi_allowed(seq: &[u8]) -> bool {
+    let Some(&final_byte) = seq.last() else {
+        return false;
+    };
+    let body = &seq[2..seq.len() - 1];
+    let numeric = |b: &[u8]| {
+        b.iter()
+            .all(|c| c.is_ascii_digit() || matches!(c, b';' | b':'))
+    };
+    match final_byte {
+        b'm' | b'H' => numeric(body),
+        b'q' => body
+            .strip_suffix(b" ")
+            .is_some_and(|params| numeric(params)),
+        b'u' => body
+            .strip_prefix(b"=")
+            .is_some_and(|params| numeric(params)),
+        b'h' | b'l' => {
+            let Some(params) = body.strip_prefix(b"?") else {
+                return false;
+            };
+            let Ok(mode) = std::str::from_utf8(params).unwrap_or("").parse::<u16>() else {
+                return false;
+            };
+            matches!(
+                mode,
+                1 | 7 | 25 | 1000 | 1002 | 1003 | 1004 | 1005 | 1006 | 1007 | 1049 | 2004
+            )
+        }
+        _ => false,
+    }
+}
+
 /// Assemble a live terminal session over any PTY-like byte transport.
 ///
 /// The transport is just a `Read` end, a shared `Write` end and a
@@ -199,6 +308,8 @@ pub fn build_terminal_session_with_preface(
     // TerminalSession::set_logging.
     let output_log: Arc<FairMutex<Option<std::fs::File>>> = Arc::default();
     let input_log: Arc<FairMutex<Option<std::fs::File>>> = Arc::default();
+    #[cfg(windows)]
+    let transfer_pause = Arc::new(crate::TransferPause::new());
 
     let (reader_thread, parser_thread) = {
         let term2 = Arc::clone(&term);
@@ -217,6 +328,10 @@ pub fn build_terminal_session_with_preface(
         let writer2 = Arc::clone(&writer);
         let preface_done2 = Arc::clone(&preface_done);
         let output_log2 = Arc::clone(&output_log);
+        #[cfg(windows)]
+        let transfer_pause_reader = Arc::clone(&transfer_pause);
+        #[cfg(windows)]
+        let transfer_pause_parser = Arc::clone(&transfer_pause);
         // The blocking `Read` lives on its own IO thread so the parse thread
         // can wait with a deadline: synchronized updates (CSI ? 2026, DEC
         // "Synchronized Output") buffer PTY bytes inside the vte Processor
@@ -243,9 +358,31 @@ pub fn build_terminal_session_with_preface(
                         .ok()
                 });
                 loop {
+                    #[cfg(windows)]
+                    if transfer_pause_reader
+                        .reader_pause_point(|| chunk_tx.send(Vec::new()).is_ok())
+                    {
+                        break;
+                    }
                     match reader.read(&mut buf) {
                         // Dropping the sender signals EOF to the parse thread.
-                        Ok(0) | Err(_) => break,
+                        Ok(0) => break,
+                        Err(_) => {
+                            #[cfg(windows)]
+                            {
+                                if transfer_pause_reader.pause_requested() {
+                                    if transfer_pause_reader
+                                        .reader_pause_point(|| chunk_tx.send(Vec::new()).is_ok())
+                                    {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                break;
+                            }
+                            #[cfg(not(windows))]
+                            break;
+                        }
                         Ok(n) => {
                             if let Some(f) = dump.as_mut() {
                                 use std::io::Write as _;
@@ -352,6 +489,17 @@ pub fn build_terminal_session_with_preface(
                             break;
                         }
                         Some(chunk) => {
+                            #[cfg(windows)]
+                            if chunk.is_empty() {
+                                if parser.sync_timeout().sync_timeout().is_some() {
+                                    let mut t = term2.lock();
+                                    parser.stop_sync(&mut *t);
+                                    crate::repin_screen_selection(&mut t, &screen_sel2);
+                                    *snap2.lock() = take_snapshot(&t);
+                                }
+                                transfer_pause_parser.mark_drained();
+                                continue;
+                            }
                             let mut t = term2.lock();
                             let mut responses: Vec<Vec<u8>> = Vec::new();
                             for &byte in &chunk {
@@ -601,6 +749,8 @@ pub fn build_terminal_session_with_preface(
         reader_thread: FairMutex::new(reader_thread),
         parser_thread: FairMutex::new(parser_thread),
         pty_sealed,
+        #[cfg(windows)]
+        transfer_pause,
         output_log,
         input_log,
         #[cfg(windows)]
@@ -1067,5 +1217,30 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("buffered sync output was never flushed by the deadline");
+    }
+
+    #[test]
+    fn replay_sanitizer_keeps_restoration_and_drops_active_protocols() {
+        let input = concat!(
+            "safe",
+            "\x1b[2;3H\x1b[0;38;2;1;2;3m",
+            "\x1b]52;c;Y2xpcGJvYXJk\x07",
+            "\x1b]9;notification\x07",
+            "\x1bPqheavy-sixel\x1b\\",
+            "\x1b_Ga=q,i=1;\x1b\\",
+            "\x1b[6n",
+            "終"
+        );
+        let got = sanitize_replay(input.as_bytes());
+        assert_eq!(
+            String::from_utf8(got).unwrap(),
+            "safe\x1b[2;3H\x1b[0;38;2;1;2;3m終"
+        );
+    }
+
+    #[test]
+    fn replay_sanitizer_limits_private_modes_to_restore_set() {
+        let got = sanitize_replay(b"\x1b[?1049h\x1b[?1004h\x1b[?2026h\x1b[>0q");
+        assert_eq!(got, b"\x1b[?1049h\x1b[?1004h");
     }
 }

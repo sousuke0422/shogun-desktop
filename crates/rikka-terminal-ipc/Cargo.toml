@@ -13,6 +13,7 @@ base64 = "0.22"
 # Cross-platform local socket: Unix domain socket on Unix, named pipe on
 # Windows, one API. Namespaced names → no manual path/cleanup.
 interprocess = "2.4"
+getrandom = "0.3"
 
 # Windows: current-user-only DACL on the listener (security.rs). widestring
 # matches interprocess's own version so the SDDL round-trips cleanly.

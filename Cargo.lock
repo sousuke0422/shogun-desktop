@@ -5607,6 +5607,7 @@ name = "rikka-terminal"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "futures",
  "gpui",
  "gpui-component",
@@ -5660,6 +5661,7 @@ name = "rikka-terminal-ipc"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "getrandom 0.3.4",
  "interprocess",
  "serde",
  "serde_json",

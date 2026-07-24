@@ -4,16 +4,13 @@
 //! detach, transfer by CreateProcess inheritance) or an existing window's
 //! own socket (merge, transfer by receiver pull).
 //!
-//! Ordering contract: connect to the destination FIRST (a stale directory
-//! entry must abort while the tab is fully alive), then quiesce — the
-//! receiver starts reading the moment its session assembles, and two
-//! readers on one pipe shred the VT stream, so OUR reader must be provably
-//! dead and drained BEFORE the handles go on the wire
-//! (`TerminalSession::quiesce_for_transfer`). Quiesce is irreversible: a
-//! failure past it (spawn/wire errors, rare and local) leaves the tab
-//! honestly disconnected — the console itself is still owned by SOMEONE
-//! (our session's handles on an early failure, the receiver's pulls on a
-//! late one).
+//! Ordering contract: pause and drain the source before connecting to the
+//! destination, then send the prepare frame immediately. The pause is
+//! recoverable until the receiver acknowledges commit, so a stale endpoint
+//! resumes the source without exposing a silent connection to the receiver's
+//! first-frame deadline. Two readers on one pipe shred the VT stream, so OUR
+//! reader must remain paused until the destination is prepared and must be
+//! provably dead before the destination starts reading.
 //!
 //! The move carries the screen: scrollback + visible grid + cursor + mode
 //! bits ride `state` as replayable VT (core `replay_bytes`), so the tab
@@ -21,7 +18,7 @@
 
 #![cfg(windows)]
 
-use std::os::windows::io::{IntoRawHandle as _, OwnedHandle};
+use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
 use std::sync::atomic::Ordering;
 
 use anyhow::{Context as _, Result, ensure};
@@ -59,27 +56,15 @@ pub fn is_transferable(session: &TerminalSession) -> bool {
 /// the new owner holds, so dropping them cannot break the pipes or kill the
 /// console.
 ///
-/// Failure ordering: everything that can be checked is checked BEFORE the
-/// irreversible quiesce — no kit, too many keepalives, and (for a window
-/// move) the destination connection itself. A stale directory entry or a
-/// closed window then fails while the tab is still fully alive; only a
-/// failure past the quiesce (spawn/wire errors, both rare and local) costs
-/// the tab.
+/// Failure ordering: the transfer kit and handle count are checked before
+/// pausing. Connection, validation, and prepare failures resume the source
+/// from its retained handles; only a successfully acknowledged commit makes
+/// the pause irreversible.
 pub fn send_tab(
     session: &TerminalSession,
     palette: Option<Vec<u32>>,
     dest: Destination,
 ) -> Result<()> {
-    // Open the destination first: the receiver starts reading only once
-    // the attach frame arrives, so connecting early cannot race our still-
-    // running reader — and a dead endpoint aborts a fully-alive tab.
-    let conn = match &dest {
-        Destination::NewProcess => None,
-        Destination::Window { endpoint, .. } => Some(
-            ipc::transport::connect(endpoint)
-                .with_context(|| format!("connect window socket {endpoint}"))?,
-        ),
-    };
     // Refuse before quiescing — a session without a kit (SSH, legacy
     // portable-pty, or already moved) must stay fully alive.
     let kit = session
@@ -98,8 +83,11 @@ pub fn send_tab(
         cols: session.cols.load(Ordering::Relaxed),
         rows: session.rows.load(Ordering::Relaxed),
     };
-    session.quiesce_for_transfer()?;
-    // Serialize AFTER quiesce — the reader is dead, the Term is finally
+    if let Err(e) = session.pause_for_transfer() {
+        *session.transfer.lock() = Some(kit);
+        return Err(e);
+    }
+    // Serialize AFTER pausing — the reader is blocked, the Term is finally
     // still. The receiver replays this as its parser preface, so the tab
     // arrives wearing the sender's screen instead of blank. The image store
     // travels alongside; placeholders of images that made the budget are
@@ -107,31 +95,54 @@ pub fn send_tab(
     let images = rikka_terminal_core::pty_handoff::image_payloads(session);
     let shipped: std::collections::HashSet<u32> = images.iter().map(|(id, ..)| *id).collect();
     let vt = rikka_terminal_core::pty_handoff::replay_bytes(session, &shipped);
-    match (dest, conn) {
+    let result = match dest {
         // Inheritance COPIES the handles into the child, so the kit keeps
         // ownership of ours throughout — plain drop semantics on every path.
-        (Destination::NewProcess, _) => {
-            LocalAttach::from_transfer(kit, startup, Some(vt), palette, images)?
+        Destination::NewProcess => (|| {
+            LocalAttach::from_transfer(kit.try_clone()?, startup, Some(vt), palette, images)?
                 .relay_to_window_process()
                 .context("relay the detached tab to its window process")
+        })(),
+        Destination::Window {
+            id,
+            endpoint,
+            drop_at,
+        } => (|| {
+            // Connect only once the bounded pause and replay serialization
+            // are complete. Otherwise the receiver's equally bounded
+            // first-frame read races the local pause and can close a valid
+            // transfer just as PrepareAttach is sent.
+            let conn = ipc::transport::connect(&endpoint)
+                .with_context(|| format!("connect window socket {endpoint}"))?;
+            push_to_window(
+                conn, session, &kit, startup, vt, images, palette, id, drop_at,
+            )
+        })(),
+    };
+    match result {
+        Ok(()) => {
+            if session.reader_thread.lock().is_some() {
+                session.commit_transfer()?;
+            }
+            Ok(())
         }
-        (Destination::Window { id, drop_at, .. }, Some(conn)) => {
-            push_to_window(conn, kit, startup, vt, images, palette, id, drop_at)
+        Err(e) => {
+            if session.reader_thread.lock().is_some() {
+                session.resume_after_failed_transfer();
+                *session.transfer.lock() = Some(kit);
+            }
+            Err(e)
         }
-        (Destination::Window { .. }, None) => unreachable!("window move always connects first"),
     }
 }
 
-/// Send the kit over an already-open window socket. The receiver pulls
-/// each handle with `DUPLICATE_CLOSE_SOURCE` — the values are CONSUMED
-/// over there, so once the request is on the wire we must never close
-/// them ourselves: after a pull the same value may already name an
-/// unrelated handle (kernel reuse), and closing that corrupts the
-/// process. Leaking a few pipe handles on the rare failure path is the
-/// safe price.
+/// Send the kit over an already-open window socket. Prepare duplicates
+/// without consuming these handles; only after readiness + commit ACKs do
+/// we permanently stop the source reader and finalize adoption.
 fn push_to_window(
     mut conn: ipc::transport::Conn,
-    kit: TransferKit,
+    session: &TerminalSession,
+    kit: &TransferKit,
     startup: ipc::StartupInfo,
     state_vt: Vec<u8>,
     images: Vec<ipc::ImagePayload>,
@@ -139,14 +150,14 @@ fn push_to_window(
     id: u64,
     drop_at: Option<(i32, i32)>,
 ) -> Result<()> {
-    let raw = |h: OwnedHandle| h.into_raw_handle() as isize as i64;
-    let mut keepalive = kit.keepalive.into_iter();
+    let raw = |h: &OwnedHandle| h.as_raw_handle() as isize as i64;
+    let mut keepalive = kit.keepalive.iter();
     let args = ipc::AttachArgs {
         pid: std::process::id(),
         handles: ipc::Handles {
-            input: raw(kit.input),
-            output: raw(kit.output),
-            signal: kit.signal.map(&raw).unwrap_or(0),
+            input: raw(&kit.input),
+            output: raw(&kit.output),
+            signal: kit.signal.as_ref().map(&raw).unwrap_or(0),
             reference: 0,
             server: keepalive.next().map(&raw).unwrap_or(0),
             client: keepalive.next().map(&raw).unwrap_or(0),
@@ -160,12 +171,29 @@ fn push_to_window(
         drop_at,
         palette,
     };
-    conn.send_request(&ipc::Request::Attach(args))
-        .context("send tab-move attach")?;
+    conn.send_request(&ipc::Request::PrepareAttach(args))
+        .context("prepare tab-move attach")?;
     let resp = conn.recv_response().context("await tab-move response")?;
     ensure!(
         resp.ok,
         "window refused the tab: {}",
+        resp.error.unwrap_or_default()
+    );
+    conn.send_request(&ipc::Request::CommitAttach)
+        .context("commit prepared tab move")?;
+    let resp = conn.recv_response().context("await tab-move commit")?;
+    ensure!(
+        resp.ok,
+        "window refused tab commit: {}",
+        resp.error.unwrap_or_default()
+    );
+    session.commit_transfer()?;
+    conn.send_request(&ipc::Request::FinalizeAttach)
+        .context("finalize prepared tab move")?;
+    let resp = conn.recv_response().context("await tab-move finalize")?;
+    ensure!(
+        resp.ok,
+        "window failed to finalize tab: {}",
         resp.error.unwrap_or_default()
     );
     Ok(())
@@ -239,10 +267,9 @@ mod tests {
 
     use super::*;
 
-    /// A dead destination must fail BEFORE the irreversible quiesce: the
-    /// tab stays fully alive — kit still stocked, reader still pumping
-    /// output into the grid. This is the transactionality of a move: a
-    /// stale directory entry may abort it, but must never cost the tab.
+    /// A dead destination discovered after the recoverable pause must leave
+    /// the tab fully alive — kit restocked and reader pumping output again.
+    /// A stale directory entry may abort a move, but must never cost the tab.
     #[test]
     fn dead_endpoint_leaves_the_tab_alive() {
         let (out_read, mut out_write) = std::io::pipe().unwrap();
@@ -286,6 +313,68 @@ mod tests {
             assert!(
                 std::time::Instant::now() < deadline,
                 "reader must still pump after the aborted move"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn failed_prepare_resumes_the_paused_source() {
+        let (out_read, mut out_write) = std::io::pipe().unwrap();
+        let (_in_read, in_write) = std::io::pipe().unwrap();
+        let session = build_handoff_session(
+            80,
+            24,
+            HandoffPty {
+                input: OwnedHandle::from(in_write),
+                output: OwnedHandle::from(out_read),
+                signal: None,
+                keepalive: Vec::new(),
+            },
+            "test-identity",
+        )
+        .expect("live session");
+
+        let name = format!("rikka-test-prepare-drop-{}.sock", std::process::id());
+        let listener = ipc::transport::Monarch::bind(&name).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut conn = listener.accept().unwrap();
+            assert!(matches!(
+                conn.recv_request().unwrap(),
+                ipc::Request::PrepareAttach(_)
+            ));
+            // Drop without a readiness ACK.
+        });
+        let err = send_tab(
+            &session,
+            None,
+            Destination::Window {
+                id: 9,
+                endpoint: name,
+                drop_at: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("response"), "{err:#}");
+        server.join().unwrap();
+        assert!(is_transferable(&session), "kit must be restored");
+
+        out_write.write_all(b"resumed").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let grid: String = session
+                .snapshot
+                .lock()
+                .cells
+                .iter()
+                .flat_map(|row| row.iter().map(|c| c.c))
+                .collect();
+            if grid.contains("resumed") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reader did not resume after failed prepare"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }

@@ -25,6 +25,14 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE};
 
+const MAX_COLS: u16 = 512;
+const MAX_ROWS: u16 = 256;
+const MAX_CELLS: usize = 128 * 1024;
+const MAX_IMAGES: usize = 32;
+const MAX_IMAGE_DIMENSION: u32 = 8192;
+const MAX_RESTORED_IMAGE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_ENCODED_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+
 /// An attach whose handles are now owned by THIS process, wire identities
 /// intact (relaying needs the positions, assembly needs the split).
 pub struct LocalAttach {
@@ -52,11 +60,16 @@ pub struct LocalAttach {
 /// Duplicate one raw handle value out of `source` into this process.
 /// `DUPLICATE_CLOSE_SOURCE` closes the sender's copy — ownership moves, per
 /// the receiver-pulls contract in IPC.md. `0` means "not sent".
-fn pull(source: HANDLE, raw: i64) -> Result<Option<OwnedHandle>> {
+fn pull(source: HANDLE, raw: i64, close_source: bool) -> Result<Option<OwnedHandle>> {
     if raw == 0 {
         return Ok(None);
     }
     let mut dup = HANDLE::default();
+    let options = if close_source {
+        DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE
+    } else {
+        DUPLICATE_SAME_ACCESS
+    };
     unsafe {
         DuplicateHandle(
             source,
@@ -65,7 +78,7 @@ fn pull(source: HANDLE, raw: i64) -> Result<Option<OwnedHandle>> {
             &mut dup,
             0,
             false,
-            DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE,
+            options,
         )
     }
     .with_context(|| format!("DuplicateHandle({raw:#x}) from attach sender"))?;
@@ -90,12 +103,30 @@ pub fn pull_attach(args: &ipc::AttachArgs, peer_pid: u32) -> Result<LocalAttach>
         "attach pid {} does not match the connected peer {peer_pid}",
         args.pid
     );
+    validate_attach(args)?;
     let source = unsafe { OpenProcess(PROCESS_DUP_HANDLE, false, args.pid) }
         .with_context(|| format!("OpenProcess({}) for attach handle pull", args.pid))?;
     // Owned wrapper so the process handle closes on every return path.
     let source = unsafe { OwnedHandle::from_raw_handle(source.0) };
     let src = HANDLE(source.as_raw_handle());
-    take(args, |raw| pull(src, raw))
+    take(args, |raw| pull(src, raw, true))
+}
+
+/// Phase-1 tab move pull: prepare independent destination copies while the
+/// source still owns its transfer kit. Dropping this value on timeout/NACK
+/// leaves the source handles untouched and resumable.
+pub fn prepare_attach(args: &ipc::AttachArgs, peer_pid: u32) -> Result<LocalAttach> {
+    ensure!(
+        args.pid == peer_pid,
+        "attach pid {} does not match the connected peer {peer_pid}",
+        args.pid
+    );
+    validate_attach(args)?;
+    let source = unsafe { OpenProcess(PROCESS_DUP_HANDLE, false, args.pid) }
+        .with_context(|| format!("OpenProcess({}) for attach prepare", args.pid))?;
+    let source = unsafe { OwnedHandle::from_raw_handle(source.0) };
+    let src = HANDLE(source.as_raw_handle());
+    take(args, |raw| pull(src, raw, false))
 }
 
 /// A raw handle value that is ALREADY valid in this process — a cold start's
@@ -108,7 +139,69 @@ fn owned_local(raw: i64) -> Result<Option<OwnedHandle>> {
 /// Take ownership of a cold-start attach: the same message shape as the IPC
 /// path, but the values are interpreted in OUR handle table.
 pub fn local_attach(args: &ipc::AttachArgs) -> Result<LocalAttach> {
+    validate_attach(args)?;
     take(args, owned_local)
+}
+
+fn validate_attach(args: &ipc::AttachArgs) -> Result<()> {
+    let cols = if args.startup.cols >= 2 {
+        args.startup.cols
+    } else {
+        80
+    };
+    let rows = if args.startup.rows >= 2 {
+        args.startup.rows
+    } else {
+        24
+    };
+    ensure!(cols <= MAX_COLS, "attach columns exceed {MAX_COLS}");
+    ensure!(rows <= MAX_ROWS, "attach rows exceed {MAX_ROWS}");
+    let cells = usize::from(cols)
+        .checked_mul(usize::from(rows))
+        .context("attach cell count overflow")?;
+    ensure!(cells <= MAX_CELLS, "attach cell count exceeds {MAX_CELLS}");
+    if let Some(palette) = &args.palette {
+        ensure!(palette.len() == 19, "attach palette must contain 19 colors");
+    }
+
+    let images = ipc::images_from_state(&args.state);
+    ensure!(images.len() <= MAX_IMAGES, "attach carries too many images");
+    let mut encoded = 0usize;
+    let mut decoded = 0usize;
+    for (_, image_cols, image_rows, png) in &images {
+        ensure!(
+            *image_cols != 0 && *image_rows != 0,
+            "attach image placement is empty"
+        );
+        encoded = encoded
+            .checked_add(png.len())
+            .context("attach image byte count overflow")?;
+        ensure!(
+            encoded <= MAX_ENCODED_IMAGE_BYTES,
+            "attach encoded image budget exceeded"
+        );
+        let (width, height) =
+            image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png)
+                .into_dimensions()
+                .context("invalid attach PNG")?;
+        ensure!(
+            width <= MAX_IMAGE_DIMENSION && height <= MAX_IMAGE_DIMENSION,
+            "attach image dimensions exceed limit"
+        );
+        let bytes = usize::try_from(width)
+            .ok()
+            .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .context("attach decoded image size overflow")?;
+        decoded = decoded
+            .checked_add(bytes)
+            .context("attach cumulative image size overflow")?;
+        ensure!(
+            decoded <= MAX_RESTORED_IMAGE_BYTES,
+            "attach restored image budget exceeded"
+        );
+    }
+    Ok(())
 }
 
 /// Common front: run `acquire` over every advertised handle value.
@@ -120,6 +213,8 @@ fn take(
     else {
         bail!("attach carries no input/output handles");
     };
+    let state_vt = ipc::vt_from_state(&args.state)
+        .map(|vt| rikka_terminal_core::pty_session::sanitize_replay(&vt));
     Ok(LocalAttach {
         input,
         output,
@@ -130,7 +225,7 @@ fn take(
         hpcon: acquire(args.handles.hpcon)?,
         shell: acquire(args.handles.shell)?,
         startup: args.startup.clone(),
-        state_vt: ipc::vt_from_state(&args.state),
+        state_vt,
         palette: args.palette.clone(),
         images: ipc::images_from_state(&args.state),
     })
@@ -180,6 +275,29 @@ impl LocalAttach {
     /// interim size (the real one lands with the window's first frame fit)
     /// and title.
     pub fn into_session(self) -> Result<TerminalSession> {
+        self.assemble_session(false).map(|(session, _)| session)
+    }
+
+    pub fn into_gated_session(
+        self,
+    ) -> Result<(
+        TerminalSession,
+        rikka_terminal_core::pty_handoff::ReaderGate,
+    )> {
+        let (session, gate) = self.assemble_session(true)?;
+        Ok((
+            session,
+            gate.context("gated session was built without a gate")?,
+        ))
+    }
+
+    fn assemble_session(
+        self,
+        gated: bool,
+    ) -> Result<(
+        TerminalSession,
+        Option<rikka_terminal_core::pty_handoff::ReaderGate>,
+    )> {
         let LocalAttach {
             input,
             output,
@@ -200,18 +318,32 @@ impl LocalAttach {
             .into_iter()
             .flatten()
             .collect();
-        let session = rikka_terminal_core::pty_handoff::build_handoff_session_with_preface(
-            cols,
-            rows,
-            HandoffPty {
-                input,
-                output,
-                signal,
-                keepalive,
-            },
-            state_vt.unwrap_or_default(),
-            crate::spawn_xtversion(),
-        )?;
+        let pty = HandoffPty {
+            input,
+            output,
+            signal,
+            keepalive,
+        };
+        let (session, gate) = if gated {
+            let (session, gate) =
+                rikka_terminal_core::pty_handoff::build_handoff_session_with_gated_preface(
+                    cols,
+                    rows,
+                    pty,
+                    state_vt.unwrap_or_default(),
+                    crate::spawn_xtversion(),
+                )?;
+            (session, Some(gate))
+        } else {
+            let session = rikka_terminal_core::pty_handoff::build_handoff_session_with_preface(
+                cols,
+                rows,
+                pty,
+                state_vt.unwrap_or_default(),
+                crate::spawn_xtversion(),
+            )?;
+            (session, None)
+        };
         // The \Reference handle keeps conhost serving even after its last
         // client left (winconpty.h) — held for the session's lifetime, an
         // exited shell never breaks our output pipe and the tab lingers
@@ -235,7 +367,7 @@ impl LocalAttach {
                 .images
                 .insert_rgba(id, w, h, rgba.into_raw(), cols, rows);
         }
-        Ok(session)
+        Ok((session, gate))
     }
 
     /// Crash isolation: hand this session to its OWN window process, reusing
@@ -372,6 +504,34 @@ mod tests {
     fn local_attach_without_pipes_is_refused() {
         let args = ipc::AttachArgs::default();
         assert!(local_attach(&args).is_err());
+    }
+
+    #[test]
+    fn attach_geometry_limits_are_checked_before_handles() {
+        let mut args = ipc::AttachArgs::default();
+        args.startup.cols = MAX_COLS + 1;
+        assert!(validate_attach(&args).is_err());
+        args.startup.cols = MAX_COLS;
+        args.startup.rows = MAX_ROWS;
+        assert!(validate_attach(&args).is_ok());
+    }
+
+    #[test]
+    fn attach_rejects_excess_image_count_before_decode() {
+        use base64::Engine as _;
+        let one = serde_json::json!({
+            "id": 1,
+            "c": 1,
+            "r": 1,
+            "png_b64": base64::engine::general_purpose::STANDARD.encode([0u8])
+        });
+        let mut args = ipc::AttachArgs::default();
+        args.state = Some(serde_json::json!({
+            "vt_b64": "",
+            "images": vec![one; MAX_IMAGES + 1]
+        }));
+        let err = validate_attach(&args).unwrap_err().to_string();
+        assert!(err.contains("too many images"), "{err}");
     }
 
     /// The handle pull is refused before ANY OpenProcess when the claimed
