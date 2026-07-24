@@ -77,6 +77,16 @@
       medium 格下げ・単純 Hebrew では未発火=gpui は論理順描画)。防御として
       ClusterAnalyzer を saturating_sub 化＋paint 側スライスを境界 clamp。
       敵対的 bidi 出力でも「そのクラスタのグリフ欠落」止まり・クラッシュ不能。
+- 再レビュー(89e241c 対象)の残余・いずれも意図的妥協 or 縁:
+  - [ ] **検索の zerowidth 非対称** — vendored alacritty の regex_search が
+        cell.c しか流さず、分解済みアクセント入りクエリは表示中テキストを
+        発見できない(medium・実用頻度低=検索窓入力は IME 経由で NFC)。
+        対処は DFA へ base+trailers 供給＋セル逆写像で中コスト。
+  - geom 罫線セル(U+2500-259F)+結合文字は quad 描画優先で trailer 無視
+    (罫線に結合文字を重ねる出力は現実に無く、base は正しく描画される)。
+  - RTL 降順 cluster map はクラッシュ不能化のみ(全グリフが最終クラスタに
+    寄り 1 セルに潰れ得る)。完全 BiDi 描画は gpui が論理順描画をやめる
+    大改修とセット・現経路では降順 map 自体が未観測。
 
 ## resize / reflow（残りは意図的妥協のみ）
 
