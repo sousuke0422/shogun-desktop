@@ -160,7 +160,20 @@ pub(crate) struct Run {
     /// Per-char display widths (parallel to `text.chars()`), for all runs.
     /// Geometry runs use them for quad sizing; font runs use them to place each
     /// glyph at its exact grid column (Σ width × cw).
+    ///
+    /// EXCEPTION: a single-cell combining cluster ([`Run::is_cluster`])
+    /// keeps ONE entry (the base cell's width) while `text` carries the
+    /// base plus its zero-width trailers.
     pub char_widths: Vec<u8>,
+}
+
+impl Run {
+    /// One grid cell whose `text` is a base char plus zero-width trailers
+    /// (combining marks, VS16, ZWJ) — shaped as a single cluster, never
+    /// char-by-char.
+    pub(crate) fn is_cluster(&self) -> bool {
+        self.char_widths.len() == 1 && self.text.chars().nth(1).is_some()
+    }
 }
 
 /// Map a resolved terminal color to a GPUI `Rgba`.
@@ -1273,7 +1286,29 @@ pub fn render_grid(
                             });
 
                         let all_narrow = run.char_widths.iter().all(|&w| w == 1);
-                        if all_narrow && ligatures_disabled() {
+                        if run.is_cluster() {
+                            // Single-cell combining cluster (base + zero-width
+                            // trailers): shape the WHOLE text as one cluster so
+                            // the marks compose onto the base — even with
+                            // ligatures off, a combining sequence is one
+                            // grapheme, not chars to isolate.
+                            let text_run = gpui::TextRun {
+                                len: run.text.len(),
+                                font: run_font.clone(),
+                                color: fg_hsla,
+                                background_color: None,
+                                underline: underline_style,
+                                strikethrough: strikethrough_style,
+                            };
+                            let cells_w = run.char_widths[0] as f32;
+                            let line = window.text_system().shape_line(
+                                run.text.into(),
+                                font_size,
+                                &[text_run],
+                                Some(px(cw * cells_w)),
+                            );
+                            let _ = line.paint(point(px(x), px(oy)), line_height, window, cx);
+                        } else if all_narrow && ligatures_disabled() {
                             // Ligatures OFF: shape cell by cell so no
                             // ligature (or any contextual form) can span
                             // cells — the only reliable off-switch over
@@ -1598,7 +1633,12 @@ pub fn render_grid(
 ///
 /// Wide-char spacer cells (`display_width == 0`) are silently skipped.
 /// The cell at `cursor_col` is always isolated into its own run.
-/// Runs are split at geom / plain boundaries.
+/// Runs are split at geom / plain boundaries. A cell carrying zero-width
+/// trailers (combining marks, VS16, ZWJ) is isolated too: its `text` is
+/// the whole base+trailer cluster while `char_widths` stays `[w]`, and
+/// the paint path shapes it as ONE single-cell cluster — merging it into
+/// a neighbor run would let the trailers shift every later char off its
+/// grid column.
 pub(crate) fn coalesce_runs(
     cells: &[SnapshotCell],
     cursor_col: Option<usize>,
@@ -1611,10 +1651,14 @@ pub(crate) fn coalesce_runs(
         }
         let is_cursor = cursor_col == Some(col);
         let use_geom = is_geom_box_char(cell.c);
+        let tail = cell.zerowidth.as_deref().unwrap_or(&[]);
 
-        if let Some(last) = runs.last_mut() {
+        if tail.is_empty()
+            && let Some(last) = runs.last_mut()
+        {
             if !is_cursor
                 && !last.is_cursor
+                && !last.is_cluster()
                 && last.fg == cell.fg
                 && last.bg == cell.bg
                 && last.style == cell.style
@@ -1626,8 +1670,10 @@ pub(crate) fn coalesce_runs(
                 continue;
             }
         }
+        let mut text = cell.c.to_string();
+        text.extend(tail);
         runs.push(Run {
-            text: cell.c.to_string(),
+            text,
             fg: cell.fg,
             bg: cell.bg,
             width: w,
@@ -1921,6 +1967,27 @@ mod tests {
         assert_eq!(runs[0].text, "──");
         assert_eq!(runs[0].width, 4);
         assert_eq!(runs[0].char_widths, vec![2u8, 2u8]);
+    }
+
+    #[test]
+    fn combining_cell_isolates_as_one_cluster() {
+        // a, e+U+0301 (NFD é), b — the marked cell must come out as its
+        // own single-cell run carrying base+mark, never merged either way
+        // (a merge would shift every later char off its grid column).
+        let marked = SnapshotCell {
+            c: 'e',
+            zerowidth: Some(vec!['\u{0301}'].into_boxed_slice()),
+            ..SnapshotCell::blank()
+        };
+        let cells = [cell('a'), marked, cell('b')];
+        let runs: Vec<_> = coalesce_runs(&cells, None).collect();
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].text, "a");
+        assert_eq!(runs[1].text, "e\u{0301}");
+        assert_eq!(runs[1].char_widths, vec![1u8], "one CELL wide");
+        assert!(runs[1].is_cluster());
+        assert!(!runs[0].is_cluster());
+        assert_eq!(runs[2].text, "b");
     }
 
     #[test]

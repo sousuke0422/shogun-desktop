@@ -1544,7 +1544,13 @@ impl Iterator for ClusterAnalyzer<'_> {
             self.glyph_count
         };
 
-        let glyph_count = next_glyph - current_glyph;
+        // An RTL run's cluster map DESCENDS (DirectWrite maps text
+        // positions to visual-order glyphs); unchecked subtraction here
+        // panicked in debug and wrapped in release, crashing the whole
+        // window on hostile bidi output. Saturate instead — the paint
+        // loop bounds its slices, so a non-monotonic map degrades to
+        // dropped glyphs for that cluster, never a crash.
+        let glyph_count = next_glyph.saturating_sub(current_glyph);
 
         // Update state for next call
         self.utf16_idx = end_utf16_idx;
@@ -1645,15 +1651,18 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
         for (cluster_utf16_len, cluster_glyph_count) in cluster_analyzer {
             context.index_converter.advance_to_utf16_ix(utf16_idx);
             utf16_idx += cluster_utf16_len;
-            for (cluster_glyph_idx, glyph_id) in glyph_ids
-                [glyph_idx..(glyph_idx + cluster_glyph_count)]
-                .iter()
-                .enumerate()
+            // Bound the cluster's glyph range: a non-monotonic (RTL) or
+            // corrupt cluster map must never slice out of range — see the
+            // saturating note in ClusterAnalyzer::next.
+            let cluster_end = (glyph_idx + cluster_glyph_count).min(glyph_ids.len());
+            let cluster_start = glyph_idx.min(cluster_end);
+            for (cluster_glyph_idx, glyph_id) in
+                glyph_ids[cluster_start..cluster_end].iter().enumerate()
             {
                 let id = GlyphId(*glyph_id as u32);
                 let is_emoji = color_font
                     && is_color_glyph(font_face, id, &context.text_system.components.factory);
-                let this_glyph_idx = glyph_idx + cluster_glyph_idx;
+                let this_glyph_idx = cluster_start + cluster_glyph_idx;
                 glyphs.push(ShapedGlyph {
                     id,
                     position: point(

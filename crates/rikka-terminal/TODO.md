@@ -63,6 +63,21 @@
       （`[[profiles.list]] elevate = true` → メニューに盾）まで含めて
       wt 流の「作りやすさ」。
 
+## 文字レンダリング（adversarial review 2026-07-24 対応済）
+
+- [x] ~~結合文字の喪失~~ — codex/gpt-5.6-sol 指摘(high・実機確定)。snapshot が
+      kitty placeholder 以外で `zerowidth()` を捨てており NFD アクセント・
+      結合スタック・VS16 が素の base に化けた。**SnapshotCell.zerowidth 追加＋
+      coalesce_runs が該当セルを単セル cluster run に隔離**(text=base+trailers・
+      char_widths=[w] 維持で下流の桁揃え無傷)＋paint に cluster 分岐(1クラスタ
+      一括 shape・リガチャ OFF でも per-char 分解しない)。実機で NFD é・
+      結合スタック合成を確認。ZWJ 家族絵文字はグリッドモデル上セル泣き別れ
+      (wt 同様)で対象外。
+- [x] ~~RTL cluster map の unchecked 減算~~ — 同レビュー指摘(将軍検証で
+      medium 格下げ・単純 Hebrew では未発火=gpui は論理順描画)。防御として
+      ClusterAnalyzer を saturating_sub 化＋paint 側スライスを境界 clamp。
+      敵対的 bidi 出力でも「そのクラスタのグリフ欠落」止まり・クラッシュ不能。
+
 ## resize / reflow（残りは意図的妥協のみ）
 
 - [x] ~~conhost Reflow parity~~ — `dbc90c8` で完遂（実機ゲート

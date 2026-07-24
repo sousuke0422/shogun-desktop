@@ -951,6 +951,11 @@ pub struct SnapshotCell {
     /// tile from the session's image store; `c` is blanked to keep the
     /// undefined placeholder glyph from rendering as tofu.
     pub image: Option<kitty_graphics::PlaceholderCell>,
+    /// Zero-width trailers stacked on this cell by the VTE: combining
+    /// marks (NFD accents, dakuten), variation selectors (VS16), ZWJ.
+    /// Rendered as ONE cluster with `c` — dropping them loses the accents
+    /// (the adversarial-review finding). `None` for the common bare cell.
+    pub zerowidth: Option<Box<[char]>>,
 }
 
 /// SGR attributes of a cell, resolved from alacritty's cell flags.
@@ -1001,6 +1006,7 @@ impl SnapshotCell {
             style: CellStyle::default(),
             link: None,
             image: None,
+            zerowidth: None,
         }
     }
 }
@@ -1528,6 +1534,17 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
                 },
                 link,
                 image,
+                // Combining marks / VS16 / ZWJ stacked on this cell — but
+                // NOT for a kitty placeholder, whose "diacritics" are tile
+                // coordinates already decoded into `image` above.
+                zerowidth: if image.is_some() {
+                    None
+                } else {
+                    indexed
+                        .zerowidth()
+                        .filter(|z| !z.is_empty())
+                        .map(|z| z.to_vec().into_boxed_slice())
+                },
             };
         }
     }
@@ -2296,6 +2313,23 @@ mod tests {
         assert_eq!(snap.cells[0][9].link, Some(0));
         assert_eq!(snap.cells[1][5].link, Some(0));
         assert_eq!(snap.cells[1][6].link, None);
+    }
+
+    #[test]
+    fn snapshot_keeps_zerowidth_trailers() {
+        // Feed NFD "e + combining acute" through the real VTE: the
+        // snapshot cell must carry the mark (the adversarial-review
+        // finding — it used to be dropped for every non-kitty cell).
+        let mut term = make_term(20, 3);
+        advance_bytes(&mut term, "e\u{0301}x".as_bytes());
+        let snap = take_snapshot(&term);
+        assert_eq!(snap.cells[0][0].c, 'e');
+        assert_eq!(
+            snap.cells[0][0].zerowidth.as_deref(),
+            Some(&['\u{0301}'][..])
+        );
+        assert_eq!(snap.cells[0][1].c, 'x');
+        assert!(snap.cells[0][1].zerowidth.is_none());
     }
 
     #[test]
