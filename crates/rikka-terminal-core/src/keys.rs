@@ -34,19 +34,44 @@ pub fn key_to_pty_bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>
     if mode.intersects(TermMode::DISAMBIGUATE_ESC_CODES | TermMode::REPORT_ALL_KEYS_AS_ESC) {
         return kitty_key_bytes(keystroke, mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC));
     }
-    let m = &keystroke.modifiers;
-    if !m.control
-        && !m.alt
-        && !m.platform
-        && keystroke
-            .key_char
-            .as_ref()
-            .is_some_and(|s| !s.is_empty() && !s.chars().any(char::is_control))
-    {
+    if printable_text(keystroke).is_some() {
         return None;
     }
     let bytes = key_to_bytes(keystroke);
     (!bytes.is_empty()).then_some(bytes)
+}
+
+/// The keystroke's plain-text spelling when it is a printable, unmodified
+/// key — exactly what the WM_CHAR path would deliver. The single source
+/// of the "printable" judgement [`key_to_pty_bytes`] defers on.
+pub fn printable_text(keystroke: &Keystroke) -> Option<&str> {
+    let m = &keystroke.modifiers;
+    if m.control || m.alt || m.platform {
+        return None;
+    }
+    keystroke
+        .key_char
+        .as_deref()
+        .filter(|s| !s.is_empty() && !s.chars().any(char::is_control))
+}
+
+/// Per-recipient byte spellings of one keystroke for a broadcast: each
+/// target's own terminal mode picks its encoding (kitty CSI u vs legacy),
+/// so a mixed-mode fan-out never receives another pane's spelling. `None`
+/// = no target's mode consumes the key — it must keep propagating so the
+/// platform WM_CHAR path delivers the text (the caller must NOT stop
+/// propagation). `Some(plans)` = consumed; entries that are `None` inside
+/// want [`printable_text`] delivered inline, because stopping propagation
+/// suppresses WM_CHAR for every target at once.
+pub fn key_delivery_plans(
+    keystroke: &Keystroke,
+    modes: &[TermMode],
+) -> Option<Vec<Option<Vec<u8>>>> {
+    let plans: Vec<Option<Vec<u8>>> = modes
+        .iter()
+        .map(|mode| key_to_pty_bytes(keystroke, *mode))
+        .collect();
+    plans.iter().any(Option::is_some).then_some(plans)
 }
 
 /// Legacy modifier parameter: `1 + bitmask` (shift=1, alt=2, ctrl=4,
@@ -297,6 +322,34 @@ mod tests {
     #[test]
     fn enter_maps_to_cr() {
         assert_eq!(key_to_bytes(&ks("enter")), b"\r");
+    }
+
+    #[test]
+    fn delivery_plans_encode_per_target_mode() {
+        // Enter across a kitty-mode pane and a legacy pane: each target
+        // gets ITS OWN spelling — never the focused pane's.
+        let kitty = TermMode::REPORT_ALL_KEYS_AS_ESC | TermMode::DISAMBIGUATE_ESC_CODES;
+        let plans = key_delivery_plans(&ks("enter"), &[kitty, TermMode::empty()]).unwrap();
+        assert_eq!(plans[0].as_deref().unwrap(), b"\x1b[13u");
+        assert_eq!(plans[1].as_deref().unwrap(), b"\r");
+    }
+
+    #[test]
+    fn delivery_plans_printable_mixed_and_unconsumed() {
+        let a = Keystroke {
+            key: "a".to_string(),
+            modifiers: Modifiers::default(),
+            key_char: Some("a".to_string()),
+        };
+        // All-legacy printable: nobody consumes — the WM_CHAR path owns it.
+        assert!(key_delivery_plans(&a, &[TermMode::empty(), TermMode::empty()]).is_none());
+        // Kitty + legacy: consumed (kitty spells it CSI u); the legacy
+        // target's None slot asks for the printable text inline.
+        let kitty = TermMode::REPORT_ALL_KEYS_AS_ESC | TermMode::DISAMBIGUATE_ESC_CODES;
+        let plans = key_delivery_plans(&a, &[kitty, TermMode::empty()]).unwrap();
+        assert!(plans[0].is_some());
+        assert!(plans[1].is_none());
+        assert_eq!(printable_text(&a), Some("a"));
     }
 
     #[test]

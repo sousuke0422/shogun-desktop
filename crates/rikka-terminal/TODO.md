@@ -260,8 +260,18 @@
       バグ根治** — percent height/flex-grow は入れ子 Split の indefinite
       親で content size に負ける(taffy)→ **percent-inset 絶対配置**
       （containing block 基準=常に definite）へ全面変更。50/50 復元・
-      divider ドラッグ/ズーム回帰 PASS。残: 分割タブの移送/複製・
-      クロス窓のゾーン表示・broadcast のキー割当([keys])。
+      divider ドラッグ/ズーム回帰 PASS。v1.4.3 (2026-07-24 adversarial
+      review 対応・codex/gpt-5.6-sol 指摘 high): **per-recipient キー
+      エンコード** — 従来は active ペインの TermMode で1回 encode した
+      バイト列を全対象へ複製しており、kitty keyboard protocol 混在
+      (SSH 経路で広告継続)だと誤制御列配送・printable 取り残しが起きた。
+      `keys::key_delivery_plans`(対象ごとの mode で個別 encode・全 None
+      なら非消費=WM_CHAR 経路へ)＋`printable_text`(printable 判定の
+      単一ソース化)＋main の `send_key_input`(None 対象へ text 補填・
+      どれか Some で stop_propagation=WM_CHAR 二重配送を構造排除)。
+      ユニット2件(混在 Enter=CSI 13u vs CR・printable 混在/非消費)＋
+      回帰 E2E PASS。残: 分割タブの移送/複製・クロス窓のゾーン表示・
+      broadcast のキー割当([keys])。
 - [ ] **Quick terminal** — グローバルホットキーで出すドロップダウン窓。
 - [ ] 細目: grapheme clustering（mode 2027）・minimum-contrast・正規表現
       URL 検出の網羅（OSC 8＋ベア URL 検出は実装済みの範囲）。内蔵テーマ集・

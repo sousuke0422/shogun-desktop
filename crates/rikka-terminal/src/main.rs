@@ -52,7 +52,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use gpui_component::menu::ContextMenuExt as _;
 use hub::TabEntry;
 use rikka_terminal_core::ime::{ImeHost, TerminalIme};
-use rikka_terminal_core::keys::key_to_pty_bytes;
+use rikka_terminal_core::keys::{key_delivery_plans, printable_text};
 use rikka_terminal_core::renderer::{measure_cell_metrics, render_grid};
 use rikka_terminal_core::selection::{self, SelectionHost, SelectionState};
 use rikka_terminal_core::{PtyResizer, ReportMods, TerminalSession, xtversion};
@@ -1292,6 +1292,34 @@ impl TabsWindow {
         for s in self.input_sessions() {
             s.send_bytes(bytes);
         }
+    }
+
+    /// Keystroke delivery, encoded PER RECIPIENT: each target session's
+    /// own terminal mode picks the byte spelling (kitty CSI u vs legacy),
+    /// so a mixed-mode broadcast never receives another pane's encoding
+    /// (the adversarial-review finding). Returns true when consumed — the
+    /// caller must stop propagation, which suppresses WM_CHAR for every
+    /// target, so targets whose mode said "plain text" get the printable
+    /// character inline right here instead of being orphaned. When no
+    /// target consumes the key, it keeps propagating and the WM_CHAR →
+    /// ime_commit path fans the text out as before.
+    fn send_key_input(&self, ks: &gpui::Keystroke) -> bool {
+        let targets = self.input_sessions();
+        let modes: Vec<_> = targets.iter().map(|s| *s.term.lock().mode()).collect();
+        let Some(plans) = key_delivery_plans(ks, &modes) else {
+            return false;
+        };
+        for (s, plan) in targets.iter().zip(plans) {
+            match plan {
+                Some(bytes) => s.send_bytes(&bytes),
+                None => {
+                    if let Some(text) = printable_text(ks) {
+                        s.send_bytes(text.as_bytes());
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// [`Self::send_input`] for pastes (bracketed-paste aware per pane).
@@ -3207,15 +3235,12 @@ impl Render for TabsWindow {
                     cx.stop_propagation();
                     return;
                 }
-                // Everything else through the engine's encoder. Printable
-                // unmodified keys return None and keep propagating so WM_CHAR
-                // feeds the IME input handler (otherwise chars would double).
-                if let Some(s) = this.active_session() {
-                    let mode = *s.term.lock().mode();
-                    if let Some(bytes) = key_to_pty_bytes(ks, mode) {
-                        this.send_input(&bytes);
-                        cx.stop_propagation();
-                    }
+                // Everything else through the engine's encoder, per
+                // recipient. A key nobody consumes keeps propagating so
+                // WM_CHAR feeds the IME input handler (otherwise chars
+                // would double).
+                if this.send_key_input(ks) {
+                    cx.stop_propagation();
                 }
             }))
             .on_scroll_wheel(
