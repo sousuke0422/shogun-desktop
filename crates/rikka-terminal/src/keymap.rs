@@ -36,6 +36,8 @@ pub enum Action {
     JumpPromptNext,
     /// Open/close the scrollback search bar.
     Search,
+    SplitRight,
+    SplitDown,
     OpenSettings,
 }
 
@@ -96,7 +98,7 @@ impl KeyMap {
             alt: false,
             key: key.into(),
         };
-        let defaults: [(&Option<String>, &str, Action); 13] = [
+        let defaults: [(&Option<String>, &str, Action); 15] = [
             (&keys.new_tab, "t", Action::NewTab),
             (&keys.close_tab, "w", Action::CloseTab),
             (&keys.detach_tab, "d", Action::DetachTab),
@@ -110,6 +112,8 @@ impl KeyMap {
             (&keys.jump_prompt_prev, "up", Action::JumpPromptPrev),
             (&keys.jump_prompt_next, "down", Action::JumpPromptNext),
             (&keys.search, "f", Action::Search),
+            (&keys.split_right, "o", Action::SplitRight),
+            (&keys.split_down, "u", Action::SplitDown),
         ];
         let mut bindings = Vec::new();
         for (configured, default_key, action) in defaults {

@@ -200,7 +200,17 @@
       -calt=全離散/ ss19=slashed zero ＋合字維持。SD は既存 settings 配線
       がそのまま生きる（bundled Moralerspace の合字も既定 ON 化）。
       注: カーソル通過セルは run 分割で合字が一時解除（kitty 同等・利点）。
-- [ ] **ペイン分割**（split-pane） — cli.rs で意図的 TODO 宣言済み。構造工事。
+- [x] **ペイン分割 v1** — 済 (2026-07-24)。タブ= PaneNode ツリー
+      （Leaf{TabEntry+measured}/Split{ratio}・Empty 墓標で in-place 手術）。
+      Ctrl+Shift+O/U（[keys] split_right/split_down）で右/下分割（新ペインは
+      cwd 継承＋フォーカス）、Alt+矢印=幾何ナビ（正規化 rect 最近傍）、
+      Ctrl+Shift+W=分割中はペイン閉じ（sibling 昇格）。描画=再帰 flex
+      （relative 比率＋1px divider＋非フォーカス wash）。**PTY fit の所有権
+      分離**: 非分割=窓由来一括／分割=overlay measured 経由 per-pane
+      （振動防止）。selection は pane id で leaf 直接解決。移送系は
+      is_split ガード（分割タブは移送不可=Phase C）。実機: 分割/両ペイン
+      入力/Alt+←/W 閉じ+再フィット全 PASS。残: 分割線ドラッグリサイズ・
+      分割タブの移送/複製・broadcast input・ズーム(単ペイン最大化)。
 - [ ] **Quick terminal** — グローバルホットキーで出すドロップダウン窓。
 - [ ] 細目: grapheme clustering（mode 2027）・minimum-contrast・正規表現
       URL 検出の網羅（OSC 8＋ベア URL 検出は実装済みの範囲）。内蔵テーマ集・

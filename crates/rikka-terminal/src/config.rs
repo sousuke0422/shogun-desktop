@@ -213,6 +213,10 @@ pub struct KeysSection {
     pub search: Option<String>,
     #[serde(default)]
     pub settings: Option<String>,
+    #[serde(default)]
+    pub split_right: Option<String>,
+    #[serde(default)]
+    pub split_down: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

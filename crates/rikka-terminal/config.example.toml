@@ -95,6 +95,11 @@ hidden = ["Azure Cloud Shell"]
 # search = "ctrl+shift+f"
 # The settings window (also in the new-tab ⌄ menu).
 # settings = "ctrl+,"
+# Split the focused pane (the new pane inherits the cwd and takes focus).
+# Alt+arrows move the pane focus; Ctrl+Shift+W closes the focused pane
+# (the whole tab once a single pane remains).
+# split_right = "ctrl+shift+o"
+# split_down = "ctrl+shift+u"
 
 # ── Shell integration ────────────────────────────────────────────────────
 # rikka reads two things your shell can emit (no config needed here):

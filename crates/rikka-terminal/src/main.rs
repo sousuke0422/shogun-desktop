@@ -695,43 +695,131 @@ fn default_shell_dir() -> Option<String> {
 struct Tab {
     root: PaneNode,
     active_pane: usize,
-    #[allow(dead_code)] // consumed by Phase B's split actions
     next_pane_id: usize,
 }
 
+/// One pane of a tab. `measured` is the painted size sink (from the pane
+/// overlay canvas) driving this pane's own PTY fit once the tab is split.
+struct Leaf {
+    id: usize,
+    entry: TabEntry,
+    measured: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+}
+
+impl Leaf {
+    fn new(id: usize, entry: TabEntry) -> Self {
+        Leaf {
+            id,
+            entry,
+            measured: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
+        }
+    }
+}
+
 enum PaneNode {
-    Leaf(usize, TabEntry),
-    #[allow(dead_code)] // built by Phase B's split actions
+    Leaf(Leaf),
     Split {
+        /// `true` = children sit side by side (a vertical divider).
         horizontal: bool,
         ratio: f32,
         a: Box<PaneNode>,
         b: Box<PaneNode>,
     },
+    /// Transient tombstone for in-place tree surgery ([`PaneNode::remove`])
+    /// — never survives a call.
+    Empty,
 }
 
 impl PaneNode {
-    fn first_leaf(&self) -> &TabEntry {
+    fn first_leaf(&self) -> Option<&Leaf> {
         match self {
-            PaneNode::Leaf(_, e) => e,
-            PaneNode::Split { a, .. } => a.first_leaf(),
+            PaneNode::Leaf(l) => Some(l),
+            PaneNode::Split { a, b, .. } => a.first_leaf().or_else(|| b.first_leaf()),
+            PaneNode::Empty => None,
         }
     }
 
-    fn find(&self, id: usize) -> Option<&TabEntry> {
+    fn find(&self, id: usize) -> Option<&Leaf> {
         match self {
-            PaneNode::Leaf(pid, e) => (*pid == id).then_some(e),
+            PaneNode::Leaf(l) => (l.id == id).then_some(l),
             PaneNode::Split { a, b, .. } => a.find(id).or_else(|| b.find(id)),
+            PaneNode::Empty => None,
         }
     }
 
-    fn for_each(&self, f: &mut dyn FnMut(&TabEntry)) {
+    fn for_each(&self, f: &mut dyn FnMut(&Leaf)) {
         match self {
-            PaneNode::Leaf(_, e) => f(e),
+            PaneNode::Leaf(l) => f(l),
             PaneNode::Split { a, b, .. } => {
                 a.for_each(f);
                 b.for_each(f);
             }
+            PaneNode::Empty => {}
+        }
+    }
+
+    /// Split leaf `id` in place: it becomes `Split{old, new}`. Returns the
+    /// leaf back when `id` is not in this subtree.
+    fn split(&mut self, id: usize, horizontal: bool, new_leaf: Leaf) -> Option<Leaf> {
+        match self {
+            PaneNode::Leaf(l) if l.id == id => {
+                let old = std::mem::replace(self, PaneNode::Empty);
+                *self = PaneNode::Split {
+                    horizontal,
+                    ratio: 0.5,
+                    a: Box::new(old),
+                    b: Box::new(PaneNode::Leaf(new_leaf)),
+                };
+                None
+            }
+            PaneNode::Leaf(..) | PaneNode::Empty => Some(new_leaf),
+            PaneNode::Split { a, b, .. } => {
+                let leftover = a.split(id, horizontal, new_leaf)?;
+                b.split(id, horizontal, leftover)
+            }
+        }
+    }
+
+    /// Remove leaf `id`, promoting its sibling into the parent's slot.
+    /// Returns the removed entry. Only meaningful under a Split — a lone
+    /// root leaf is a tab close, handled by the caller.
+    fn remove(&mut self, id: usize) -> Option<TabEntry> {
+        let PaneNode::Split { a, b, .. } = self else {
+            return None;
+        };
+        let a_hit = matches!(a.as_ref(), PaneNode::Leaf(l) if l.id == id);
+        let b_hit = matches!(b.as_ref(), PaneNode::Leaf(l) if l.id == id);
+        if a_hit || b_hit {
+            let (victim, sibling) = if a_hit { (a, b) } else { (b, a) };
+            let PaneNode::Leaf(leaf) = std::mem::replace(victim.as_mut(), PaneNode::Empty) else {
+                return None;
+            };
+            *self = std::mem::replace(sibling.as_mut(), PaneNode::Empty);
+            return Some(leaf.entry);
+        }
+        a.remove(id).or_else(|| b.remove(id))
+    }
+
+    /// Normalized layout: every leaf's `(id, x, y, w, h)` in 0..1 space —
+    /// directional focus navigation works on these rects.
+    fn rects(&self, x: f32, y: f32, w: f32, h: f32, out: &mut Vec<(usize, f32, f32, f32, f32)>) {
+        match self {
+            PaneNode::Leaf(l) => out.push((l.id, x, y, w, h)),
+            PaneNode::Split {
+                horizontal,
+                ratio,
+                a,
+                b,
+            } => {
+                if *horizontal {
+                    a.rects(x, y, w * ratio, h, out);
+                    b.rects(x + w * ratio, y, w * (1.0 - ratio), h, out);
+                } else {
+                    a.rects(x, y, w, h * ratio, out);
+                    b.rects(x, y + h * ratio, w, h * (1.0 - ratio), out);
+                }
+            }
+            PaneNode::Empty => {}
         }
     }
 }
@@ -739,7 +827,7 @@ impl PaneNode {
 impl Tab {
     fn single(entry: TabEntry) -> Self {
         Tab {
-            root: PaneNode::Leaf(0, entry),
+            root: PaneNode::Leaf(Leaf::new(0, entry)),
             active_pane: 0,
             next_pane_id: 1,
         }
@@ -748,21 +836,27 @@ impl Tab {
     /// The top-left pane: the tab strip's face (title, icon, theme) and the
     /// unit tab moves operate on while splits don't travel.
     fn primary(&self) -> &TabEntry {
-        self.root.first_leaf()
+        &self
+            .root
+            .first_leaf()
+            .expect("a tab always holds at least one pane")
+            .entry
     }
 
     /// The focused pane: where input, search, copy/paste and the IME go.
     fn active_entry(&self) -> &TabEntry {
         self.root
             .find(self.active_pane)
-            .unwrap_or_else(|| self.root.first_leaf())
+            .or_else(|| self.root.first_leaf())
+            .map(|l| &l.entry)
+            .expect("a tab always holds at least one pane")
     }
 
     fn for_each_entry(&self, mut f: impl FnMut(&TabEntry)) {
-        self.root.for_each(&mut f);
+        self.root.for_each(&mut |l| f(&l.entry));
     }
 
-    /// More than one pane (Phase B). Gates tab moves — splits don't travel.
+    /// More than one pane. Gates tab moves — splits don't travel.
     fn is_split(&self) -> bool {
         !matches!(self.root, PaneNode::Leaf(..))
     }
@@ -771,9 +865,30 @@ impl Tab {
     /// drivers, so the caller must guard with [`Self::is_split`]) otherwise.
     fn take_single(self) -> Option<TabEntry> {
         match self.root {
-            PaneNode::Leaf(_, e) => Some(e),
-            PaneNode::Split { .. } => None,
+            PaneNode::Leaf(l) => Some(l.entry),
+            _ => None,
         }
+    }
+
+    /// Split the focused pane; the new pane takes the focus.
+    fn split_active(&mut self, horizontal: bool, entry: TabEntry) {
+        let id = self.next_pane_id;
+        self.next_pane_id += 1;
+        if self
+            .root
+            .split(self.active_pane, horizontal, Leaf::new(id, entry))
+            .is_none()
+        {
+            self.active_pane = id;
+        }
+    }
+
+    /// Close the focused pane of a SPLIT tab (callers close the whole tab
+    /// when it isn't). Focus falls to the first remaining leaf.
+    fn close_active_pane(&mut self) -> Option<TabEntry> {
+        let removed = self.root.remove(self.active_pane)?;
+        self.active_pane = self.root.first_leaf().map(|l| l.id).unwrap_or(0);
+        Some(removed)
     }
 
     fn shutdown_all(&self) {
@@ -932,8 +1047,12 @@ impl SelectionHost for TabsWindow {
         &mut self.selection
     }
 
-    fn pane_session(&self, _pane: usize) -> Option<&TerminalSession> {
-        self.active_session()
+    fn pane_session(&self, pane: usize) -> Option<&TerminalSession> {
+        self.tabs
+            .get(self.active)
+            .and_then(|t| t.root.find(pane))
+            .map(|l| &l.entry.0.session)
+            .or_else(|| self.active_session())
     }
 }
 
@@ -1024,7 +1143,15 @@ impl TabsWindow {
         use keymap::Action::*;
         match action {
             NewTab => self.new_tab(cx),
-            CloseTab => self.close_active(window, cx),
+            CloseTab => {
+                // With a split, W closes the focused PANE (wt's shape); the
+                // whole tab only goes when a single pane remains.
+                if self.tabs.get(self.active).is_some_and(Tab::is_split) {
+                    self.close_active_pane(cx);
+                } else {
+                    self.close_active(window, cx);
+                }
+            }
             DetachTab => self.detach_active(cx),
             #[cfg(windows)]
             EjectTab => self.eject_active(window, cx),
@@ -1067,6 +1194,8 @@ impl TabsWindow {
                 }
             }
             OpenSettings => settings_window::open(cx),
+            SplitRight => self.split_active_pane(true, cx),
+            SplitDown => self.split_active_pane(false, cx),
             Search => {
                 let sess = self
                     .tabs
@@ -1092,6 +1221,259 @@ impl TabsWindow {
     /// Take ownership of a tab: point its driver's waker at this window and
     /// make it the active tab. This is the whole "attach" operation — the
     /// session itself never moves threads.
+    /// Split the focused pane of the active tab; the new pane runs the
+    /// default profile in the inherited cwd and takes the focus.
+    fn split_active_pane(&mut self, horizontal: bool, cx: &mut Context<Self>) {
+        if self.tabs.get(self.active).is_none() {
+            return;
+        }
+        let mut spec = default_spec(cx);
+        self.inherit_cwd(&mut spec);
+        let Some(entry) = create_tab_spec(cx, &spec) else {
+            return;
+        };
+        let weak = cx.weak_entity();
+        *entry.0.waker.lock() = Some(Box::new(move |acx| {
+            let _ = weak.update(acx, |_, cx| cx.notify());
+        }));
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.split_active(horizontal, entry);
+        }
+        cx.notify();
+    }
+
+    /// Close the focused pane of a split tab; its sibling takes the space.
+    fn close_active_pane(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get_mut(self.active)
+            && let Some(entry) = tab.close_active_pane()
+        {
+            entry.0.shutdown();
+        }
+        cx.notify();
+    }
+
+    /// Move pane focus geometrically (Alt+arrows): pick the leaf whose
+    /// center is nearest in the pressed direction, in normalized tree
+    /// space.
+    fn focus_pane_direction(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let mut rects = Vec::new();
+        tab.root.rects(0.0, 0.0, 1.0, 1.0, &mut rects);
+        let Some(&(_, cx0, cy0, cw0, chh0)) = rects.iter().find(|(id, ..)| *id == tab.active_pane)
+        else {
+            return;
+        };
+        let (mx, my) = (cx0 + cw0 / 2.0, cy0 + chh0 / 2.0);
+        let best = rects
+            .iter()
+            .filter(|(id, ..)| *id != tab.active_pane)
+            .filter_map(|&(id, x, y, w, h)| {
+                let (px_, py_) = (x + w / 2.0, y + h / 2.0);
+                let ok = match key {
+                    "left" => px_ < mx - 1e-3,
+                    "right" => px_ > mx + 1e-3,
+                    "up" => py_ < my - 1e-3,
+                    "down" => py_ > my + 1e-3,
+                    _ => false,
+                };
+                ok.then(|| {
+                    let d = (px_ - mx).powi(2) + (py_ - my).powi(2);
+                    (id, d)
+                })
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(id, _)| id);
+        if let Some(id) = best {
+            tab.active_pane = id;
+            cx.notify();
+        }
+    }
+
+    /// Render the pane tree: splits become ratio-sized flex children with a
+    /// 1px divider; leaves paint their own grid + overlay.
+    fn render_pane_node(
+        &self,
+        node: &PaneNode,
+        active_pane: usize,
+        tab_is_split: bool,
+        cw: f32,
+        ch: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        match node {
+            PaneNode::Empty => div().into_any_element(),
+            PaneNode::Leaf(leaf) => self.render_leaf(leaf, active_pane, tab_is_split, cw, ch, cx),
+            PaneNode::Split {
+                horizontal,
+                ratio,
+                a,
+                b,
+            } => {
+                let horizontal = *horizontal;
+                let first = div()
+                    .map(|d| {
+                        if horizontal {
+                            d.w(gpui::relative(*ratio)).h_full()
+                        } else {
+                            d.h(gpui::relative(*ratio)).w_full()
+                        }
+                    })
+                    .min_w_0()
+                    .min_h_0()
+                    .child(self.render_pane_node(a, active_pane, tab_is_split, cw, ch, cx));
+                let divider = div()
+                    .map(|d| {
+                        if horizontal {
+                            d.w(px(1.)).h_full()
+                        } else {
+                            d.h(px(1.)).w_full()
+                        }
+                    })
+                    .flex_shrink_0()
+                    .bg(gpui::rgba(DIVIDER));
+                let second = div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(self.render_pane_node(b, active_pane, tab_is_split, cw, ch, cx));
+                div()
+                    .size_full()
+                    .flex()
+                    .map(|d| {
+                        if horizontal {
+                            d.flex_row()
+                        } else {
+                            d.flex_col()
+                        }
+                    })
+                    .child(first)
+                    .child(divider)
+                    .child(second)
+                    .into_any_element()
+            }
+        }
+    }
+
+    /// One pane: grid + shared overlay, with its own painted-size PTY fit.
+    /// The focused pane owns the caret, IME preedit and search highlight;
+    /// unfocused panes of a split get a subtle dim wash.
+    fn render_leaf(
+        &self,
+        leaf: &Leaf,
+        active_pane: usize,
+        tab_is_split: bool,
+        cw: f32,
+        ch: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use std::sync::atomic::Ordering;
+        let session = &leaf.entry.0.session;
+        // Per-pane PTY fit from the size the overlay canvas painted last
+        // frame — the only truth once a tab is split. Cell-quantized and
+        // only on change, so this never thrashes.
+        let (mw, mh) = leaf.measured.get();
+        if tab_is_split && mw > cw && mh > ch {
+            let cols = ((mw / cw) as u16).max(2);
+            let rows = ((mh / ch) as u16).max(2);
+            if (
+                session.cols.load(Ordering::Relaxed),
+                session.rows.load(Ordering::Relaxed),
+            ) != (cols, rows)
+            {
+                session.resize(cols, rows, (cw, ch));
+            }
+        }
+        let snap = session.snapshot.lock().clone();
+        let focused = leaf.id == active_pane;
+        let pane_id = leaf.id;
+        let ime_preedit = if focused {
+            self.ime.read(cx).marked.clone()
+        } else {
+            None
+        };
+        let focus_handle = self.terminal_focus.clone();
+        let ime = self.ime.clone();
+        let view = cx.entity();
+        let (grid_rows, grid_cols) = (snap.rows, snap.cols);
+        div()
+            .relative()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            // Click moves the pane focus (split tabs).
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseDownEvent, _w, cx| {
+                    if let Some(tab) = this.tabs.get_mut(this.active)
+                        && tab.active_pane != pane_id
+                    {
+                        tab.active_pane = pane_id;
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(render_grid(
+                &snap,
+                mono_font(),
+                cw,
+                ch,
+                snap.selection,
+                self.selection.hover_link_for(pane_id),
+                Some(&session.images),
+                ime_preedit,
+                if focused {
+                    session.search_render_state()
+                } else {
+                    None
+                },
+            ))
+            // Shared pane overlay (IME handler + selection listeners +
+            // caret), pane-addressed so hit-testing lands on THIS leaf.
+            .child(rikka_terminal_core::pane::pane_overlay(
+                rikka_terminal_core::pane::PaneOverlay {
+                    focus_handle,
+                    ime,
+                    view,
+                    pane: pane_id,
+                    cw,
+                    ch,
+                    grid_rows,
+                    grid_cols,
+                    inset: 0.0,
+                    caret_enabled: focused,
+                    measured: Some(leaf.measured.clone()),
+                },
+                // Pipe the caret rect to TSF so the IME candidate window
+                // opens at the terminal cursor (focused pane only).
+                move |caret| {
+                    if focused {
+                        tsf::set_caret(caret.map(|(left, top, right, bottom)| {
+                            rikka_terminal_gpui_ime::CaretRect {
+                                left,
+                                top,
+                                right,
+                                bottom,
+                            }
+                        }));
+                    }
+                },
+            ))
+            // Split-tab affordances: unfocused panes get a subtle wash.
+            .when(tab_is_split && !focused, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .bg(gpui::rgba(0x0000002E)),
+                )
+            })
+            .into_any_element()
+    }
+
     fn adopt_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         let ix = self.tabs.len();
         let weak = cx.weak_entity();
@@ -1574,6 +1956,11 @@ impl Render for TabsWindow {
                 // dims already "match" and it stays at its stale PTY size
                 // (wrong wrap column) until the next window resize.
                 for tab in &self.tabs {
+                    // Split tabs fit per pane from the painted size (see
+                    // render_leaf) — the window-derived fit would fight it.
+                    if tab.is_split() {
+                        continue;
+                    }
                     tab.for_each_entry(|entry| {
                         entry.0.session.resize(new_cols, new_rows, (cw, ch));
                     });
@@ -1914,13 +2301,7 @@ impl Render for TabsWindow {
             .child(caption_button("\u{E8BB}", WindowControlArea::Close));
 
         // ── terminal pane (active tab) ───────────────────────────────────
-        let pane = if let Some(snap) = self.active_session().map(|s| s.snapshot.lock().clone()) {
-            let images = self.active_session().map(|s| Arc::clone(&s.images));
-            let ime_preedit = self.ime.read(cx).marked.clone();
-            let focus_handle = self.terminal_focus.clone();
-            let ime = self.ime.clone();
-            let view = cx.entity();
-            let (grid_rows, grid_cols) = (snap.rows, snap.cols);
+        let pane = if self.tabs.get(self.active).is_some() {
             div()
                 .flex_1()
                 .w_full()
@@ -1955,55 +2336,10 @@ impl Render for TabsWindow {
                         s.paste(&text);
                     }
                 }))
-                .child(
-                    div()
-                        .relative()
-                        .size_full()
-                        .child(render_grid(
-                            &snap,
-                            mono_font(),
-                            cw,
-                            ch,
-                            snap.selection,
-                            self.selection.hover_link_for(0),
-                            images.as_deref(),
-                            ime_preedit,
-                            self.active_session().and_then(|s| s.search_render_state()),
-                        ))
-                        // Shared pane overlay (IME handler + selection
-                        // listeners + caret). Single-sourced in the engine so
-                        // shogun-desktop and rikka hit-test identically. The
-                        // wrapper above is already the grid's content box, so
-                        // the overlay pins flush (inset 0); the PTY resize is
-                        // driven from the viewport, so no size sink is needed.
-                        .child(rikka_terminal_core::pane::pane_overlay(
-                            rikka_terminal_core::pane::PaneOverlay {
-                                focus_handle,
-                                ime,
-                                view,
-                                pane: 0,
-                                cw,
-                                ch,
-                                grid_rows,
-                                grid_cols,
-                                inset: 0.0,
-                                caret_enabled: true,
-                                measured: None,
-                            },
-                            // Pipe the caret rect to TSF so the IME candidate
-                            // window opens at the terminal cursor.
-                            move |caret| {
-                                tsf::set_caret(caret.map(|(left, top, right, bottom)| {
-                                    rikka_terminal_gpui_ime::CaretRect {
-                                        left,
-                                        top,
-                                        right,
-                                        bottom,
-                                    }
-                                }));
-                            },
-                        )),
-                )
+                .child({
+                    let tab = &self.tabs[self.active];
+                    self.render_pane_node(&tab.root, tab.active_pane, tab.is_split(), cw, ch, cx)
+                })
                 // Right-click menu, same actions as the Ctrl+Shift chords.
                 // Attached to the pane — a plain flex div, NEVER a scroll
                 // container: the open menu injects a window-sized absolute
@@ -2084,6 +2420,16 @@ impl Render for TabsWindow {
                         cx.stop_propagation();
                         return;
                     }
+                }
+                // Alt+arrows: directional pane focus (split tabs).
+                if m.alt
+                    && !m.control
+                    && !m.shift
+                    && matches!(ks.key.as_str(), "left" | "right" | "up" | "down")
+                {
+                    this.focus_pane_direction(ks.key.as_str(), cx);
+                    cx.stop_propagation();
+                    return;
                 }
                 // ── tab management chords (defaults Ctrl+Shift+…, each
                 // reassignable through `[keys]` — see keymap.rs) ────────
