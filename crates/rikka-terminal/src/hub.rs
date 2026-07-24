@@ -46,6 +46,10 @@ pub struct TabSession {
     /// palette it does not travel a cross-process tab move (v1).
     icon: Mutex<Option<crate::tab_icon::TabIcon>>,
     closed: Arc<AtomicBool>,
+    /// Individually opted into broadcast input (選択ブロードキャスト): this
+    /// pane receives a copy of typed input no matter which pane is focused.
+    /// Rides the session, so it survives pane/tab rearrangement.
+    broadcast_target: AtomicBool,
 }
 
 impl TabSession {
@@ -74,6 +78,16 @@ impl TabSession {
     pub fn icon(&self) -> Option<crate::tab_icon::TabIcon> {
         self.icon.lock().clone()
     }
+
+    /// Whether this pane is individually marked as a broadcast recipient.
+    pub fn broadcast_target(&self) -> bool {
+        self.broadcast_target.load(Ordering::Relaxed)
+    }
+
+    /// Flip the individual broadcast mark.
+    pub fn toggle_broadcast_target(&self) {
+        self.broadcast_target.fetch_xor(true, Ordering::Relaxed);
+    }
 }
 
 /// One entry of a window's tab strip.
@@ -100,6 +114,7 @@ pub fn new_tab(cx: &mut App, session: TerminalSession) -> TabEntry {
         theme: Mutex::new(None),
         icon: Mutex::new(None),
         closed: Arc::clone(&closed),
+        broadcast_target: AtomicBool::new(false),
     });
     let waker_slot = Arc::clone(&tab);
     cx.spawn(async move |cx| {

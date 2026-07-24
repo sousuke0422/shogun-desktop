@@ -246,8 +246,22 @@
       ブロードキャスト」（タブ2個以上で表示・window 単位 `broadcast_all`・
       per-tab トグルと OR 合成）。この窓の全タブ全ペインへ複製（iTerm2
       "all panes in all tabs" 相当・別窓プロセスは対象外）。ON 中は全タブに
-      » マーク。実機で裏タブにも echo hi 実行を確認。残: 分割タブの移送/
-      複製・クロス窓のゾーン表示・broadcast のキー割当([keys])。
+      » マーク。実機で裏タブにも echo hi 実行を確認。v1.4.2 (2026-07-24 殿
+      「選択できるとなおよい」): **選択ブロードキャスト** — ペイン右クリック
+      「ブロードキャスト対象を切替」(常時表示・ラベルは無状態=render 時
+      capture の stale 回避)。TabSession に broadcast_target AtomicBool
+      （session 付帯ゆえ移送・組替えでも保持）。マークされたペインは
+      **どのタブ/ペインにフォーカスがあっても**入力複製を受ける（タブ内/
+      全タブトグルと和集合・`input_sessions()` が Arc ptr dedup で収集）。
+      右クリックでもペインフォーカスが移るよう修正（メニューの pane 系
+      action が「クリックしたペイン」に効く前提の是正）。視覚=マーク
+      ペインに錆朱枠(常時)＋所属タブに »。実機3ペイン: マーク+active
+      のみ受信・非対象ペイン無傷を確認。**副産物: 入れ子分割の縦崩壊
+      バグ根治** — percent height/flex-grow は入れ子 Split の indefinite
+      親で content size に負ける(taffy)→ **percent-inset 絶対配置**
+      （containing block 基準=常に definite）へ全面変更。50/50 復元・
+      divider ドラッグ/ズーム回帰 PASS。残: 分割タブの移送/複製・
+      クロス窓のゾーン表示・broadcast のキー割当([keys])。
 - [ ] **Quick terminal** — グローバルホットキーで出すドロップダウン窓。
 - [ ] 細目: grapheme clustering（mode 2027）・minimum-contrast・正規表現
       URL 検出の網羅（OSC 8＋ベア URL 検出は実装済みの範囲）。内蔵テーマ集・

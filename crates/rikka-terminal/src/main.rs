@@ -94,7 +94,13 @@ pub(crate) const FRAME_COALESCE: Duration = Duration::from_millis(8);
 
 gpui::actions!(
     rikka_terminal,
-    [TerminalCopy, TerminalPaste, PaneToTab, PaneToWindow]
+    [
+        TerminalCopy,
+        TerminalPaste,
+        PaneToTab,
+        PaneToWindow,
+        TogglePaneBroadcast
+    ]
 );
 
 /// Appearance/terminal settings resolved once at startup from
@@ -767,6 +773,19 @@ impl PaneNode {
         }
     }
 
+    /// Collect leaf references (unlike [`Self::for_each`], the borrows
+    /// escape — needed to gather input-fan-out targets).
+    fn leaves<'a>(&'a self, out: &mut Vec<&'a Leaf>) {
+        match self {
+            PaneNode::Leaf(l) => out.push(l),
+            PaneNode::Split { a, b, .. } => {
+                a.leaves(out);
+                b.leaves(out);
+            }
+            PaneNode::Empty => {}
+        }
+    }
+
     /// Split leaf `id` in place: it becomes `Split{old, new}` (or
     /// `{new, old}` with `new_first` — a drop on the left/top edge).
     /// Returns the leaf back when `id` is not in this subtree.
@@ -930,6 +949,14 @@ impl Tab {
     /// More than one pane. Gates tab moves — splits don't travel.
     fn is_split(&self) -> bool {
         !matches!(self.root, PaneNode::Leaf(..))
+    }
+
+    /// Any pane of this tab individually marked as a broadcast recipient.
+    fn has_broadcast_member(&self) -> bool {
+        let mut found = false;
+        self.root
+            .for_each(&mut |l| found |= l.entry.0.broadcast_target());
+        found
     }
 
     /// The sole pane of an unsplit tab; `None` (untouched drop would leak
@@ -1262,38 +1289,48 @@ impl TabsWindow {
     /// on. Broadcast reuses the active pane's encoding: per-pane terminal
     /// modes (DECCKM etc.) are not consulted for the copies.
     fn send_input(&self, bytes: &[u8]) {
-        if self.broadcast_all {
-            for tab in &self.tabs {
-                tab.for_each_entry(|e| e.0.session.send_bytes(bytes));
-            }
-            return;
-        }
-        let Some(tab) = self.tabs.get(self.active) else {
-            return;
-        };
-        if tab.broadcast {
-            tab.for_each_entry(|e| e.0.session.send_bytes(bytes));
-        } else {
-            tab.active_entry().0.session.send_bytes(bytes);
+        for s in self.input_sessions() {
+            s.send_bytes(bytes);
         }
     }
 
     /// [`Self::send_input`] for pastes (bracketed-paste aware per pane).
     fn paste_input(&self, text: &str) {
-        if self.broadcast_all {
-            for tab in &self.tabs {
-                tab.for_each_entry(|e| e.0.session.paste(text));
-            }
-            return;
+        for s in self.input_sessions() {
+            s.paste(text);
         }
-        let Some(tab) = self.tabs.get(self.active) else {
-            return;
+    }
+
+    /// Every session user input goes to right now, deduplicated: the
+    /// focused pane always, plus the broadcast recipients — the whole
+    /// window (`broadcast_all`), the active tab (its `broadcast` toggle),
+    /// and every individually marked pane (選択ブロードキャスト), which
+    /// receives copies no matter which tab is focused.
+    fn input_sessions(&self) -> Vec<&TerminalSession> {
+        let mut seen: Vec<*const hub::TabSession> = Vec::new();
+        let mut out: Vec<&TerminalSession> = Vec::new();
+        let Some(active_tab) = self.tabs.get(self.active) else {
+            return out;
         };
-        if tab.broadcast {
-            tab.for_each_entry(|e| e.0.session.paste(text));
-        } else {
-            tab.active_entry().0.session.paste(text);
+        let active_entry = active_tab.active_entry();
+        seen.push(std::sync::Arc::as_ptr(&active_entry.0));
+        out.push(&active_entry.0.session);
+        for (ix, tab) in self.tabs.iter().enumerate() {
+            let whole_tab = self.broadcast_all || (ix == self.active && tab.broadcast);
+            let mut leaves = Vec::new();
+            tab.root.leaves(&mut leaves);
+            for leaf in leaves {
+                if !(whole_tab || leaf.entry.0.broadcast_target()) {
+                    continue;
+                }
+                let p = std::sync::Arc::as_ptr(&leaf.entry.0);
+                if !seen.contains(&p) {
+                    seen.push(p);
+                    out.push(&leaf.entry.0.session);
+                }
+            }
         }
+        out
     }
 
     /// Run one `[keys]` action — the single dispatch point for the
@@ -1736,32 +1773,49 @@ impl TabsWindow {
                 let (mut path_a, mut path_b) = (path.clone(), path.clone());
                 path_a.push(false);
                 path_b.push(true);
+                // Both children are absolutely placed by PERCENT INSETS,
+                // never flex or percent sizes: a percent height inside a
+                // nested split is indefinite to taffy and collapses to
+                // content size (the "bottom pane one line tall" bug), and
+                // flex-grow weights lose to the grid's intrinsic size the
+                // same way. Insets resolve against the laid-out containing
+                // block — definite in every nesting.
                 let first = div()
+                    .absolute()
                     .map(|d| {
                         if horizontal {
-                            d.w(gpui::relative(ratio)).h_full()
+                            d.left_0()
+                                .top_0()
+                                .bottom_0()
+                                .right(gpui::relative(1.0 - ratio))
                         } else {
-                            d.h(gpui::relative(ratio)).w_full()
+                            d.top_0()
+                                .left_0()
+                                .right_0()
+                                .bottom(gpui::relative(1.0 - ratio))
                         }
                     })
-                    .min_w_0()
-                    .min_h_0()
                     .child(self.render_pane_node(a, path_a, active_pane, tab_is_split, cw, ch, cx));
-                let divider = div()
+                let second = div()
+                    .absolute()
                     .map(|d| {
                         if horizontal {
-                            d.w(px(1.)).h_full()
+                            d.right_0().top_0().bottom_0().left(gpui::relative(ratio))
                         } else {
-                            d.h(px(1.)).w_full()
+                            d.bottom_0().left_0().right_0().top(gpui::relative(ratio))
                         }
                     })
-                    .flex_shrink_0()
-                    .bg(gpui::rgba(DIVIDER));
-                let second = div()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
                     .child(self.render_pane_node(b, path_b, active_pane, tab_is_split, cw, ch, cx));
+                let divider = div()
+                    .absolute()
+                    .map(|d| {
+                        if horizontal {
+                            d.left(gpui::relative(ratio)).top_0().bottom_0().w(px(1.))
+                        } else {
+                            d.top(gpui::relative(ratio)).left_0().right_0().h(px(1.))
+                        }
+                    })
+                    .bg(gpui::rgba(DIVIDER));
                 // The grab strip: an invisible 7px band centered on the 1px
                 // divider, painted last so it wins hit-testing over both
                 // children. Dragging it steers this Split's ratio (mouse
@@ -1795,17 +1849,9 @@ impl TabsWindow {
                 div()
                     .size_full()
                     .relative()
-                    .flex()
-                    .map(|d| {
-                        if horizontal {
-                            d.flex_row()
-                        } else {
-                            d.flex_col()
-                        }
-                    })
                     .child(first)
-                    .child(divider)
                     .child(second)
+                    .child(divider)
                     .child(grab)
                     .into_any_element()
             }
@@ -1862,9 +1908,22 @@ impl TabsWindow {
             .size_full()
             .min_w_0()
             .min_h_0()
-            // Click moves the pane focus (split tabs).
+            // Click moves the pane focus (split tabs). Right-click too —
+            // the context menu's pane actions must hit the pane that was
+            // clicked, not whichever held the focus before.
             .on_mouse_down(
                 gpui::MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseDownEvent, _w, cx| {
+                    if let Some(tab) = this.tabs.get_mut(this.active)
+                        && tab.active_pane != pane_id
+                    {
+                        tab.active_pane = pane_id;
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Right,
                 cx.listener(move |this, _: &gpui::MouseDownEvent, _w, cx| {
                     if let Some(tab) = this.tabs.get_mut(this.active)
                         && tab.active_pane != pane_id
@@ -1931,10 +1990,14 @@ impl TabsWindow {
                         .bg(gpui::rgba(0x0000002E)),
                 )
             })
-            // Broadcast input: every pane wears a rust-red frame — typing
-            // fans out to all of them, and that must never be a surprise.
+            // Broadcast input: every receiving pane wears a rust-red frame
+            // — typing fanning out must never be a surprise. Individually
+            // marked panes (selection broadcast) show it whichever tab or
+            // pane holds the focus.
             .when(
-                self.broadcast_all || self.tabs.get(self.active).is_some_and(|t| t.broadcast),
+                self.broadcast_all
+                    || self.tabs.get(self.active).is_some_and(|t| t.broadcast)
+                    || leaf.entry.0.broadcast_target(),
                 |d| {
                     d.child(
                         div()
@@ -2602,13 +2665,14 @@ impl Render for TabsWindow {
                         .child("●")
                 });
                 // Broadcast indicator, paired with the panes' rust frame.
-                let bc_mark = (tab.broadcast || self.broadcast_all).then(|| {
-                    div()
-                        .mr(px(4.))
-                        .flex_shrink_0()
-                        .text_color(rgb(0xBE5A50))
-                        .child("»")
-                });
+                let bc_mark = (tab.broadcast || self.broadcast_all || tab.has_broadcast_member())
+                    .then(|| {
+                        div()
+                            .mr(px(4.))
+                            .flex_shrink_0()
+                            .text_color(rgb(0xBE5A50))
+                            .child("»")
+                    });
                 // Icon slot: while OSC 9;4 (or title-spinner) progress is
                 // active, a wt-style circular indicator takes the shell icon's
                 // place — but only on INACTIVE tabs. The active tab already
@@ -2911,6 +2975,12 @@ impl Render for TabsWindow {
                 .on_action(cx.listener(|this, _: &PaneToWindow, _window, cx| {
                     this.pane_to_window(cx);
                 }))
+                .on_action(cx.listener(|this, _: &TogglePaneBroadcast, _window, cx| {
+                    if let Some(tab) = this.tabs.get(this.active) {
+                        tab.active_entry().0.toggle_broadcast_target();
+                        cx.notify();
+                    }
+                }))
                 .child({
                     let tab = &self.tabs[self.active];
                     let zoom_leaf = (tab.zoomed && tab.is_split())
@@ -2965,7 +3035,14 @@ impl Render for TabsWindow {
                         let menu = menu
                             .action_context(menu_focus.clone())
                             .menu("コピー", Box::new(TerminalCopy))
-                            .menu("ペースト", Box::new(TerminalPaste));
+                            .menu("ペースト", Box::new(TerminalPaste))
+                            .separator()
+                            // Marks THIS pane as a broadcast recipient
+                            // (selection broadcast) — the rust frame is
+                            // the state readout, so the label stays
+                            // stateless (render-time capture would go
+                            // stale on the right-click focus hop).
+                            .menu("ブロードキャスト対象を切替", Box::new(TogglePaneBroadcast));
                         if split {
                             menu.separator()
                                 .menu("ペインをタブへ分離", Box::new(PaneToTab))
