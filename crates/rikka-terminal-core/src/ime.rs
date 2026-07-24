@@ -25,6 +25,14 @@ pub trait ImeHost: 'static {
     fn ime_session(&self) -> Option<&TerminalSession>;
     /// Terminal font, for the caret-rect cell metrics.
     fn ime_font(&self) -> &str;
+    /// Deliver committed/typed text (WM_CHAR and IME commits land here).
+    /// Default: the focused session. Hosts that fan input out (broadcast
+    /// input) override this — it is the single typed-text choke point.
+    fn ime_commit(&self, text: &str) {
+        if let Some(session) = self.ime_session() {
+            session.send_bytes(text.as_bytes());
+        }
+    }
 }
 
 /// Reusable text-input handler entity for one terminal window.
@@ -89,9 +97,7 @@ impl<H: ImeHost> gpui::EntityInputHandler for TerminalIme<H> {
     ) {
         self.marked = None;
         if let Some(host) = self.host.upgrade() {
-            if let Some(session) = host.read(cx).ime_session() {
-                session.send_bytes(text.as_bytes());
-            }
+            host.read(cx).ime_commit(text);
         }
         cx.notify();
     }

@@ -702,6 +702,9 @@ struct Tab {
     /// Split-tab zoom: the focused pane temporarily fills the whole tab
     /// area. The tree keeps its shape — only rendering collapses.
     zoomed: bool,
+    /// Broadcast input: keystrokes, pastes and IME commits go to EVERY
+    /// pane of this tab (multi-server fan-out, wt/iTerm2's shape).
+    broadcast: bool,
 }
 
 /// One pane of a tab. `measured` is the painted size sink (from the pane
@@ -897,6 +900,7 @@ impl Tab {
             active_pane: 0,
             next_pane_id: 1,
             zoomed: false,
+            broadcast: false,
         }
     }
 
@@ -975,6 +979,7 @@ impl Tab {
         self.active_pane = self.root.first_leaf().map(|l| l.id).unwrap_or(0);
         if !self.is_split() {
             self.zoomed = false;
+            self.broadcast = false;
         }
         Some(removed)
     }
@@ -1142,6 +1147,12 @@ impl ImeHost for TabsWindow {
     fn ime_font(&self) -> &str {
         mono_font()
     }
+
+    // Typed text rides the broadcast fan-out (candidate-window geometry
+    // stays on the focused pane via ime_session).
+    fn ime_commit(&self, text: &str) {
+        self.send_input(text.as_bytes());
+    }
 }
 
 impl SelectionHost for TabsWindow {
@@ -1241,6 +1252,33 @@ impl TabsWindow {
             .map(|t| &t.active_entry().0.session)
     }
 
+    /// User input (encoded keystrokes, IME commits) to the focused pane —
+    /// or to EVERY pane of the active tab while its broadcast toggle is
+    /// on. Broadcast reuses the active pane's encoding: per-pane terminal
+    /// modes (DECCKM etc.) are not consulted for the copies.
+    fn send_input(&self, bytes: &[u8]) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        if tab.broadcast {
+            tab.for_each_entry(|e| e.0.session.send_bytes(bytes));
+        } else {
+            tab.active_entry().0.session.send_bytes(bytes);
+        }
+    }
+
+    /// [`Self::send_input`] for pastes (bracketed-paste aware per pane).
+    fn paste_input(&self, text: &str) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        if tab.broadcast {
+            tab.for_each_entry(|e| e.0.session.paste(text));
+        } else {
+            tab.active_entry().0.session.paste(text);
+        }
+    }
+
     /// Run one `[keys]` action — the single dispatch point for the
     /// configurable chords (keymap.rs).
     fn perform(&mut self, action: keymap::Action, window: &mut Window, cx: &mut Context<Self>) {
@@ -1280,9 +1318,8 @@ impl TabsWindow {
             Paste => {
                 if let Some(item) = cx.read_from_clipboard()
                     && let Some(text) = item.text()
-                    && let Some(s) = self.active_session()
                 {
-                    s.paste(&text);
+                    self.paste_input(&text);
                 }
             }
             CycleBack => self.cycle(false, cx),
@@ -1877,6 +1914,22 @@ impl TabsWindow {
                         .bg(gpui::rgba(0x0000002E)),
                 )
             })
+            // Broadcast input: every pane wears a rust-red frame — typing
+            // fans out to all of them, and that must never be a surprise.
+            .when(
+                self.tabs.get(self.active).is_some_and(|t| t.broadcast),
+                |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .border_2()
+                            .border_color(gpui::rgba(0xBE5A5070)),
+                    )
+                },
+            )
             // The grabbed pane's original fades, like a dragged tab's.
             .when(self.dragging_pane == Some(pane_id), |d| d.opacity(0.5))
             // Split tabs: a hover handle at the top center grabs this pane
@@ -2373,9 +2426,7 @@ impl Render for TabsWindow {
                         });
                     }
                     rikka_terminal_gpui_ime::ImeEvent::Commit(s) => {
-                        if let Some(session) = self.active_session() {
-                            session.send_bytes(s.as_bytes());
-                        }
+                        self.send_input(s.as_bytes());
                         self.ime.update(cx, |ime, cx| {
                             ime.marked = None;
                             cx.notify();
@@ -2533,6 +2584,14 @@ impl Render for TabsWindow {
                         .text_color(rgb(0xBE5A50))
                         .child("●")
                 });
+                // Broadcast indicator, paired with the panes' rust frame.
+                let bc_mark = tab.broadcast.then(|| {
+                    div()
+                        .mr(px(4.))
+                        .flex_shrink_0()
+                        .text_color(rgb(0xBE5A50))
+                        .child("»")
+                });
                 // Icon slot: while OSC 9;4 (or title-spinner) progress is
                 // active, a wt-style circular indicator takes the shell icon's
                 // place — but only on INACTIVE tabs. The active tab already
@@ -2585,6 +2644,7 @@ impl Render for TabsWindow {
                     .when(self.dragging_tab == Some(ix), |t| t.opacity(0.35))
                     .children(icon_el)
                     .children(rec_dot)
+                    .children(bc_mark)
                     .child(
                         div()
                             .flex_1()
@@ -2824,9 +2884,8 @@ impl Render for TabsWindow {
                 .on_action(cx.listener(|this, _: &TerminalPaste, _window, cx| {
                     if let Some(item) = cx.read_from_clipboard()
                         && let Some(text) = item.text()
-                        && let Some(s) = this.active_session()
                     {
-                        s.paste(&text);
+                        this.paste_input(&text);
                     }
                 }))
                 .on_action(cx.listener(|this, _: &PaneToTab, _window, cx| {
@@ -3039,9 +3098,8 @@ impl Render for TabsWindow {
                 if !m.control && m.shift && ks.key == "insert" {
                     if let Some(item) = cx.read_from_clipboard()
                         && let Some(text) = item.text()
-                        && let Some(s) = this.active_session()
                     {
-                        s.paste(&text);
+                        this.paste_input(&text);
                     }
                     cx.stop_propagation();
                     return;
@@ -3061,7 +3119,7 @@ impl Render for TabsWindow {
                 if let Some(s) = this.active_session() {
                     let mode = *s.term.lock().mode();
                     if let Some(bytes) = key_to_pty_bytes(ks, mode) {
-                        s.send_bytes(&bytes);
+                        this.send_input(&bytes);
                         cx.stop_propagation();
                     }
                 }
@@ -3258,6 +3316,13 @@ impl Render for TabsWindow {
                     .get(menu_ix)
                     .map(|t| t.primary().0.session.logging_active())
                     .unwrap_or(false);
+                // Broadcast toggle: split tabs only — on a single pane the
+                // fan-out is meaningless and the item would just confuse.
+                let broadcast = self
+                    .tabs
+                    .get(menu_ix)
+                    .filter(|t| t.is_split())
+                    .map(|t| t.broadcast);
                 let vw = window.viewport_size().width / px(1.);
                 let left = at_x.min(vw - 200.).max(0.);
                 let item = |id: &'static str, label: &'static str| {
@@ -3319,6 +3384,28 @@ impl Render for TabsWindow {
                                 },
                             )),
                         )
+                        .when_some(broadcast, |menu, on| {
+                            menu.child(
+                                item(
+                                    "tab-menu-broadcast",
+                                    if on {
+                                        "ブロードキャスト入力を停止"
+                                    } else {
+                                        "ブロードキャスト入力を開始"
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _: &ClickEvent, _win, cx| {
+                                        cx.stop_propagation();
+                                        if let Some(tab) = this.tabs.get_mut(menu_ix) {
+                                            tab.broadcast = !tab.broadcast;
+                                        }
+                                        this.tab_menu = None;
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        })
                         .child(
                             div()
                                 .h(px(1.))

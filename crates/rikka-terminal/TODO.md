@@ -232,8 +232,17 @@
       中央→250px 左が px 精度で追従。ズーム=Ctrl+Shift+Z([keys] zoom・
       RO ページ掲載)、Tab.zoomed でツリー不変のまま描画だけ折り畳み
       (くすみ金「ズーム中」バッジ・グリップ非表示・分割/ペイン閉じで自動
-      解除)。解除で非対称比率ごと復帰を実機確認。残: 分割タブの移送/複製・
-      broadcast input・クロス窓のゾーン表示。
+      解除)。解除で非対称比率ごと復帰を実機確認。v1.4 (2026-07-24 殿指示
+      「タブ右クリックあたりから」): **broadcast input** — タブ右クリック
+      メニューに「ブロードキャスト入力を開始/停止」（分割タブのみ表示・
+      状態追従ラベル）。ON でキーストローク（key_to_pty_bytes）・打鍵文字
+      （WM_CHAR→core ImeHost::ime_commit 新フック・rikka が send_input へ
+      override・SD はデフォルト実装で挙動不変）・IME 確定・ペースト 3 経路
+      が active タブ全ペインへ複製。encode は active ペインの mode 流用
+      （per-pane DECCKM 差は妥協）。**視覚=各ペイン錆朱 2px 枠＋タブ » 
+      マーク**（誤爆防止最優先）。単ペイン化で自動 OFF。実機で echo hi が
+      両ペインで実行されるのを確認。残: 分割タブの移送/複製・クロス窓の
+      ゾーン表示・broadcast のキー割当([keys])。
 - [ ] **Quick terminal** — グローバルホットキーで出すドロップダウン窓。
 - [ ] 細目: grapheme clustering（mode 2027）・minimum-contrast・正規表現
       URL 検出の網羅（OSC 8＋ベア URL 検出は実装済みの範囲）。内蔵テーマ集・
