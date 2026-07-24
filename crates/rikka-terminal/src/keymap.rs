@@ -82,6 +82,120 @@ impl Chord {
     fn matches(&self, m: &Modifiers, key: &str) -> bool {
         self.control == m.control && self.shift == m.shift && self.alt == m.alt && self.key == key
     }
+
+    /// Human spelling for the settings window ("Ctrl+Shift+T", "Ctrl+,").
+    fn display(&self) -> String {
+        let mut out = String::new();
+        if self.control {
+            out.push_str("Ctrl+");
+        }
+        if self.shift {
+            out.push_str("Shift+");
+        }
+        if self.alt {
+            out.push_str("Alt+");
+        }
+        out.push_str(&pretty_key(&self.key));
+        out
+    }
+}
+
+/// gpui key name → display form: arrows become glyphs, single chars
+/// uppercase, named keys capitalize ("tab" → "Tab", "f5" → "F5").
+fn pretty_key(key: &str) -> String {
+    match key {
+        "up" => "↑".into(),
+        "down" => "↓".into(),
+        "left" => "←".into(),
+        "right" => "→".into(),
+        "pageup" => "PageUp".into(),
+        "pagedown" => "PageDown".into(),
+        _ => {
+            let mut chars = key.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        }
+    }
+}
+
+/// Every action resolved to its effective chord: the `[keys]` override when
+/// it parses, the built-in default otherwise (with a warning — a typo never
+/// unbinds anything). `customized` = the effective chord differs from the
+/// default. Single table shared by the live keymap and the settings
+/// window's read-only listing, so the listing can never disagree with what
+/// actually fires.
+fn resolve_all(keys: &KeysSection) -> Vec<(Action, Chord, bool)> {
+    let ctrl_shift = |key: &str| Chord {
+        control: true,
+        shift: true,
+        alt: false,
+        key: key.into(),
+    };
+    // Settings opens with Ctrl+, (VSCode's chord). It cannot default into
+    // the Ctrl+Shift family: gpui-Windows normalizes Shift+comma to key
+    // "<" WITH SHIFT EATEN, so a ctrl+shift+"," binding never matches a
+    // real keystroke.
+    let ctrl_comma = Chord {
+        control: true,
+        shift: false,
+        alt: false,
+        key: ",".into(),
+    };
+    let table: [(&Option<String>, Chord, Action); 16] = [
+        (&keys.new_tab, ctrl_shift("t"), Action::NewTab),
+        (&keys.close_tab, ctrl_shift("w"), Action::CloseTab),
+        (&keys.detach_tab, ctrl_shift("d"), Action::DetachTab),
+        (&keys.eject_tab, ctrl_shift("e"), Action::EjectTab),
+        (&keys.move_tab, ctrl_shift("x"), Action::MoveTab),
+        (&keys.merge_all, ctrl_shift("a"), Action::MergeAll),
+        (&keys.toggle_logging, ctrl_shift("l"), Action::ToggleLogging),
+        (&keys.copy, ctrl_shift("c"), Action::Copy),
+        (&keys.paste, ctrl_shift("v"), Action::Paste),
+        (&keys.cycle_back, ctrl_shift("tab"), Action::CycleBack),
+        (
+            &keys.jump_prompt_prev,
+            ctrl_shift("up"),
+            Action::JumpPromptPrev,
+        ),
+        (
+            &keys.jump_prompt_next,
+            ctrl_shift("down"),
+            Action::JumpPromptNext,
+        ),
+        (&keys.search, ctrl_shift("f"), Action::Search),
+        (&keys.split_right, ctrl_shift("o"), Action::SplitRight),
+        (&keys.split_down, ctrl_shift("u"), Action::SplitDown),
+        (&keys.settings, ctrl_comma, Action::OpenSettings),
+    ];
+    table
+        .into_iter()
+        .map(|(configured, default, action)| {
+            let chord = match configured.as_deref().map(Chord::parse) {
+                Some(Some(c)) => c,
+                Some(None) => {
+                    log::warn!(
+                        "[keys] unparsable chord {:?} for {action:?} — keeping the default",
+                        configured.as_deref().unwrap_or_default()
+                    );
+                    default.clone()
+                }
+                None => default.clone(),
+            };
+            let customized = chord != default;
+            (action, chord, customized)
+        })
+        .collect()
+}
+
+/// Rows for the settings window's read-only key listing:
+/// `(action, "Ctrl+Shift+T", customized?)` in stable table order.
+pub fn display_rows(keys: &KeysSection) -> Vec<(Action, String, bool)> {
+    resolve_all(keys)
+        .into_iter()
+        .map(|(action, chord, customized)| (action, chord.display(), customized))
+        .collect()
 }
 
 pub struct KeyMap {
@@ -90,69 +204,14 @@ pub struct KeyMap {
 
 impl KeyMap {
     /// The defaults (today's hardcoded chords), each overridable by its
-    /// `[keys]` entry.
+    /// `[keys]` entry — built from [`resolve_all`]'s shared table.
     fn from_config(keys: &KeysSection) -> KeyMap {
-        let ctrl_shift = |key: &str| Chord {
-            control: true,
-            shift: true,
-            alt: false,
-            key: key.into(),
-        };
-        let defaults: [(&Option<String>, &str, Action); 15] = [
-            (&keys.new_tab, "t", Action::NewTab),
-            (&keys.close_tab, "w", Action::CloseTab),
-            (&keys.detach_tab, "d", Action::DetachTab),
-            (&keys.eject_tab, "e", Action::EjectTab),
-            (&keys.move_tab, "x", Action::MoveTab),
-            (&keys.merge_all, "a", Action::MergeAll),
-            (&keys.toggle_logging, "l", Action::ToggleLogging),
-            (&keys.copy, "c", Action::Copy),
-            (&keys.paste, "v", Action::Paste),
-            (&keys.cycle_back, "tab", Action::CycleBack),
-            (&keys.jump_prompt_prev, "up", Action::JumpPromptPrev),
-            (&keys.jump_prompt_next, "down", Action::JumpPromptNext),
-            (&keys.search, "f", Action::Search),
-            (&keys.split_right, "o", Action::SplitRight),
-            (&keys.split_down, "u", Action::SplitDown),
-        ];
-        let mut bindings = Vec::new();
-        for (configured, default_key, action) in defaults {
-            let chord = match configured.as_deref().map(Chord::parse) {
-                Some(Some(c)) => c,
-                Some(None) => {
-                    log::warn!(
-                        "[keys] unparsable chord {:?} for {action:?} — keeping the default",
-                        configured.as_deref().unwrap_or_default()
-                    );
-                    ctrl_shift(default_key)
-                }
-                None => ctrl_shift(default_key),
-            };
-            bindings.push((chord, action));
+        KeyMap {
+            bindings: resolve_all(keys)
+                .into_iter()
+                .map(|(action, chord, _)| (chord, action))
+                .collect(),
         }
-        // Settings opens with Ctrl+, (VSCode's chord). It cannot live in
-        // the Ctrl+Shift family above: gpui-Windows normalizes Shift+comma
-        // to key "<" WITH SHIFT EATEN, so a ctrl+shift+"," binding never
-        // matches a real keystroke.
-        let ctrl_comma = || Chord {
-            control: true,
-            shift: false,
-            alt: false,
-            key: ",".into(),
-        };
-        let settings_chord = match keys.settings.as_deref().map(Chord::parse) {
-            Some(Some(c)) => c,
-            Some(None) => {
-                log::warn!(
-                    "[keys] unparsable chord {:?} for OpenSettings — keeping the default",
-                    keys.settings.as_deref().unwrap_or_default()
-                );
-                ctrl_comma()
-            }
-            None => ctrl_comma(),
-        };
-        bindings.push((settings_chord, Action::OpenSettings));
-        KeyMap { bindings }
     }
 
     fn resolve(&self, m: &Modifiers, key: &str) -> Option<Action> {
@@ -246,6 +305,29 @@ mod tests {
             None,
             "alt must not match"
         );
+    }
+
+    #[test]
+    fn display_rows_spell_chords_and_flag_overrides() {
+        let rows = display_rows(&KeysSection::default());
+        let of = |a: Action| rows.iter().find(|(x, _, _)| *x == a).unwrap();
+        assert_eq!(of(Action::NewTab).1, "Ctrl+Shift+T");
+        assert!(!of(Action::NewTab).2, "default is not customized");
+        assert_eq!(of(Action::OpenSettings).1, "Ctrl+,");
+        assert_eq!(of(Action::JumpPromptPrev).1, "Ctrl+Shift+↑");
+        assert_eq!(of(Action::CycleBack).1, "Ctrl+Shift+Tab");
+
+        let keys = KeysSection {
+            new_tab: Some("alt+n".into()),
+            close_tab: Some("not a chord ~~~".into()),
+            ..Default::default()
+        };
+        let rows = display_rows(&keys);
+        let of = |a: Action| rows.iter().find(|(x, _, _)| *x == a).unwrap();
+        assert_eq!(of(Action::NewTab).1, "Alt+N");
+        assert!(of(Action::NewTab).2, "override is customized");
+        assert_eq!(of(Action::CloseTab).1, "Ctrl+Shift+W");
+        assert!(!of(Action::CloseTab).2, "typo keeps the default, unflagged");
     }
 
     #[test]

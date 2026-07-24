@@ -53,6 +53,7 @@ enum Page {
     Theme,
     Terminal,
     Logging,
+    Keys,
 }
 
 /// The text-editable fields (click to focus, type/backspace/Ctrl+V).
@@ -98,6 +99,9 @@ pub struct SettingsWindow {
     scheme_menu: bool,
     schemes: Vec<(String, rikka_terminal_core::theme::Palette)>,
     scheme_scroll: ScrollHandle,
+    /// The read-only key listing, resolved ONCE at window open from the
+    /// same table the live keymap uses (keymap::display_rows).
+    key_rows: Vec<(crate::keymap::Action, String, bool)>,
 }
 
 impl SettingsWindow {
@@ -125,6 +129,7 @@ impl SettingsWindow {
         };
         let focus = cx.focus_handle();
         window.focus(&focus);
+        let key_rows = crate::keymap::display_rows(&cfg.keys);
         Self {
             initial: v.clone(),
             v,
@@ -136,6 +141,7 @@ impl SettingsWindow {
             scheme_menu: false,
             schemes: crate::wt_schemes::catalog(rikka_terminal_core::theme::DEFAULT),
             scheme_scroll: ScrollHandle::default(),
+            key_rows,
         }
     }
 
@@ -828,6 +834,115 @@ impl SettingsWindow {
             ))
             .into_any_element()
     }
+
+    /// One read-only key line: label left, keycap-style chord right, an
+    /// accent dot marking `[keys]` overrides.
+    fn key_row(
+        label: &'static str,
+        chord: &str,
+        customized: bool,
+        c: &SearchColors,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .py(px(1.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(13.))
+                    .text_color(rgba((c.text << 8) | 0xC0))
+                    .child(label),
+            )
+            .when(customized, |d| {
+                d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(c.accent)))
+            })
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .px(px(7.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .bg(rgb(c.input_bg))
+                    .border_1()
+                    .border_color(rgb(c.input_border))
+                    .text_size(px(12.))
+                    .text_color(rgb(c.text))
+                    .child(chord.to_string()),
+            )
+    }
+
+    fn page_keys(&self, c: &SearchColors) -> AnyElement {
+        use crate::keymap::Action;
+        // UI spelling of each action; exhaustive so a new Action cannot
+        // ship without its listing label.
+        let label = |a: Action| match a {
+            Action::NewTab => "新しいタブ",
+            Action::CloseTab => "タブを閉じる（分割中はペイン）",
+            Action::DetachTab => "タブを新しい窓へ分離",
+            Action::EjectTab => "タブを別プロセスの窓へ分離",
+            Action::MoveTab => "タブを他の窓へ移動",
+            Action::MergeAll => "すべての窓を統合",
+            Action::ToggleLogging => "ログ開始/停止",
+            Action::Copy => "コピー",
+            Action::Paste => "貼り付け",
+            Action::CycleBack => "前のタブへ",
+            Action::JumpPromptPrev => "前のプロンプトへジャンプ",
+            Action::JumpPromptNext => "次のプロンプトへジャンプ",
+            Action::Search => "検索バー",
+            Action::SplitRight => "右に分割",
+            Action::SplitDown => "下に分割",
+            Action::OpenSettings => "設定を開く",
+        };
+        // The synonyms hardwired in the input path (main.rs) — not
+        // reassignable, listed so the confirmation is complete.
+        const FIXED: [(&'static str, &'static str); 7] = [
+            ("次のタブへ", "Ctrl+Tab / Ctrl+PageDown"),
+            ("前のタブへ", "Ctrl+PageUp"),
+            ("ペインのフォーカス移動（分割中）", "Alt+← ↑ ↓ →"),
+            ("コピー（同義）", "Ctrl+Insert"),
+            ("貼り付け（同義）", "Shift+Insert"),
+            ("スクロールバックを1ページ送る", "Shift+PageUp / PageDown"),
+            ("すべての窓を統合（同義）", "Ctrl+Shift+M"),
+        ];
+        let note = |text: &'static str| {
+            div()
+                .text_size(px(11.))
+                .text_color(rgba((c.text << 8) | 0x70))
+                .child(text)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(Self::page_title("キー操作", c))
+            .child(note(
+                "現在の割り当ての一覧（読み取り専用）。変更は config.toml の [keys] で。",
+            ))
+            .when(self.key_rows.iter().any(|(_, _, custom)| *custom), |d| {
+                d.child(note("● は config.toml で変更済みの割り当て。"))
+            })
+            .child(div().h(px(4.)))
+            .children(self.key_rows.iter().map(|(action, chord, customized)| {
+                Self::key_row(label(*action), chord, *customized, c)
+            }))
+            .child(
+                div()
+                    .mt(px(10.))
+                    .text_size(px(12.))
+                    .text_color(rgba((c.text << 8) | 0xA0))
+                    .child("固定ショートカット"),
+            )
+            .children(
+                FIXED
+                    .iter()
+                    .map(|(label, chord)| Self::key_row(label, chord, false, c)),
+            )
+            .into_any_element()
+    }
 }
 
 impl Render for SettingsWindow {
@@ -873,7 +988,8 @@ impl Render for SettingsWindow {
                             .child(self.nav_item(Page::Appearance, "外観", 0, cx))
                             .child(self.nav_item(Page::Theme, "テーマ", 1, cx))
                             .child(self.nav_item(Page::Terminal, "ターミナル", 2, cx))
-                            .child(self.nav_item(Page::Logging, "セッションログ", 3, cx)),
+                            .child(self.nav_item(Page::Logging, "セッションログ", 3, cx))
+                            .child(self.nav_item(Page::Keys, "キー操作", 4, cx)),
                     )
                     .child(
                         div()
@@ -888,6 +1004,7 @@ impl Render for SettingsWindow {
                                 Page::Theme => self.page_theme(&c, cx),
                                 Page::Terminal => self.page_terminal(&c, cx),
                                 Page::Logging => self.page_logging(&c, cx),
+                                Page::Keys => self.page_keys(&c),
                             })),
                     ),
             )
