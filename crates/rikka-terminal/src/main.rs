@@ -1137,6 +1137,10 @@ pub struct TabsWindow {
     /// (`false` = a, `true` = b) plus its orientation. Mouse moves on the
     /// window root steer the ratio while this is set.
     divider_drag: Option<(Vec<bool>, bool)>,
+    /// Window-wide broadcast: input fans out to every pane of EVERY tab
+    /// of this window (iTerm2's "all panes in all tabs"). Independent of
+    /// the per-tab toggle; either one being on broadcasts.
+    broadcast_all: bool,
 }
 
 impl ImeHost for TabsWindow {
@@ -1239,6 +1243,7 @@ impl TabsWindow {
             dragging_tab: None,
             dragging_pane: None,
             divider_drag: None,
+            broadcast_all: false,
         };
         for entry in initial {
             this.adopt(entry, cx);
@@ -1257,6 +1262,12 @@ impl TabsWindow {
     /// on. Broadcast reuses the active pane's encoding: per-pane terminal
     /// modes (DECCKM etc.) are not consulted for the copies.
     fn send_input(&self, bytes: &[u8]) {
+        if self.broadcast_all {
+            for tab in &self.tabs {
+                tab.for_each_entry(|e| e.0.session.send_bytes(bytes));
+            }
+            return;
+        }
         let Some(tab) = self.tabs.get(self.active) else {
             return;
         };
@@ -1269,6 +1280,12 @@ impl TabsWindow {
 
     /// [`Self::send_input`] for pastes (bracketed-paste aware per pane).
     fn paste_input(&self, text: &str) {
+        if self.broadcast_all {
+            for tab in &self.tabs {
+                tab.for_each_entry(|e| e.0.session.paste(text));
+            }
+            return;
+        }
         let Some(tab) = self.tabs.get(self.active) else {
             return;
         };
@@ -1917,7 +1934,7 @@ impl TabsWindow {
             // Broadcast input: every pane wears a rust-red frame — typing
             // fans out to all of them, and that must never be a surprise.
             .when(
-                self.tabs.get(self.active).is_some_and(|t| t.broadcast),
+                self.broadcast_all || self.tabs.get(self.active).is_some_and(|t| t.broadcast),
                 |d| {
                     d.child(
                         div()
@@ -2585,7 +2602,7 @@ impl Render for TabsWindow {
                         .child("●")
                 });
                 // Broadcast indicator, paired with the panes' rust frame.
-                let bc_mark = tab.broadcast.then(|| {
+                let bc_mark = (tab.broadcast || self.broadcast_all).then(|| {
                     div()
                         .mr(px(4.))
                         .flex_shrink_0()
@@ -3400,6 +3417,29 @@ impl Render for TabsWindow {
                                         if let Some(tab) = this.tabs.get_mut(menu_ix) {
                                             tab.broadcast = !tab.broadcast;
                                         }
+                                        this.tab_menu = None;
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        })
+                        // Cross-tab fan-out needs a second tab to mean
+                        // anything; single-pane tabs still qualify.
+                        .when(self.tabs.len() > 1, |menu| {
+                            let on = self.broadcast_all;
+                            menu.child(
+                                item(
+                                    "tab-menu-broadcast-all",
+                                    if on {
+                                        "全タブへのブロードキャストを停止"
+                                    } else {
+                                        "全タブへブロードキャスト"
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _: &ClickEvent, _win, cx| {
+                                        cx.stop_propagation();
+                                        this.broadcast_all = !this.broadcast_all;
                                         this.tab_menu = None;
                                         cx.notify();
                                     },

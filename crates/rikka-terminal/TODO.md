@@ -241,8 +241,13 @@
       が active タブ全ペインへ複製。encode は active ペインの mode 流用
       （per-pane DECCKM 差は妥協）。**視覚=各ペイン錆朱 2px 枠＋タブ » 
       マーク**（誤爆防止最優先）。単ペイン化で自動 OFF。実機で echo hi が
-      両ペインで実行されるのを確認。残: 分割タブの移送/複製・クロス窓の
-      ゾーン表示・broadcast のキー割当([keys])。
+      両ペインで実行されるのを確認。v1.4.1 (2026-07-24 殿「タブまたいでたら
+      ダメ？」): **全タブブロードキャスト** — メニュー第2項目「全タブへ
+      ブロードキャスト」（タブ2個以上で表示・window 単位 `broadcast_all`・
+      per-tab トグルと OR 合成）。この窓の全タブ全ペインへ複製（iTerm2
+      "all panes in all tabs" 相当・別窓プロセスは対象外）。ON 中は全タブに
+      » マーク。実機で裏タブにも echo hi 実行を確認。残: 分割タブの移送/
+      複製・クロス窓のゾーン表示・broadcast のキー割当([keys])。
 - [ ] **Quick terminal** — グローバルホットキーで出すドロップダウン窓。
 - [ ] 細目: grapheme clustering（mode 2027）・minimum-contrast・正規表現
       URL 検出の網羅（OSC 8＋ベア URL 検出は実装済みの範囲）。内蔵テーマ集・
