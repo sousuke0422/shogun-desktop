@@ -224,9 +224,16 @@
       タブ帯→タブ化（挿入バー共用）・他ペイン縁→組み替え（ゾーン共用・
       remove→split_at）・窓外→新窓。元ペインは opacity 0.5。TabDrag と
       対称の per-型リスナで既存視覚基盤を全再利用。実機: ハンドル出現→
-      タブ帯ドロップ→タブ化を確認。残: 分割線ドラッグリサイズ・分割タブ
-      の移送/複製・broadcast input・ズーム(単ペイン最大化)・クロス窓の
-      ゾーン表示。
+      タブ帯ドロップ→タブ化を確認。v1.3 (2026-07-24): **分割線ドラッグ
+      リサイズ＋ペインズーム**。リサイズ=Split ごとに 7px 透明グラブ帯を
+      absolute 重畳(1px 線は不変・paint 最後=ヒット最優先・ResizeLeftRight/
+      UpDown カーソル)、掴むと root の on_mouse_move が (path,横縦) から
+      split_rect(正規化)×ペイン領域で ratio 直算(clamp 0.1..0.9)。実機で
+      中央→250px 左が px 精度で追従。ズーム=Ctrl+Shift+Z([keys] zoom・
+      RO ページ掲載)、Tab.zoomed でツリー不変のまま描画だけ折り畳み
+      (くすみ金「ズーム中」バッジ・グリップ非表示・分割/ペイン閉じで自動
+      解除)。解除で非対称比率ごと復帰を実機確認。残: 分割タブの移送/複製・
+      broadcast input・クロス窓のゾーン表示。
 - [ ] **Quick terminal** — グローバルホットキーで出すドロップダウン窓。
 - [ ] 細目: grapheme clustering（mode 2027）・minimum-contrast・正規表現
       URL 検出の網羅（OSC 8＋ベア URL 検出は実装済みの範囲）。内蔵テーマ集・

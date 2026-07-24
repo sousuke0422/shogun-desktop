@@ -699,6 +699,9 @@ struct Tab {
     root: PaneNode,
     active_pane: usize,
     next_pane_id: usize,
+    /// Split-tab zoom: the focused pane temporarily fills the whole tab
+    /// area. The tree keeps its shape — only rendering collapses.
+    zoomed: bool,
 }
 
 /// One pane of a tab. `measured` is the painted size sink (from the pane
@@ -837,6 +840,54 @@ impl PaneNode {
             PaneNode::Empty => {}
         }
     }
+
+    /// The normalized (0..1) rect of the Split at `path` (`false` = a,
+    /// `true` = b at each hop). `None` when the path no longer leads to a
+    /// Split — the tree changed under a drag, which then no-ops.
+    fn split_rect(&self, path: &[bool]) -> Option<(f32, f32, f32, f32)> {
+        let mut node = self;
+        let (mut x, mut y, mut w, mut h) = (0.0, 0.0, 1.0, 1.0);
+        for &go_b in path {
+            let PaneNode::Split {
+                horizontal,
+                ratio,
+                a,
+                b,
+            } = node
+            else {
+                return None;
+            };
+            if *horizontal {
+                if go_b {
+                    x += w * ratio;
+                    w *= 1.0 - ratio;
+                } else {
+                    w *= ratio;
+                }
+            } else if go_b {
+                y += h * ratio;
+                h *= 1.0 - ratio;
+            } else {
+                h *= ratio;
+            }
+            node = if go_b { b } else { a };
+        }
+        matches!(node, PaneNode::Split { .. }).then_some((x, y, w, h))
+    }
+
+    /// Set the ratio of the Split at `path`; a stale path no-ops.
+    fn set_ratio(&mut self, path: &[bool], new_ratio: f32) {
+        let mut node = self;
+        for &go_b in path {
+            let PaneNode::Split { a, b, .. } = node else {
+                return;
+            };
+            node = if go_b { b } else { a };
+        }
+        if let PaneNode::Split { ratio, .. } = node {
+            *ratio = new_ratio;
+        }
+    }
 }
 
 impl Tab {
@@ -845,6 +896,7 @@ impl Tab {
             root: PaneNode::Leaf(Leaf::new(0, entry)),
             active_pane: 0,
             next_pane_id: 1,
+            zoomed: false,
         }
     }
 
@@ -885,7 +937,9 @@ impl Tab {
         }
     }
 
-    /// Split the focused pane; the new pane takes the focus.
+    /// Split the focused pane; the new pane takes the focus. Splitting
+    /// while zoomed unzooms — silently growing panes behind a zoom would
+    /// disorient.
     fn split_active(&mut self, horizontal: bool, entry: TabEntry) {
         let id = self.next_pane_id;
         self.next_pane_id += 1;
@@ -896,6 +950,7 @@ impl Tab {
         {
             self.active_pane = id;
         }
+        self.zoomed = false;
     }
 
     /// Split pane `target` with `entry` on the `new_first` side (a tab
@@ -910,6 +965,7 @@ impl Tab {
         {
             self.active_pane = id;
         }
+        self.zoomed = false;
     }
 
     /// Close the focused pane of a SPLIT tab (callers close the whole tab
@@ -917,6 +973,9 @@ impl Tab {
     fn close_active_pane(&mut self) -> Option<TabEntry> {
         let removed = self.root.remove(self.active_pane)?;
         self.active_pane = self.root.first_leaf().map(|l| l.id).unwrap_or(0);
+        if !self.is_split() {
+            self.zoomed = false;
+        }
         Some(removed)
     }
 
@@ -1069,6 +1128,10 @@ pub struct TabsWindow {
     /// (the drop handlers and the root mouse-up).
     dragging_tab: Option<usize>,
     dragging_pane: Option<usize>,
+    /// A live divider resize: the Split's path in the active tab's tree
+    /// (`false` = a, `true` = b) plus its orientation. Mouse moves on the
+    /// window root steer the ratio while this is set.
+    divider_drag: Option<(Vec<bool>, bool)>,
 }
 
 impl ImeHost for TabsWindow {
@@ -1164,6 +1227,7 @@ impl TabsWindow {
             strip_scroll: ScrollHandle::default(),
             dragging_tab: None,
             dragging_pane: None,
+            divider_drag: None,
         };
         for entry in initial {
             this.adopt(entry, cx);
@@ -1236,6 +1300,15 @@ impl TabsWindow {
             OpenSettings => settings_window::open(cx),
             SplitRight => self.split_active_pane(true, cx),
             SplitDown => self.split_active_pane(false, cx),
+            // Zoom: the focused pane fills the tab area; the tree stays.
+            ZoomPane => {
+                if let Some(tab) = self.tabs.get_mut(self.active)
+                    && tab.is_split()
+                {
+                    tab.zoomed = !tab.zoomed;
+                    cx.notify();
+                }
+            }
             Search => {
                 let sess = self
                     .tabs
@@ -1423,6 +1496,39 @@ impl TabsWindow {
         }
     }
 
+    /// Steer a live divider drag: the mouse position maps to the grabbed
+    /// Split's ratio (clamped so neither side can collapse away). The pane
+    /// area mirrors render's layout — the strip above, `px_1` at the sides.
+    fn drag_divider_to(
+        &mut self,
+        pos: gpui::Point<gpui::Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((path, horizontal)) = self.divider_drag.clone() else {
+            return;
+        };
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let Some((nx, ny, nw, nh)) = tab.root.split_rect(&path) else {
+            return;
+        };
+        let vp = window.viewport_size();
+        let ratio = if horizontal {
+            let area_w = (vp.width / px(1.) - 8.0).max(1.0);
+            let sx = 4.0 + nx * area_w;
+            (pos.x / px(1.) - sx) / (nw * area_w).max(1.0)
+        } else {
+            let area_h = (vp.height / px(1.) - TAB_STRIP_H).max(1.0);
+            let sy = TAB_STRIP_H + ny * area_h;
+            (pos.y / px(1.) - sy) / (nh * area_h).max(1.0)
+        }
+        .clamp(0.1, 0.9);
+        tab.root.set_ratio(&path, ratio);
+        cx.notify();
+    }
+
     /// A strip tab dropped onto a pane edge: the tab leaves the strip and
     /// joins the active tab as a new pane in that direction (wt/VSCode's
     /// editor-drop). Same-window, unsplit source tabs only (v1).
@@ -1553,6 +1659,7 @@ impl TabsWindow {
     fn render_pane_node(
         &self,
         node: &PaneNode,
+        path: Vec<bool>,
         active_pane: usize,
         tab_is_split: bool,
         cw: f32,
@@ -1561,7 +1668,9 @@ impl TabsWindow {
     ) -> gpui::AnyElement {
         match node {
             PaneNode::Empty => div().into_any_element(),
-            PaneNode::Leaf(leaf) => self.render_leaf(leaf, active_pane, tab_is_split, cw, ch, cx),
+            PaneNode::Leaf(leaf) => {
+                self.render_leaf(leaf, active_pane, tab_is_split, tab_is_split, cw, ch, cx)
+            }
             PaneNode::Split {
                 horizontal,
                 ratio,
@@ -1569,17 +1678,21 @@ impl TabsWindow {
                 b,
             } => {
                 let horizontal = *horizontal;
+                let ratio = *ratio;
+                let (mut path_a, mut path_b) = (path.clone(), path.clone());
+                path_a.push(false);
+                path_b.push(true);
                 let first = div()
                     .map(|d| {
                         if horizontal {
-                            d.w(gpui::relative(*ratio)).h_full()
+                            d.w(gpui::relative(ratio)).h_full()
                         } else {
-                            d.h(gpui::relative(*ratio)).w_full()
+                            d.h(gpui::relative(ratio)).w_full()
                         }
                     })
                     .min_w_0()
                     .min_h_0()
-                    .child(self.render_pane_node(a, active_pane, tab_is_split, cw, ch, cx));
+                    .child(self.render_pane_node(a, path_a, active_pane, tab_is_split, cw, ch, cx));
                 let divider = div()
                     .map(|d| {
                         if horizontal {
@@ -1594,9 +1707,40 @@ impl TabsWindow {
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
-                    .child(self.render_pane_node(b, active_pane, tab_is_split, cw, ch, cx));
+                    .child(self.render_pane_node(b, path_b, active_pane, tab_is_split, cw, ch, cx));
+                // The grab strip: an invisible 7px band centered on the 1px
+                // divider, painted last so it wins hit-testing over both
+                // children. Dragging it steers this Split's ratio (mouse
+                // moves land on the window root — see drag_divider_to).
+                let grab = div()
+                    .absolute()
+                    .map(|d| {
+                        if horizontal {
+                            d.left(gpui::relative(ratio))
+                                .ml(px(-3.))
+                                .top_0()
+                                .bottom_0()
+                                .w(px(7.))
+                                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                        } else {
+                            d.top(gpui::relative(ratio))
+                                .mt(px(-3.))
+                                .left_0()
+                                .right_0()
+                                .h(px(7.))
+                                .cursor(gpui::CursorStyle::ResizeUpDown)
+                        }
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _: &gpui::MouseDownEvent, _w, cx| {
+                            this.divider_drag = Some((path.clone(), horizontal));
+                            cx.stop_propagation();
+                        }),
+                    );
                 div()
                     .size_full()
+                    .relative()
                     .flex()
                     .map(|d| {
                         if horizontal {
@@ -1608,6 +1752,7 @@ impl TabsWindow {
                     .child(first)
                     .child(divider)
                     .child(second)
+                    .child(grab)
                     .into_any_element()
             }
         }
@@ -1615,12 +1760,16 @@ impl TabsWindow {
 
     /// One pane: grid + shared overlay, with its own painted-size PTY fit.
     /// The focused pane owns the caret, IME preedit and search highlight;
-    /// unfocused panes of a split get a subtle dim wash.
+    /// unfocused panes of a split get a subtle dim wash. `show_handle`
+    /// gates the top-center drag grip separately from the fit (a zoomed
+    /// pane keeps the split fit but hides the grip — drop-zone geometry
+    /// would lie while the tree is visually collapsed).
     fn render_leaf(
         &self,
         leaf: &Leaf,
         active_pane: usize,
         tab_is_split: bool,
+        show_handle: bool,
         cw: f32,
         ch: f32,
         cx: &mut Context<Self>,
@@ -1733,7 +1882,7 @@ impl TabsWindow {
             // Split tabs: a hover handle at the top center grabs this pane
             // (drag to the strip = tab, to another pane's edge = rearrange,
             // out of the window = new window).
-            .when(tab_is_split, |d| {
+            .when(show_handle, |d| {
                 let title = session
                     .title
                     .lock()
@@ -2688,7 +2837,43 @@ impl Render for TabsWindow {
                 }))
                 .child({
                     let tab = &self.tabs[self.active];
-                    self.render_pane_node(&tab.root, tab.active_pane, tab.is_split(), cw, ch, cx)
+                    let zoom_leaf = (tab.zoomed && tab.is_split())
+                        .then(|| tab.root.find(tab.active_pane))
+                        .flatten();
+                    if let Some(leaf) = zoom_leaf {
+                        // Zoomed: the focused pane alone fills the tab area
+                        // (fit stays per-pane/measured; the grip hides).
+                        div()
+                            .relative()
+                            .size_full()
+                            .child(self.render_leaf(leaf, tab.active_pane, true, false, cw, ch, cx))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(6.))
+                                    .right(px(10.))
+                                    .px(px(7.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(gpui::rgba(0x1F1E1CB0))
+                                    .border_1()
+                                    .border_color(gpui::rgba(0x45403A90))
+                                    .text_size(px(11.))
+                                    .text_color(gpui::rgba(0xC9A94EC0))
+                                    .child("ズーム中"),
+                            )
+                            .into_any_element()
+                    } else {
+                        self.render_pane_node(
+                            &tab.root,
+                            Vec::new(),
+                            tab.active_pane,
+                            tab.is_split(),
+                            cw,
+                            ch,
+                            cx,
+                        )
+                    }
                 })
                 // Right-click menu, same actions as the Ctrl+Shift chords.
                 // Attached to the pane — a plain flex div, NEVER a scroll
@@ -2744,9 +2929,15 @@ impl Render for TabsWindow {
                     this.dragging_pane = Some(ev.drag(cx).pane);
                 },
             ))
+            // Divider resize: moves steer the grabbed Split's ratio, any
+            // release drops it (the ratio is already applied live).
+            .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
+                this.drag_divider_to(ev.position, window, cx);
+            }))
             .on_mouse_up(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _ev, _w, cx| {
+                    this.divider_drag = None;
                     if this.dragging_tab.take().is_some() | this.dragging_pane.take().is_some() {
                         // A cancelled drag must repaint NOW — the faded
                         // source and the drop zones would linger otherwise.
@@ -2757,6 +2948,7 @@ impl Render for TabsWindow {
             .on_mouse_up_out(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _ev: &gpui::MouseUpEvent, window, cx| {
+                    this.divider_drag = None;
                     // A pane released outside the window detaches into a
                     // fresh window of this process.
                     if let Some(pane) = this.dragging_pane.take() {

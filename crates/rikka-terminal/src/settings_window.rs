@@ -895,6 +895,7 @@ impl SettingsWindow {
             Action::Search => "検索バー",
             Action::SplitRight => "右に分割",
             Action::SplitDown => "下に分割",
+            Action::ZoomPane => "ペインのズーム切替（分割中）",
             Action::OpenSettings => "設定を開く",
         };
         // The synonyms hardwired in the input path (main.rs) — not

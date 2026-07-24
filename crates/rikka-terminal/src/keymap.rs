@@ -38,6 +38,8 @@ pub enum Action {
     Search,
     SplitRight,
     SplitDown,
+    /// Maximize the focused pane of a split tab (toggle).
+    ZoomPane,
     OpenSettings,
 }
 
@@ -143,7 +145,7 @@ fn resolve_all(keys: &KeysSection) -> Vec<(Action, Chord, bool)> {
         alt: false,
         key: ",".into(),
     };
-    let table: [(&Option<String>, Chord, Action); 16] = [
+    let table: [(&Option<String>, Chord, Action); 17] = [
         (&keys.new_tab, ctrl_shift("t"), Action::NewTab),
         (&keys.close_tab, ctrl_shift("w"), Action::CloseTab),
         (&keys.detach_tab, ctrl_shift("d"), Action::DetachTab),
@@ -167,6 +169,7 @@ fn resolve_all(keys: &KeysSection) -> Vec<(Action, Chord, bool)> {
         (&keys.search, ctrl_shift("f"), Action::Search),
         (&keys.split_right, ctrl_shift("o"), Action::SplitRight),
         (&keys.split_down, ctrl_shift("u"), Action::SplitDown),
+        (&keys.zoom, ctrl_shift("z"), Action::ZoomPane),
         (&keys.settings, ctrl_comma, Action::OpenSettings),
     ];
     table
@@ -298,6 +301,10 @@ mod tests {
         assert_eq!(
             km.resolve(&mods(true, true, false), "tab"),
             Some(Action::CycleBack)
+        );
+        assert_eq!(
+            km.resolve(&mods(true, true, false), "z"),
+            Some(Action::ZoomPane)
         );
         assert_eq!(km.resolve(&mods(true, false, false), "t"), None);
         assert_eq!(

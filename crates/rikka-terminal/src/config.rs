@@ -217,6 +217,8 @@ pub struct KeysSection {
     pub split_right: Option<String>,
     #[serde(default)]
     pub split_down: Option<String>,
+    #[serde(default)]
+    pub zoom: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
