@@ -2677,6 +2677,7 @@ impl Render for TabsWindow {
                 .map(|(i, p)| (i, p.name.clone(), icons.get(i).cloned().flatten()))
                 .collect()
         };
+        let has_profiles = !profiles.is_empty();
         // Firefox-style tab overflow: tabs shrink to a 100px floor, then
         // scroll (caption buttons stay pinned) once even the floored tabs
         // plus [+]/⌄ can't fit left of the caption group and the arrows.
@@ -3460,13 +3461,18 @@ impl Render for TabsWindow {
                                     cx.notify();
                                 })),
                         )
-                        .child(
-                            div()
-                                .h(px(1.))
-                                .mx(px(8.))
-                                .my(px(3.))
-                                .bg(gpui::rgba(DIVIDER)),
-                        )
+                        .when(has_profiles, |menu| {
+                            // Divider between "設定..." and the profile list —
+                            // dropped when the list is empty (default config)
+                            // or it dangles under the lone settings entry.
+                            menu.child(
+                                div()
+                                    .h(px(1.))
+                                    .mx(px(8.))
+                                    .my(px(3.))
+                                    .bg(gpui::rgba(DIVIDER)),
+                            )
+                        })
                         .children(profiles.into_iter().map(|(idx, name, icon)| {
                             div()
                                 .id(("profile", idx))
