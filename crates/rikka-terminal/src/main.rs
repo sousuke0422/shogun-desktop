@@ -2166,7 +2166,7 @@ impl TabsWindow {
         drop_at: Option<(i32, i32)>,
         cx: &mut Context<Self>,
     ) {
-        let ix = drop_at.and_then(|pt| self.drop_index_at(pt, cx));
+        let ix = drop_at.and_then(|pt| self.drop_index_at(pt));
         self.adopt_at(entry, ix, cx);
     }
 
@@ -2174,7 +2174,7 @@ impl TabsWindow {
     /// `render`'s layout math (equal-width tabs, WinUI paddings) replayed
     /// against Win32 window metrics. `None` = not on this window, append.
     #[cfg(windows)]
-    fn drop_index_at(&self, pt: (i32, i32), cx: &App) -> Option<usize> {
+    fn drop_index_at(&self, pt: (i32, i32)) -> Option<usize> {
         use windows::Win32::Foundation::{POINT, RECT};
         use windows::Win32::Graphics::Gdi::ScreenToClient;
         use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -2206,8 +2206,7 @@ impl TabsWindow {
         let x = p.x as f32 / scale;
         // Mirror render(): avail / plus_w / needs_scroll / tab_w, then the
         // strip origin (pl_2 = 8, plus the left arrow when scrolling).
-        let profiles = cx.global::<hub::ProfileMenu>().0.profiles.len();
-        let plus_w = 32.0 + if profiles > 1 { 18.0 } else { 0.0 };
+        let plus_w = 32.0 + 18.0;
         let avail = width - 8.0 - (3.0 * 46.0) - (2.0 * 24.0);
         let needs_scroll = (self.tabs.len() as f32 * 100.0 + plus_w) > avail;
         let tab_w = ((avail - plus_w) / self.tabs.len().max(1) as f32).clamp(100.0, 240.0);
@@ -2678,11 +2677,12 @@ impl Render for TabsWindow {
                 .map(|(i, p)| (i, p.name.clone(), icons.get(i).cloned().flatten()))
                 .collect()
         };
-        let has_profile_menu = profiles.len() > 1;
         // Firefox-style tab overflow: tabs shrink to a 100px floor, then
         // scroll (caption buttons stay pinned) once even the floored tabs
         // plus [+]/⌄ can't fit left of the caption group and the arrows.
-        let plus_w = 32.0 + if has_profile_menu { 18.0 } else { 0.0 };
+        // The ⌄ is always shown: its menu carries the "設定..." entry, so a
+        // single-profile setup must not lose it.
+        let plus_w = 32.0 + 18.0;
         let avail = (vp.width / px(1.)) - 8.0 - (3.0 * 46.0) - (2.0 * 24.0);
         let needs_scroll = (self.tabs.len() as f32 * 100.0 + plus_w) > avail;
         // WinUI TabView (Files/wt) sizing: EQUAL widths regardless of the
@@ -2916,34 +2916,34 @@ impl Render for TabsWindow {
                         this.new_tab(cx);
                     })),
             )
-            .when(has_profile_menu, |strip| {
-                // ChevronDown next to [+]: opens the profile list (wt-style
-                // split new-tab button).
-                strip.child(
-                    div()
-                        .id("tab-new-menu")
-                        .w(px(18.))
-                        .h(px(24.))
-                        // Breathing room from [+]: they are distinct actions
-                        // (new default tab vs. pick a profile), not a merged
-                        // split button.
-                        .ml(px(6.))
-                        .mb(px((TAB_H - 24.0) / 2.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(4.))
-                        .font_family("Segoe MDL2 Assets")
-                        .text_size(px(8.))
-                        .text_color(gpui::rgba(TEXT_SECONDARY))
-                        .hover(|t| t.bg(gpui::rgba(SUBTLE_HOVER)).text_color(rgb(TEXT_PRIMARY)))
-                        .child("\u{E70D}")
-                        .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
-                            this.profile_menu = !this.profile_menu;
-                            cx.notify();
-                        })),
-                )
-            })
+            .child(
+                // ChevronDown next to [+]: opens the profile list plus the
+                // "設定..." entry (wt-style split new-tab button). Always
+                // shown — with a single profile it is still the mouse path
+                // to settings.
+                div()
+                    .id("tab-new-menu")
+                    .w(px(18.))
+                    .h(px(24.))
+                    // Breathing room from [+]: they are distinct actions
+                    // (new default tab vs. pick a profile), not a merged
+                    // split button.
+                    .ml(px(6.))
+                    .mb(px((TAB_H - 24.0) / 2.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .font_family("Segoe MDL2 Assets")
+                    .text_size(px(8.))
+                    .text_color(gpui::rgba(TEXT_SECONDARY))
+                    .hover(|t| t.bg(gpui::rgba(SUBTLE_HOVER)).text_color(rgb(TEXT_PRIMARY)))
+                    .child("\u{E70D}")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
+                        this.profile_menu = !this.profile_menu;
+                        cx.notify();
+                    })),
+            )
             .child(
                 // Trailing drag filler INSIDE the viewport: draggable empty
                 // space when tabs are few; collapses to zero (and the tabs
