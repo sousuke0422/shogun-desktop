@@ -62,10 +62,13 @@ mod imp {
                 return;
             };
             // Resolve (and cache) our window by exact title; re-resolve if the
-            // cached HWND stopped answering (window closed / title moved on).
+            // cached HWND stopped answering or stopped being OURS — Windows
+            // recycles HWND values, so a handle that still answers `IsWindow`
+            // may belong to a different (even foreign) window by now.
+            let want: Vec<u16> = title.encode_utf16().collect();
             let cached_ok = matches!(
                 inner.windows.get(title),
-                Some(e) if unsafe { IsWindow(Some(HWND(e.hwnd as _))).as_bool() }
+                Some(e) if window_is_ours(e.hwnd, &want)
             );
             if !cached_ok {
                 inner.windows.remove(title);
@@ -119,6 +122,32 @@ mod imp {
         }
     }
 
+    /// The handle still identifies a window of THIS process wearing `want`
+    /// as its title — `IsWindow` alone is liveness, not identity.
+    fn window_is_ours(hwnd: isize, want: &[u16]) -> bool {
+        let hwnd = HWND(hwnd as _);
+        if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            return false;
+        }
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        pid == unsafe { GetCurrentProcessId() } && title_matches(hwnd, want)
+    }
+
+    /// Title compare against `GetWindowTextW`'s bounded copy. A wanted title
+    /// longer than the buffer (OSC titles easily exceed 255 UTF-16 units) can
+    /// only ever match on the full truncated prefix — without this tolerance
+    /// such windows never resolve and re-enumerate on every update.
+    fn title_matches(hwnd: HWND, want: &[u16]) -> bool {
+        let mut buf = [0u16; 256];
+        let len = unsafe { GetWindowTextW(hwnd, &mut buf) } as usize;
+        if want.len() <= buf.len() - 1 {
+            buf[..len] == want[..]
+        } else {
+            len == buf.len() - 1 && buf[..len] == want[..len]
+        }
+    }
+
     /// First visible top-level window of this process whose title matches
     /// exactly.
     fn find_window_by_title(title: &str) -> Option<isize> {
@@ -134,9 +163,7 @@ mod imp {
             if pid != search.pid || !unsafe { IsWindowVisible(hwnd) }.as_bool() {
                 return BOOL(1);
             }
-            let mut buf = [0u16; 256];
-            let len = unsafe { GetWindowTextW(hwnd, &mut buf) } as usize;
-            if buf[..len] == search.want[..] {
+            if title_matches(hwnd, &search.want) {
                 search.found = Some(hwnd.0 as isize);
                 return BOOL(0);
             }

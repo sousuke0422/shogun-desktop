@@ -73,6 +73,12 @@ struct Shared {
     /// A commit happened; the document must be reset to empty at the next
     /// drain (outside any TSF lock), announced via `OnTextChange`.
     needs_reset: bool,
+    /// Length of the `text` prefix already delivered as a Commit and awaiting
+    /// that deferred reset. A TIP that starts the NEXT composition before the
+    /// app drains appends after this prefix — event serialization must skip
+    /// it, or the committed text shows again inside the new preedit (and a
+    /// follow-up commit would deliver it to the PTY twice).
+    committed: usize,
 }
 
 type SharedHandle = Rc<RefCell<Shared>>;
@@ -91,6 +97,7 @@ impl Shared {
             composing: false,
             events: Vec::new(),
             needs_reset: false,
+            committed: 0,
         }
     }
 
@@ -114,10 +121,17 @@ impl Shared {
         self.text.len()
     }
 
+    /// The document tail that is still preedit — everything after the
+    /// committed-and-awaiting-reset prefix (clamped: a TIP may splice into
+    /// the committed region before the deferred reset lands).
+    fn pending_tail(&self) -> &[u16] {
+        &self.text[self.committed.min(self.text.len())..]
+    }
+
     /// Queue a preedit update, coalescing consecutive preedits (each keystroke
     /// otherwise queues a full copy).
     fn push_preedit(&mut self) {
-        let s = String::from_utf16_lossy(&self.text);
+        let s = String::from_utf16_lossy(self.pending_tail());
         if let Some(ImeEvent::Preedit(last)) = self.events.last_mut() {
             *last = s;
         } else {
@@ -282,6 +296,7 @@ impl crate::Backend for WindowsTsf {
             state.composing = false;
             state.events.clear();
             state.needs_reset = false;
+            state.committed = 0;
         }
         // A failed activation leaves us in the pre-focus (IMM32) state rather
         // than a half-focused one, so input keeps working.
@@ -308,6 +323,7 @@ impl crate::Backend for WindowsTsf {
         // delivered to whatever gets focus next would go to the wrong PTY.
         state.events.clear();
         state.needs_reset = false;
+        state.committed = 0;
     }
 
     fn take_events(&mut self) -> Vec<ImeEvent> {
@@ -326,6 +342,7 @@ impl crate::Backend for WindowsTsf {
                 state.text.clear();
                 state.selection = 0..0;
                 state.needs_reset = false;
+                state.committed = 0;
             }
             (events, reset_len, state.sink.clone())
         };
@@ -439,16 +456,18 @@ impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
     fn OnEndComposition(&self, _pcomposition: Ref<'_, ITfCompositionView>) -> WindowsResult<()> {
         let mut state = self.state()?;
         state.composing = false;
-        let text = String::from_utf16_lossy(&state.text);
+        // Only the tail past any commit still awaiting its deferred reset is
+        // this composition — committing the whole document would deliver the
+        // previous commit to the PTY a second time.
+        let text = String::from_utf16_lossy(state.pending_tail());
         crate::tsf_log!("store: OnEndComposition ({} u16)", state.text.len());
         if text.is_empty() {
             // Cancelled composition: just clear any preedit the app shows.
             state.push_preedit();
         } else {
-            // With the document reset after every commit, the whole document
-            // is exactly the finished composition.
             state.events.push(ImeEvent::Commit(text));
             state.needs_reset = true;
+            state.committed = state.len();
         }
         drop(state);
         crate::wake();
@@ -708,10 +727,13 @@ impl ITextStoreACP_Impl for TextStore_Impl {
             state.push_preedit();
         } else if new_len > 0 {
             // Direct insertion without a composition (e.g. some TIPs commit
-            // punctuation or reconversion results straight in).
+            // punctuation or reconversion results straight in). Everything in
+            // the document is delivered now — mark it all committed so a
+            // following composition serializes only its own tail.
             let committed = String::from_utf16_lossy(&state.text[start..start + new_len]);
             state.events.push(ImeEvent::Commit(committed));
             state.needs_reset = true;
+            state.committed = state.len();
         }
         drop(state);
         crate::wake();

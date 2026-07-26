@@ -1187,6 +1187,13 @@ pub fn render_grid(
                             ));
                         }
 
+                        // SGR 8 (hidden) / SGR 5-6 blink off-phase: bg is
+                        // painted, ink is not — the geometry path included
+                        // (a hidden ▄ must erase like a hidden glyph).
+                        if run.style.hidden || (run.style.blink && blink_off) {
+                            continue;
+                        }
+
                         if run.use_geom {
                             // ── Box drawing / block elements as filled quads ───
                             let mut x_off = x;
@@ -1223,12 +1230,6 @@ pub fn render_grid(
                                 }
                                 x_off += char_cw;
                             }
-                            continue;
-                        }
-
-                        // SGR 8 (hidden) / SGR 5-6 blink off-phase: bg is
-                        // painted, ink is not.
-                        if run.style.hidden || (run.style.blink && blink_off) {
                             continue;
                         }
 
