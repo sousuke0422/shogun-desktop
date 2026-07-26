@@ -1214,8 +1214,14 @@ pub fn render_grid(
             // draws nothing. A blinking cursor (DECSCUSR 1/3/5, DECSET 12)
             // skips its off phase entirely — same clock as SGR blink.
             let cursor_here = row_idx == cursor_row && !(snap.cursor_blink && blink_off);
+            // Cursor column snapped to its base cell: parked on a wide
+            // char's spacer or past the row end (pending-wrap) the raw
+            // column would build no cursor run at all (the run builder
+            // drops spacers) and a thin cursor would sit on the glyph's
+            // right half.
+            let row_cursor_col = cursor_base_col(row, cursor_col);
             let cur_col = if cursor_here && cursor_shape == crate::CursorShapeKind::Block {
-                Some(cursor_col)
+                Some(row_cursor_col)
             } else {
                 None
             };
@@ -1223,8 +1229,8 @@ pub fn render_grid(
             // cell's left edge, underline = bar along its bottom).
             let thin_cursor = if cursor_here {
                 match cursor_shape {
-                    crate::CursorShapeKind::Beam => Some((cursor_col, true)),
-                    crate::CursorShapeKind::Underline => Some((cursor_col, false)),
+                    crate::CursorShapeKind::Beam => Some((row_cursor_col, true)),
+                    crate::CursorShapeKind::Underline => Some((row_cursor_col, false)),
                     _ => None,
                 }
             } else {
@@ -1265,6 +1271,23 @@ pub fn render_grid(
             } else {
                 None
             };
+            // Block cursor sitting on an image cell: the reverse-video block
+            // paints under the image tiles, so it must be restated on top
+            // (thin cursors already paint after the images). Resolved here —
+            // the paint closure owns no row borrow.
+            let cursor_image_marker = cur_col
+                .filter(|&c| {
+                    image_runs
+                        .iter()
+                        .any(|(irun, _)| (irun.c0..irun.c1).contains(&c))
+                })
+                .map(|c| {
+                    let wcells = row
+                        .get(c)
+                        .map(|cell| usize::from(cell.display_width).max(1))
+                        .unwrap_or(1);
+                    (c, wcells)
+                });
             let font_name = font_name.clone();
 
             canvas(
@@ -1568,6 +1591,37 @@ pub fn render_grid(
                         });
                     }
 
+                    // Block cursor over an image: translucent contrast wash +
+                    // hairline outline, so the cursor position stays visible
+                    // where the tiles just covered its reverse-video block.
+                    if let Some((ccol, wcells)) = cursor_image_marker {
+                        let cx0 = ox + ccol as f32 * cw;
+                        let w = wcells as f32 * cw;
+                        let outline = default_fg();
+                        let wash = Rgba { a: 0.4, ..outline };
+                        window.paint_quad(fill(
+                            Bounds {
+                                origin: point(px(cx0), px(oy)),
+                                size: size(px(w), px(ch)),
+                            },
+                            wash,
+                        ));
+                        for (bx, by, bw, bh) in [
+                            (cx0, oy, w, 1.0),
+                            (cx0, oy + ch - 1.0, w, 1.0),
+                            (cx0, oy, 1.0, ch),
+                            (cx0 + w - 1.0, oy, 1.0, ch),
+                        ] {
+                            window.paint_quad(fill(
+                                Bounds {
+                                    origin: point(px(bx), px(by)),
+                                    size: size(px(bw), px(bh)),
+                                },
+                                outline,
+                            ));
+                        }
+                    }
+
                     if let Some((c0, c1)) = sel_cols {
                         let s = crate::theme::selection();
                         // Painted translucent (alpha 0x80) over the row's ink
@@ -1661,15 +1715,42 @@ pub fn render_grid(
                             &[text_run],
                             None,
                         );
-                        let origin = point(px(ox + cursor_col as f32 * cw), px(oy));
-                        let _ = line.paint_background(origin, line_height, window, cx);
-                        let _ = line.paint(origin, line_height, window, cx);
+                        let origin = point(px(ox + row_cursor_col as f32 * cw), px(oy));
+                        // Clipped to the grid's remaining span: the line is
+                        // natural-width (no force_width), so a long
+                        // composition near the right edge would otherwise
+                        // spill past the row into neighboring chrome.
+                        let mask = gpui::ContentMask {
+                            bounds: Bounds {
+                                origin,
+                                size: size(
+                                    px(grid_cols.saturating_sub(row_cursor_col) as f32 * cw),
+                                    px(ch),
+                                ),
+                            },
+                        };
+                        window.with_content_mask(Some(mask), |window| {
+                            let _ = line.paint_background(origin, line_height, window, cx);
+                            let _ = line.paint(origin, line_height, window, cx);
+                        });
                     }
                 },
             )
             .w(px(cw * total_cols.max(1) as f32))
             .h(px(ch))
         }))
+}
+
+/// Snap a cursor column off a wide char's spacer (`display_width == 0`)
+/// and clamp it into the row: the run builder drops spacer cells, so the
+/// raw column would never produce a cursor run, and pending-wrap parks
+/// the emulator cursor one past the last column.
+fn cursor_base_col(cells: &[SnapshotCell], col: usize) -> usize {
+    let mut c = col.min(cells.len().saturating_sub(1));
+    while c > 0 && cells.get(c).is_some_and(|cell| cell.display_width == 0) {
+        c -= 1;
+    }
+    c
 }
 
 /// Merge adjacent cells with identical styling into [`Run`]s.
