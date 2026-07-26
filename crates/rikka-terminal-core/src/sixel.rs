@@ -257,8 +257,13 @@ pub fn decode(data: &[u8]) -> Option<SixelImage> {
     palette.resize(256, Rgb { r: 0, g: 0, b: 0 });
 
     let mut canvas: Vec<u8> = Vec::new(); // RGBA
+    // Allocation dims (geometric over-growth allowed) vs the logical extent
+    // every draw/raster call actually asked for — output sizing must use the
+    // logical pair, or the over-allocation would pad the produced image.
     let mut canvas_w: usize = 0;
     let mut canvas_h: usize = 0;
+    let mut logical_w: usize = 0;
+    let mut logical_h: usize = 0;
 
     let mut x: usize = 0;
     let mut band: usize = 0; // each band is 6 pixels tall
@@ -269,19 +274,29 @@ pub fn decode(data: &[u8]) -> Option<SixelImage> {
     let mut i = 0;
 
     // Grow the canvas to hold at least (w, h). Reallocates row-major.
+    #[allow(clippy::too_many_arguments)]
     fn ensure_size(
         canvas: &mut Vec<u8>,
         canvas_w: &mut usize,
         canvas_h: &mut usize,
+        logical_w: &mut usize,
+        logical_h: &mut usize,
         w: usize,
         h: usize,
     ) -> bool {
         let (w, h) = (w.min(MAX_WIDTH), h.min(MAX_HEIGHT));
+        *logical_w = (*logical_w).max(w);
+        *logical_h = (*logical_h).max(h);
         if w <= *canvas_w && h <= *canvas_h {
             return true;
         }
-        let new_w = w.max(*canvas_w);
-        let new_h = h.max(*canvas_h);
+        // Grow the ALLOCATION geometrically: without raster attributes every
+        // 6px band used to reallocate + copy the whole canvas, O(n²) bytes
+        // over the image height — a large sixel stalled the reader thread
+        // for seconds. Output sizing reads the logical dims, so the slack
+        // never pads the produced image.
+        let new_w = w.max((*canvas_w * 2).min(MAX_WIDTH));
+        let new_h = h.max((*canvas_h * 2).min(MAX_HEIGHT));
         let mut next = vec![0u8; new_w * new_h * 4];
         for row in 0..*canvas_h {
             let src = row * *canvas_w * 4;
@@ -326,7 +341,15 @@ pub fn decode(data: &[u8]) -> Option<SixelImage> {
                     pv = number(data, &mut i);
                 }
                 if ph > 0 && pv > 0 {
-                    ensure_size(&mut canvas, &mut canvas_w, &mut canvas_h, ph, pv);
+                    ensure_size(
+                        &mut canvas,
+                        &mut canvas_w,
+                        &mut canvas_h,
+                        &mut logical_w,
+                        &mut logical_h,
+                        ph,
+                        pv,
+                    );
                 }
             }
             b'#' => {
@@ -364,6 +387,8 @@ pub fn decode(data: &[u8]) -> Option<SixelImage> {
                         &mut canvas,
                         &mut canvas_w,
                         &mut canvas_h,
+                        &mut logical_w,
+                        &mut logical_h,
                         &mut x,
                         band,
                         c,
@@ -388,6 +413,8 @@ pub fn decode(data: &[u8]) -> Option<SixelImage> {
                     &mut canvas,
                     &mut canvas_w,
                     &mut canvas_h,
+                    &mut logical_w,
+                    &mut logical_h,
                     &mut x,
                     band,
                     b,
@@ -407,6 +434,8 @@ pub fn decode(data: &[u8]) -> Option<SixelImage> {
         canvas: &mut Vec<u8>,
         canvas_w: &mut usize,
         canvas_h: &mut usize,
+        logical_w: &mut usize,
+        logical_h: &mut usize,
         x: &mut usize,
         band: usize,
         ch: u8,
@@ -431,7 +460,9 @@ pub fn decode(data: &[u8]) -> Option<SixelImage> {
         };
         let needed_h = if bits == 0 { y0 + 1 } else { y0 + tall.min(6) };
         let needed_w = (*x + repeat).min(MAX_WIDTH);
-        ensure_size(canvas, canvas_w, canvas_h, needed_w, needed_h);
+        ensure_size(
+            canvas, canvas_w, canvas_h, logical_w, logical_h, needed_w, needed_h,
+        );
         if bits != 0 {
             for dy in 0..6usize {
                 if bits & (1 << dy) == 0 {
@@ -459,20 +490,20 @@ pub fn decode(data: &[u8]) -> Option<SixelImage> {
         *x += repeat;
     }
 
-    // Prefer the raster-declared size when present; otherwise trim to the
-    // painted extent.
-    let out_w = if canvas_w > 0 && canvas_h > 0 && max_x == 0 && max_y == 0 {
+    // Prefer the raster/traversed extent when present; otherwise trim to the
+    // painted extent. Logical dims, NOT the (possibly over-grown) allocation.
+    let out_w = if logical_w > 0 && logical_h > 0 && max_x == 0 && max_y == 0 {
         // Nothing painted at all.
         return None;
     } else if max_x == 0 {
-        canvas_w
+        logical_w
     } else {
-        max_x.max(canvas_w.min(MAX_WIDTH))
+        max_x.max(logical_w.min(MAX_WIDTH))
     };
     let out_h = if max_y == 0 {
-        canvas_h
+        logical_h
     } else {
-        max_y.max(canvas_h.min(MAX_HEIGHT))
+        max_y.max(logical_h.min(MAX_HEIGHT))
     };
     if out_w == 0 || out_h == 0 {
         return None;

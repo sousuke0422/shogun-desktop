@@ -416,6 +416,9 @@ pub struct StoredImage {
     /// Placement size in cells (`c=` / `r=`); 0 until a placement arrives.
     pub cols: u16,
     pub rows: u16,
+    /// `I=` image number from the transmission (0 = none) — `d=n` deletes
+    /// by it. Not carried across a tab move (numbers are transient).
+    pub number: u32,
 }
 
 #[derive(Default)]
@@ -510,6 +513,7 @@ impl KittyImageStore {
                 image: Arc::new(RenderImage::new(vec![Frame::new(img)])),
                 cols,
                 rows,
+                number: 0,
             },
         );
         true
@@ -532,6 +536,24 @@ impl KittyImageStore {
         if let Some(old) = inner.map.remove(&id) {
             inner.bytes -= image_bytes(&old.image);
             inner.order.retain(|&i| i != id);
+        }
+    }
+
+    /// Remove every image transmitted with `I=number` (numbers are not
+    /// unique, so this may delete several).
+    fn remove_by_number(&self, number: u32) {
+        let mut inner = self.inner.lock();
+        let ids: Vec<u32> = inner
+            .map
+            .iter()
+            .filter(|(_, img)| img.number == number)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in ids {
+            if let Some(old) = inner.map.remove(&id) {
+                inner.bytes -= image_bytes(&old.image);
+                inner.order.retain(|&i| i != id);
+            }
         }
     }
 
@@ -792,8 +814,17 @@ impl KittyGraphics {
                 // Lower/upper case selectors behave the same here — we keep
                 // no cursor placements, only image data.
                 match cmd.delete.to_ascii_lowercase() {
-                    b'i' | b'n' if cmd.id != 0 => self.store.remove(cmd.id),
-                    _ => self.store.clear(),
+                    // Absent `d=` defaults to "all" per spec.
+                    0 | b'a' => self.store.clear(),
+                    b'i' if cmd.id != 0 => self.store.remove(cmd.id),
+                    // `d=n` selects by IMAGE NUMBER (`I=`), which parses
+                    // into `cmd.number` — matching on `cmd.id` made every
+                    // number-scoped delete fall through to clear().
+                    b'n' if cmd.number != 0 => self.store.remove_by_number(cmd.number),
+                    // Selectors we keep no state for (cursor/cell/z-index
+                    // scoped placements): deleting nothing beats deleting
+                    // EVERY image, which is what the old fallthrough did.
+                    _ => {}
                 }
                 None
             }
@@ -811,9 +842,20 @@ impl KittyGraphics {
                         image: Arc::new(image),
                         cols: cmd.cols as u16,
                         rows: cmd.rows as u16,
+                        number: cmd.number,
                     },
                 );
-                respond(&cmd, "OK")
+                if cmd.action == b'T' && !cmd.unicode {
+                    // CLASSIC transmit+display wants a cursor placement,
+                    // which we do not implement (`a=T,U=1` virtual and
+                    // `a=p,U=1` placements render via placeholder cells and
+                    // stay OK). The image IS stored, so a later a=p can
+                    // still show it — but answering OK left classic clients
+                    // (icat, timg) believing an invisible image displayed.
+                    respond(&cmd, "ENOTSUPPORTED:only virtual placements (a=p,U=1)")
+                } else {
+                    respond(&cmd, "OK")
+                }
             }
             Err(msg) => respond(&cmd, &msg),
         }
@@ -995,7 +1037,7 @@ mod tests {
         let b64 = base64::engine::general_purpose::STANDARD.encode(data);
         let (head, tail) = b64.split_at(4);
         assert!(
-            kg.apply(format!("Ga=T,i=7,f=32,s=1,v=1,m=1;{head}").as_bytes())
+            kg.apply(format!("Ga=T,U=1,i=7,f=32,s=1,v=1,m=1;{head}").as_bytes())
                 .is_none()
         );
         let resp = kg.apply(format!("Ga=T,i=7,m=0;{tail}").as_bytes()).unwrap();
@@ -1041,11 +1083,42 @@ mod tests {
     }
 
     #[test]
+    fn classic_transmit_and_display_reports_unsupported() {
+        let store = Arc::new(KittyImageStore::default());
+        let mut kg = KittyGraphics::new(Arc::clone(&store));
+        let b64 = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3, 255]);
+        // No U=1: we cannot place at the cursor — the image is stored for a
+        // later a=p, but the response must not claim it was displayed.
+        let resp = kg
+            .apply(format!("Ga=T,i=11,f=32,s=1,v=1;{b64}").as_bytes())
+            .unwrap();
+        assert!(resp.starts_with(b"\x1b_Gi=11;ENOTSUPPORTED"));
+        assert!(store.get(11).is_some());
+    }
+
+    #[test]
+    fn delete_by_number_removes_only_matches() {
+        let store = Arc::new(KittyImageStore::default());
+        let mut kg = KittyGraphics::new(Arc::clone(&store));
+        let b64 = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3, 255]);
+        kg.apply(format!("Ga=t,i=5,I=3,f=32,s=1,v=1;{b64}").as_bytes());
+        kg.apply(format!("Ga=t,i=6,f=32,s=1,v=1;{b64}").as_bytes());
+        // d=n targets the image NUMBER (I=), not the id — it used to fall
+        // through to clear() and delete every image.
+        assert!(kg.apply(b"Ga=d,d=n,I=3;").is_none());
+        assert!(store.get(5).is_none());
+        assert!(store.get(6).is_some());
+        // Selectors we keep no state for delete nothing (not everything).
+        assert!(kg.apply(b"Ga=d,d=z;").is_none());
+        assert!(store.get(6).is_some());
+    }
+
+    #[test]
     fn quiet_suppresses_responses() {
         let mut kg = KittyGraphics::new(Arc::new(KittyImageStore::default()));
         let b64 = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3, 255]);
         assert!(
-            kg.apply(format!("Ga=T,i=5,q=1,f=32,s=1,v=1;{b64}").as_bytes())
+            kg.apply(format!("Ga=T,U=1,i=5,q=1,f=32,s=1,v=1;{b64}").as_bytes())
                 .is_none()
         );
         // q=1 still reports errors…
@@ -1107,6 +1180,7 @@ mod tests {
             )])),
             cols: 1,
             rows: 1,
+            number: 0,
         };
         for id in 1..=5 {
             store.insert(id, big(id));
