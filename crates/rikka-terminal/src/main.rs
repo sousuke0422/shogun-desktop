@@ -1267,7 +1267,10 @@ impl TabsWindow {
         // the window is foreground, so this activation hook corrects it (and
         // re-binds after an alt-tab away and back).
         cx.observe_window_activation(window, |this, window, cx| {
-            if window.is_window_active() && this.terminal_focus.is_focused(window) {
+            this.window_active = window.is_window_active();
+            // ?1004 focus reporting follows the OS activation.
+            this.sync_focus_reports();
+            if this.window_active && this.terminal_focus.is_focused(window) {
                 let view = cx.weak_entity();
                 let async_cx = cx.to_async();
                 tsf::on_input_focus(Box::new(move || {
@@ -1307,6 +1310,9 @@ impl TabsWindow {
         for entry in initial {
             this.adopt(entry, cx);
         }
+        // Prime the ?1004 focus state (nothing is sent while the mode is
+        // off; the first real transition then reports correctly).
+        this.sync_focus_reports();
         this
     }
 
@@ -1319,9 +1325,12 @@ impl TabsWindow {
     /// User input (encoded keystrokes, IME commits) to the focused pane —
     /// or to EVERY pane of the active tab while its broadcast toggle is
     /// on. Broadcast reuses the active pane's encoding: per-pane terminal
-    /// modes (DECCKM etc.) are not consulted for the copies.
+    /// modes (DECCKM etc.) are not consulted for the copies. Each target
+    /// snaps back to the live bottom first — typing while scrolled into
+    /// the scrollback returns you to the prompt, like every terminal.
     fn send_input(&self, bytes: &[u8]) {
         for s in self.input_sessions() {
+            s.scroll_display_to_bottom();
             s.send_bytes(bytes);
         }
     }
@@ -1343,9 +1352,13 @@ impl TabsWindow {
         };
         for (s, plan) in targets.iter().zip(plans) {
             match plan {
-                Some(bytes) => s.send_bytes(&bytes),
+                Some(bytes) => {
+                    s.scroll_display_to_bottom();
+                    s.send_bytes(&bytes);
+                }
                 None => {
                     if let Some(text) = printable_text(ks) {
+                        s.scroll_display_to_bottom();
                         s.send_bytes(text.as_bytes());
                     }
                 }
@@ -1428,6 +1441,21 @@ impl TabsWindow {
         if whole_x != 0 {
             self.hwheel_accum -= whole_x as f32;
             s.hwheel_to_pty(whole_x, col, row, mods);
+        }
+    }
+
+    /// Focus reporting (DECSET ?1004): the active pane of the active tab is
+    /// "focused" while the OS window is; every other session of this window
+    /// is not. Sessions de-duplicate and check the mode themselves, so
+    /// calling this on every activation / tab / pane change is idempotent.
+    fn sync_focus_reports(&self) {
+        for (ix, tab) in self.tabs.iter().enumerate() {
+            let mut leaves = Vec::new();
+            tab.root.leaves(&mut leaves);
+            for leaf in leaves {
+                let focused = self.window_active && ix == self.active && leaf.id == tab.active_pane;
+                leaf.entry.0.session.report_focus(focused);
+            }
         }
     }
 
@@ -2048,6 +2076,11 @@ impl TabsWindow {
                         && tab.active_pane != pane_id
                     {
                         tab.active_pane = pane_id;
+                        // The composition in flight belongs to the pane we
+                        // just left — recycle the TSF document exactly like
+                        // a tab switch would, and move the ?1004 focus.
+                        this.ime_reset_pending = true;
+                        this.sync_focus_reports();
                         cx.notify();
                     }
                 }),
@@ -2059,6 +2092,11 @@ impl TabsWindow {
                         && tab.active_pane != pane_id
                     {
                         tab.active_pane = pane_id;
+                        // The composition in flight belongs to the pane we
+                        // just left — recycle the TSF document exactly like
+                        // a tab switch would, and move the ?1004 focus.
+                        this.ime_reset_pending = true;
+                        this.sync_focus_reports();
                         cx.notify();
                     }
                 }),
@@ -2324,6 +2362,8 @@ impl TabsWindow {
         // next render (which has the Window needed to check focus and
         // activation) cancels it so its commit cannot land in this tab's PTY.
         self.ime_reset_pending = true;
+        // The ?1004 focus moved with the active pane.
+        self.sync_focus_reports();
         // The search bar is per-session state — a tab switch closes it and
         // sweeps the highlight off every tab.
         if self.search.open {
@@ -3327,11 +3367,14 @@ impl Render for TabsWindow {
                         return;
                     }
                 }
-                // Alt+arrows: directional pane focus (split tabs).
+                // Alt+arrows: directional pane focus — only while the tab
+                // is actually split. Unsplit tabs pass the chord to the
+                // application (ESC-prefixed arrow via the encoder below).
                 if m.alt
                     && !m.control
                     && !m.shift
                     && matches!(ks.key.as_str(), "left" | "right" | "up" | "down")
+                    && this.tabs.get(this.active).is_some_and(Tab::is_split)
                 {
                     this.focus_pane_direction(ks.key.as_str(), cx);
                     cx.stop_propagation();
