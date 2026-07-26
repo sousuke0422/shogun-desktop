@@ -195,15 +195,10 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
         ResolvedColor::Rgb(r, g, b) => Some(rgba(u32::from_be_bytes([r, g, b, 0xff]))),
         ResolvedColor::Default => None,
     };
-    if run.style.inverse {
-        // SGR 7: swap fg/bg. A transparent default bg swaps in as the pane's
-        // base color so the inverted text stays legible.
-        let new_bg = Some(fg);
-        fg = bg.unwrap_or_else(default_bg);
-        bg = new_bg;
-    }
     if run.style.dim {
         // SGR 2 (faint): scale the ink toward black, leaving bg untouched.
+        // Applied BEFORE inverse (xterm order): faint dims the original
+        // foreground, and the swap then moves that dimmed ink to the bg.
         fg = Rgba {
             r: fg.r * 0.6,
             g: fg.g * 0.6,
@@ -211,12 +206,121 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
             a: fg.a,
         };
     }
+    if run.style.inverse {
+        // SGR 7: swap fg/bg. A transparent default bg swaps in as the pane's
+        // base color so the inverted text stays legible.
+        let new_bg = Some(fg);
+        fg = bg.unwrap_or_else(default_bg);
+        bg = new_bg;
+    }
     if run.is_cursor {
         let cursor_bg = fg;
         let cursor_fg = bg.unwrap_or_else(default_bg);
         (cursor_fg, Some(cursor_bg))
     } else {
         (fg, bg)
+    }
+}
+
+/// Paint a run's underline (all variants) and strikeout as quads along the
+/// exact grid span `x..x+span` — shared by the glyph AND geometry paths.
+/// The shaper's own decorations are never used: they size to the natural
+/// advance sum while glyphs are re-pinned to `n × cw` (cw ceil-snapped past
+/// the natural advance), so a shaper line always falls short of the run's
+/// last character. Strikeout has no SGR 58 analogue, so it uses the ink.
+fn paint_run_decorations(
+    style: &crate::CellStyle,
+    x: f32,
+    span: f32,
+    oy: f32,
+    ch: f32,
+    fg_rgba: Rgba,
+    window: &mut Window,
+) {
+    // SGR 58 underline color; defaults to the (post-inverse/dim) fg so
+    // decorations track the ink.
+    let ul_rgba = style.underline_color.map(color_to_rgba).unwrap_or(fg_rgba);
+    match style.underline {
+        UnderlineKind::Single => {
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(px(x), px(oy + ch - 2.0)),
+                    size: size(px(span), px(1.)),
+                },
+                ul_rgba,
+            ));
+        }
+        UnderlineKind::Undercurl => {
+            // Dots tracing a sine (period 6px, ±1.2px around the single-
+            // underline baseline), sampled every 2px — a full-width run
+            // costs span/2 quads, half the old per-pixel rate. Dot height
+            // 2.5px bridges the step between neighboring samples on the
+            // steep flanks at this coarser spacing.
+            let base = oy + ch - 2.5;
+            let mut dx = 0.0;
+            while dx < span {
+                let phase = dx / 6.0 * std::f32::consts::TAU;
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: point(px(x + dx), px(base + 1.2 * phase.sin())),
+                        size: size(px((span - dx).min(2.0)), px(2.5)),
+                    },
+                    ul_rgba,
+                ));
+                dx += 2.0;
+            }
+        }
+        UnderlineKind::Double => {
+            for dy in [4.0, 2.0] {
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: point(px(x), px(oy + ch - dy)),
+                        size: size(px(span), px(1.)),
+                    },
+                    ul_rgba,
+                ));
+            }
+        }
+        UnderlineKind::Dotted => {
+            let y = oy + ch - 2.0;
+            let mut dx = 0.0;
+            while dx < span {
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: point(px(x + dx), px(y)),
+                        size: size(px((span - dx).min(1.5)), px(1.)),
+                    },
+                    ul_rgba,
+                ));
+                dx += 3.0;
+            }
+        }
+        UnderlineKind::Dashed => {
+            let y = oy + ch - 2.0;
+            let mut dx = 0.0;
+            while dx < span {
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: point(px(x + dx), px(y)),
+                        size: size(px((span - dx).min(4.0)), px(1.)),
+                    },
+                    ul_rgba,
+                ));
+                dx += 7.0;
+            }
+        }
+        UnderlineKind::None => {}
+    }
+    // Strikeout: same grid-span quad treatment as the underlines (the
+    // shaper's strikethrough falls short exactly like its underline did).
+    if style.strikeout {
+        window.paint_quad(fill(
+            Bounds {
+                origin: point(px(x), px(oy + ch * 0.5 - 1.0)),
+                size: size(px(span), px(1.)),
+            },
+            fg_rgba,
+        ));
     }
 }
 
@@ -788,12 +892,15 @@ fn paint_box_char(
             }
         }
         '▓' => {
-            // 75% — draw the majority cells (3 out of 4)
+            // 75% — skip exactly one cell of every 2×2 block (12 of 16),
+            // a strict superset of ▒'s checkerboard so the ramp stays
+            // monotonic. The old `(row*4+col)%4 != 3` clause reduced to
+            // `col != 3` and painted 14/16 (≒88%), too close to █.
             let dw = (cw / 4.0).max(1.0);
             let dh = (ch / 4.0).max(1.0);
             for row in 0..4_i32 {
                 for col in 0..4_i32 {
-                    if (row + col) % 2 == 0 || (row * 4 + col) % 4 != 3 {
+                    if row % 2 == 0 || col % 2 == 1 {
                         let qx = ox + cw * col as f32 / 4.0;
                         let qy = oy + ch * row as f32 / 4.0;
                         q!(Bounds {
@@ -1230,6 +1337,17 @@ pub fn render_grid(
                                 }
                                 x_off += char_cw;
                             }
+                            // Geometry runs carry SGR 4/9 too — same
+                            // decoration quads as the glyph path.
+                            paint_run_decorations(
+                                &run.style,
+                                x,
+                                run.width as f32 * cw,
+                                oy,
+                                ch,
+                                fg_rgba,
+                                window,
+                            );
                             continue;
                         }
 
@@ -1265,26 +1383,16 @@ pub fn render_grid(
                             run_font.style = gpui::FontStyle::Italic;
                         }
                         let fg_hsla: gpui::Hsla = fg_rgba.into();
-                        // SGR 58 underline color; defaults to the (post-
-                        // inverse/dim) fg so decorations track the ink.
-                        let ul_rgba = run
-                            .style
-                            .underline_color
-                            .map(color_to_rgba)
-                            .unwrap_or(fg_rgba);
-                        // ALL underline variants are painted as quads after the
-                        // text (below), never via the shaper's UnderlineStyle:
-                        // the shaper sizes its decoration to the natural advance
-                        // sum, but glyphs here are re-pinned to `n × cw` (cw is
-                        // ceil-snapped past the natural advance), so a shaper
-                        // underline falls short by the accumulated difference —
-                        // visibly missing under the run's last character.
+                        // ALL underline variants AND strikeout are painted as
+                        // quads after the text ([`paint_run_decorations`]),
+                        // never via the shaper's own decorations: those size
+                        // to the natural advance sum, but glyphs here are
+                        // re-pinned to `n × cw` (cw is ceil-snapped past the
+                        // natural advance), so a shaper line falls short by
+                        // the accumulated difference — visibly missing under
+                        // the run's last characters.
                         let underline_style: Option<gpui::UnderlineStyle> = None;
-                        let strikethrough_style =
-                            run.style.strikeout.then_some(gpui::StrikethroughStyle {
-                                color: Some(fg_hsla),
-                                thickness: px(1.),
-                            });
+                        let strikethrough_style: Option<gpui::StrikethroughStyle> = None;
 
                         let all_narrow = run.char_widths.iter().all(|&w| w == 1);
                         if run.is_cluster() {
@@ -1397,82 +1505,16 @@ pub fn render_grid(
                             flush(&mut seg, seg_w, &mut x_off, window, cx);
                         }
 
-                        // ── Underlines (all variants) ────────────────────────
-                        // Painted as quads along the run's exact grid span
-                        // (`width × cw`), in the cell's bottom band. See the
-                        // underline_style note above for why the shaper's own
-                        // decoration cannot be used.
-                        let span = run.width as f32 * cw;
-                        match run.style.underline {
-                            UnderlineKind::Single => {
-                                window.paint_quad(fill(
-                                    Bounds {
-                                        origin: point(px(x), px(oy + ch - 2.0)),
-                                        size: size(px(span), px(1.)),
-                                    },
-                                    ul_rgba,
-                                ));
-                            }
-                            UnderlineKind::Undercurl => {
-                                // 1px dots tracing a sine (period 6px, ±1.2px
-                                // around the single-underline baseline). Dot
-                                // height 1.5px bridges the step between
-                                // neighboring samples on the steep flanks.
-                                let base = oy + ch - 2.5;
-                                let mut dx = 0.0;
-                                while dx < span {
-                                    let phase = dx / 6.0 * std::f32::consts::TAU;
-                                    window.paint_quad(fill(
-                                        Bounds {
-                                            origin: point(px(x + dx), px(base + 1.2 * phase.sin())),
-                                            size: size(px((span - dx).min(1.0)), px(1.5)),
-                                        },
-                                        ul_rgba,
-                                    ));
-                                    dx += 1.0;
-                                }
-                            }
-                            UnderlineKind::Double => {
-                                for dy in [4.0, 2.0] {
-                                    window.paint_quad(fill(
-                                        Bounds {
-                                            origin: point(px(x), px(oy + ch - dy)),
-                                            size: size(px(span), px(1.)),
-                                        },
-                                        ul_rgba,
-                                    ));
-                                }
-                            }
-                            UnderlineKind::Dotted => {
-                                let y = oy + ch - 2.0;
-                                let mut dx = 0.0;
-                                while dx < span {
-                                    window.paint_quad(fill(
-                                        Bounds {
-                                            origin: point(px(x + dx), px(y)),
-                                            size: size(px((span - dx).min(1.5)), px(1.)),
-                                        },
-                                        ul_rgba,
-                                    ));
-                                    dx += 3.0;
-                                }
-                            }
-                            UnderlineKind::Dashed => {
-                                let y = oy + ch - 2.0;
-                                let mut dx = 0.0;
-                                while dx < span {
-                                    window.paint_quad(fill(
-                                        Bounds {
-                                            origin: point(px(x + dx), px(y)),
-                                            size: size(px((span - dx).min(4.0)), px(1.)),
-                                        },
-                                        ul_rgba,
-                                    ));
-                                    dx += 7.0;
-                                }
-                            }
-                            UnderlineKind::None => {}
-                        }
+                        // Underline/strikeout quads along the exact grid span.
+                        paint_run_decorations(
+                            &run.style,
+                            x,
+                            run.width as f32 * cw,
+                            oy,
+                            ch,
+                            fg_rgba,
+                            window,
+                        );
                     }
 
                     // Mouse-selection highlight: painted last (over this row's
