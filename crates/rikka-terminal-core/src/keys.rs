@@ -37,7 +37,7 @@ pub fn key_to_pty_bytes(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>
     if printable_text(keystroke).is_some() {
         return None;
     }
-    let bytes = key_to_bytes(keystroke);
+    let bytes = key_to_bytes(keystroke, mode);
     (!bytes.is_empty()).then_some(bytes)
 }
 
@@ -84,17 +84,21 @@ fn legacy_mods(m: &gpui::Modifiers) -> u32 {
     if mask == 0 { 0 } else { mask + 1 }
 }
 
-pub fn key_to_bytes(keystroke: &Keystroke) -> Vec<u8> {
+pub fn key_to_bytes(keystroke: &Keystroke, mode: TermMode) -> Vec<u8> {
     let m = &keystroke.modifiers;
     let ctrl = m.control;
     let shift = m.shift;
     let mods = legacy_mods(m);
-    // `CSI 1;{mods}X` home/end/arrow form (xterm modifyCursorKeys=2 default).
-    let csi_letter = |c: char| {
-        if mods == 0 {
-            format!("\x1b[{c}").into_bytes()
-        } else {
+    // Arrow/home/end form: unmodified keys honor DECCKM (application cursor
+    // mode → SS3, what vim/less negotiate via smkx), modified ones stay on
+    // the `CSI 1;{mods}X` form regardless — xterm modifyCursorKeys=2 default.
+    let cursor_key = |c: char| {
+        if mods != 0 {
             format!("\x1b[1;{mods}{c}").into_bytes()
+        } else if mode.contains(TermMode::APP_CURSOR) {
+            format!("\x1bO{c}").into_bytes()
+        } else {
+            format!("\x1b[{c}").into_bytes()
         }
     };
     // `CSI {n};{mods}~` tilde form (insert/delete/page/F5+).
@@ -130,13 +134,18 @@ pub fn key_to_bytes(keystroke: &Keystroke) -> Vec<u8> {
         // shift+tab mode cycling), not a plain tab.
         "tab" if shift => b"\x1b[Z".to_vec(),
         "tab" => b"\t".to_vec(),
+        // Ctrl+Space = NUL (readline set-mark, emacs, fzf default binds);
+        // Alt keeps its ESC prefix, same convention as the char arm below.
+        "space" if ctrl && m.alt => b"\x1b\x00".to_vec(),
+        "space" if ctrl => b"\x00".to_vec(),
+        "space" if m.alt => b"\x1b ".to_vec(),
         "space" => b" ".to_vec(),
-        "up" => csi_letter('A'),
-        "down" => csi_letter('B'),
-        "right" => csi_letter('C'),
-        "left" => csi_letter('D'),
-        "home" => csi_letter('H'),
-        "end" => csi_letter('F'),
+        "up" => cursor_key('A'),
+        "down" => cursor_key('B'),
+        "right" => cursor_key('C'),
+        "left" => cursor_key('D'),
+        "home" => cursor_key('H'),
+        "end" => cursor_key('F'),
         "insert" => csi_tilde(2),
         "delete" => csi_tilde(3),
         "pageup" => csi_tilde(5),
@@ -161,9 +170,11 @@ pub fn key_to_bytes(keystroke: &Keystroke) -> Vec<u8> {
                 out.push(0x1b);
             }
             if ctrl {
-                let ch = k.chars().next().unwrap().to_ascii_lowercase() as u8;
-                if ch.is_ascii_lowercase() {
-                    out.push(ch - b'a' + 1);
+                let lower = k.chars().next().unwrap().to_ascii_lowercase();
+                if lower.is_ascii_lowercase() {
+                    out.push(lower as u8 - b'a' + 1);
+                } else if let Some(c0) = ctrl_symbol_c0(lower) {
+                    out.push(c0);
                 } else {
                     out.extend_from_slice(k.as_bytes());
                 }
@@ -181,6 +192,13 @@ pub fn key_to_bytes(keystroke: &Keystroke) -> Vec<u8> {
             .map(|s| s.as_bytes().to_vec())
             .unwrap_or_default(),
     }
+}
+
+/// The classic `Ctrl+symbol → C0` family: `@ [ \ ] ^ _` become 0x00 and
+/// 0x1B-0x1F — the codepoint with bit 6 cleared, the same rule that maps
+/// `a`-`z` to 1-26 (Ctrl+[ IS Escape, Ctrl+_ is readline undo).
+fn ctrl_symbol_c0(c: char) -> Option<u8> {
+    matches!(c, '@' | '[' | '\\' | ']' | '^' | '_').then(|| c as u8 & 0x1f)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -321,7 +339,7 @@ mod tests {
 
     #[test]
     fn enter_maps_to_cr() {
-        assert_eq!(key_to_bytes(&ks("enter")), b"\r");
+        assert_eq!(key_to_bytes(&ks("enter"), TermMode::empty()), b"\r");
     }
 
     #[test]
@@ -354,42 +372,42 @@ mod tests {
 
     #[test]
     fn escape_maps_to_esc() {
-        assert_eq!(key_to_bytes(&ks("escape")), b"\x1b");
+        assert_eq!(key_to_bytes(&ks("escape"), TermMode::empty()), b"\x1b");
     }
 
     #[test]
     fn backspace_maps_to_del() {
-        assert_eq!(key_to_bytes(&ks("backspace")), b"\x7f");
+        assert_eq!(key_to_bytes(&ks("backspace"), TermMode::empty()), b"\x7f");
     }
 
     #[test]
     fn tab_maps_to_tab() {
-        assert_eq!(key_to_bytes(&ks("tab")), b"\t");
+        assert_eq!(key_to_bytes(&ks("tab"), TermMode::empty()), b"\t");
     }
 
     #[test]
     fn arrow_keys_map_to_ansi_sequences() {
-        assert_eq!(key_to_bytes(&ks("up")), b"\x1b[A");
-        assert_eq!(key_to_bytes(&ks("down")), b"\x1b[B");
-        assert_eq!(key_to_bytes(&ks("right")), b"\x1b[C");
-        assert_eq!(key_to_bytes(&ks("left")), b"\x1b[D");
+        assert_eq!(key_to_bytes(&ks("up"), TermMode::empty()), b"\x1b[A");
+        assert_eq!(key_to_bytes(&ks("down"), TermMode::empty()), b"\x1b[B");
+        assert_eq!(key_to_bytes(&ks("right"), TermMode::empty()), b"\x1b[C");
+        assert_eq!(key_to_bytes(&ks("left"), TermMode::empty()), b"\x1b[D");
     }
 
     #[test]
     fn modified_arrows_use_csi_1_mods_form() {
         // ctrl+right = CSI 1;5C (word jump in shells)
         assert_eq!(
-            key_to_bytes(&ks_mod("right", true, false, false)),
+            key_to_bytes(&ks_mod("right", true, false, false), TermMode::empty()),
             b"\x1b[1;5C"
         );
         // shift+up = CSI 1;2A
         assert_eq!(
-            key_to_bytes(&ks_mod("up", false, false, true)),
+            key_to_bytes(&ks_mod("up", false, false, true), TermMode::empty()),
             b"\x1b[1;2A"
         );
         // ctrl+shift+left = CSI 1;6D
         assert_eq!(
-            key_to_bytes(&ks_mod("left", true, false, true)),
+            key_to_bytes(&ks_mod("left", true, false, true), TermMode::empty()),
             b"\x1b[1;6D"
         );
     }
@@ -397,64 +415,70 @@ mod tests {
     #[test]
     fn modified_home_end_and_tilde_keys() {
         assert_eq!(
-            key_to_bytes(&ks_mod("home", true, false, false)),
+            key_to_bytes(&ks_mod("home", true, false, false), TermMode::empty()),
             b"\x1b[1;5H"
         );
         assert_eq!(
-            key_to_bytes(&ks_mod("delete", false, false, true)),
+            key_to_bytes(&ks_mod("delete", false, false, true), TermMode::empty()),
             b"\x1b[3;2~"
         );
         assert_eq!(
-            key_to_bytes(&ks_mod("pageup", true, false, false)),
+            key_to_bytes(&ks_mod("pageup", true, false, false), TermMode::empty()),
             b"\x1b[5;5~"
         );
     }
 
     #[test]
     fn page_keys_map_to_ansi_sequences() {
-        assert_eq!(key_to_bytes(&ks("pageup")), b"\x1b[5~");
-        assert_eq!(key_to_bytes(&ks("pagedown")), b"\x1b[6~");
+        assert_eq!(key_to_bytes(&ks("pageup"), TermMode::empty()), b"\x1b[5~");
+        assert_eq!(key_to_bytes(&ks("pagedown"), TermMode::empty()), b"\x1b[6~");
     }
 
     #[test]
     fn end_maps_to_csi_f() {
-        assert_eq!(key_to_bytes(&ks("end")), b"\x1b[F");
+        assert_eq!(key_to_bytes(&ks("end"), TermMode::empty()), b"\x1b[F");
     }
 
     #[test]
     fn insert_maps_to_tilde_2() {
-        assert_eq!(key_to_bytes(&ks("insert")), b"\x1b[2~");
+        assert_eq!(key_to_bytes(&ks("insert"), TermMode::empty()), b"\x1b[2~");
     }
 
     #[test]
     fn function_keys_map_to_xterm_sequences() {
-        assert_eq!(key_to_bytes(&ks("f1")), b"\x1bOP");
-        assert_eq!(key_to_bytes(&ks("f4")), b"\x1bOS");
-        assert_eq!(key_to_bytes(&ks("f5")), b"\x1b[15~");
-        assert_eq!(key_to_bytes(&ks("f12")), b"\x1b[24~");
+        assert_eq!(key_to_bytes(&ks("f1"), TermMode::empty()), b"\x1bOP");
+        assert_eq!(key_to_bytes(&ks("f4"), TermMode::empty()), b"\x1bOS");
+        assert_eq!(key_to_bytes(&ks("f5"), TermMode::empty()), b"\x1b[15~");
+        assert_eq!(key_to_bytes(&ks("f12"), TermMode::empty()), b"\x1b[24~");
         // Modified F-keys switch to the CSI form.
         assert_eq!(
-            key_to_bytes(&ks_mod("f1", true, false, false)),
+            key_to_bytes(&ks_mod("f1", true, false, false), TermMode::empty()),
             b"\x1b[1;5P"
         );
         assert_eq!(
-            key_to_bytes(&ks_mod("f5", false, false, true)),
+            key_to_bytes(&ks_mod("f5", false, false, true), TermMode::empty()),
             b"\x1b[15;2~"
         );
     }
 
     #[test]
     fn ctrl_letter_maps_to_control_codes() {
-        assert_eq!(key_to_bytes(&ks_ctrl("a")), b"\x01");
-        assert_eq!(key_to_bytes(&ks_ctrl("c")), b"\x03");
-        assert_eq!(key_to_bytes(&ks_ctrl("z")), b"\x1a");
+        assert_eq!(key_to_bytes(&ks_ctrl("a"), TermMode::empty()), b"\x01");
+        assert_eq!(key_to_bytes(&ks_ctrl("c"), TermMode::empty()), b"\x03");
+        assert_eq!(key_to_bytes(&ks_ctrl("z"), TermMode::empty()), b"\x1a");
     }
 
     #[test]
     fn alt_prefixes_esc() {
-        assert_eq!(key_to_bytes(&ks_mod("x", false, true, false)), b"\x1bx");
+        assert_eq!(
+            key_to_bytes(&ks_mod("x", false, true, false), TermMode::empty()),
+            b"\x1bx"
+        );
         // ctrl+alt+c = ESC + 0x03
-        assert_eq!(key_to_bytes(&ks_mod("c", true, true, false)), b"\x1b\x03");
+        assert_eq!(
+            key_to_bytes(&ks_mod("c", true, true, false), TermMode::empty()),
+            b"\x1b\x03"
+        );
     }
 
     #[test]
@@ -462,19 +486,19 @@ mod tests {
         // The fixed-byte control keys must ESC-prefix under Alt too, so apps
         // that bind Alt+Enter / Alt+Backspace can tell them from the plain key.
         assert_eq!(
-            key_to_bytes(&ks_mod("enter", false, true, false)),
+            key_to_bytes(&ks_mod("enter", false, true, false), TermMode::empty()),
             b"\x1b\r"
         );
         assert_eq!(
-            key_to_bytes(&ks_mod("backspace", false, true, false)),
+            key_to_bytes(&ks_mod("backspace", false, true, false), TermMode::empty()),
             b"\x1b\x7f"
         );
         assert_eq!(
-            key_to_bytes(&ks_mod("escape", false, true, false)),
+            key_to_bytes(&ks_mod("escape", false, true, false), TermMode::empty()),
             b"\x1b\x1b"
         );
         // Unmodified stays bare.
-        assert_eq!(key_to_bytes(&ks("enter")), b"\r");
+        assert_eq!(key_to_bytes(&ks("enter"), TermMode::empty()), b"\r");
     }
 
     #[test]
@@ -490,29 +514,32 @@ mod tests {
 
     #[test]
     fn plain_char_passes_through() {
-        assert_eq!(key_to_bytes(&ks("x")), b"x");
+        assert_eq!(key_to_bytes(&ks("x"), TermMode::empty()), b"x");
     }
 
     #[test]
     fn space_maps_to_space_char() {
-        assert_eq!(key_to_bytes(&ks("space")), b" ");
+        assert_eq!(key_to_bytes(&ks("space"), TermMode::empty()), b" ");
     }
 
     #[test]
     fn shift_tab_maps_to_backtab() {
-        assert_eq!(key_to_bytes(&ks_mod("tab", false, false, true)), b"\x1b[Z");
+        assert_eq!(
+            key_to_bytes(&ks_mod("tab", false, false, true), TermMode::empty()),
+            b"\x1b[Z"
+        );
     }
 
     #[test]
     fn delete_and_home_map_to_ansi_sequences() {
-        assert_eq!(key_to_bytes(&ks("delete")), b"\x1b[3~");
-        assert_eq!(key_to_bytes(&ks("home")), b"\x1b[H");
+        assert_eq!(key_to_bytes(&ks("delete"), TermMode::empty()), b"\x1b[3~");
+        assert_eq!(key_to_bytes(&ks("home"), TermMode::empty()), b"\x1b[H");
     }
 
     #[test]
     fn unknown_named_key_is_swallowed() {
         // Named keys with no insert-text must not be sent as literal text.
-        assert_eq!(key_to_bytes(&ks("capslock")), b"");
+        assert_eq!(key_to_bytes(&ks("capslock"), TermMode::empty()), b"");
     }
 
     #[test]
@@ -522,7 +549,7 @@ mod tests {
             modifiers: Modifiers::default(),
             key_char: Some("@".to_string()),
         };
-        assert_eq!(key_to_bytes(&keystroke), b"@");
+        assert_eq!(key_to_bytes(&keystroke, TermMode::empty()), b"@");
     }
 
     #[test]
@@ -558,6 +585,81 @@ mod tests {
     #[test]
     fn pty_bytes_swallows_unmapped_named_keys() {
         assert_eq!(key_to_pty_bytes(&ks("capslock"), TermMode::empty()), None);
+    }
+
+    // ── DECCKM (application cursor mode) ─────────────────────────────────────
+
+    #[test]
+    fn app_cursor_mode_switches_unmodified_cursor_keys_to_ss3() {
+        let app = TermMode::APP_CURSOR;
+        assert_eq!(key_to_bytes(&ks("up"), app), b"\x1bOA");
+        assert_eq!(key_to_bytes(&ks("down"), app), b"\x1bOB");
+        assert_eq!(key_to_bytes(&ks("right"), app), b"\x1bOC");
+        assert_eq!(key_to_bytes(&ks("left"), app), b"\x1bOD");
+        assert_eq!(key_to_bytes(&ks("home"), app), b"\x1bOH");
+        assert_eq!(key_to_bytes(&ks("end"), app), b"\x1bOF");
+    }
+
+    #[test]
+    fn app_cursor_mode_keeps_modified_cursor_keys_csi() {
+        // xterm modifyCursorKeys: the CSI 1;{mods} form wins over DECCKM.
+        let app = TermMode::APP_CURSOR;
+        assert_eq!(
+            key_to_bytes(&ks_mod("up", true, false, false), app),
+            b"\x1b[1;5A"
+        );
+        assert_eq!(
+            key_to_bytes(&ks_mod("end", false, false, true), app),
+            b"\x1b[1;2F"
+        );
+    }
+
+    #[test]
+    fn app_cursor_mode_flows_through_pty_path() {
+        assert_eq!(
+            key_to_pty_bytes(&ks("up"), TermMode::APP_CURSOR),
+            Some(b"\x1bOA".to_vec())
+        );
+    }
+
+    // ── ctrl chords ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_space_is_nul() {
+        assert_eq!(key_to_bytes(&ks_ctrl("space"), TermMode::empty()), b"\x00");
+        assert_eq!(
+            key_to_bytes(&ks_mod("space", true, true, false), TermMode::empty()),
+            b"\x1b\x00"
+        );
+        assert_eq!(
+            key_to_bytes(&ks_mod("space", false, true, false), TermMode::empty()),
+            b"\x1b "
+        );
+        // The NUL byte must survive key_to_pty_bytes' emptiness check.
+        assert_eq!(
+            key_to_pty_bytes(&ks_ctrl("space"), TermMode::empty()),
+            Some(b"\x00".to_vec())
+        );
+    }
+
+    #[test]
+    fn ctrl_symbols_map_to_c0_controls() {
+        assert_eq!(key_to_bytes(&ks_ctrl("@"), TermMode::empty()), b"\x00");
+        assert_eq!(key_to_bytes(&ks_ctrl("["), TermMode::empty()), b"\x1b");
+        assert_eq!(key_to_bytes(&ks_ctrl("\\"), TermMode::empty()), b"\x1c");
+        assert_eq!(key_to_bytes(&ks_ctrl("]"), TermMode::empty()), b"\x1d");
+        assert_eq!(key_to_bytes(&ks_ctrl("^"), TermMode::empty()), b"\x1e");
+        assert_eq!(key_to_bytes(&ks_ctrl("_"), TermMode::empty()), b"\x1f");
+    }
+
+    #[test]
+    fn ctrl_non_ascii_char_passes_through_untruncated() {
+        // 'š' is U+0161 — its low byte is 0x61 ('a'), which the old `as u8`
+        // truncation turned into 0x01 (Ctrl+A).
+        assert_eq!(
+            key_to_bytes(&ks_ctrl("š"), TermMode::empty()),
+            "š".as_bytes()
+        );
     }
 
     // ── kitty protocol ───────────────────────────────────────────────────────
