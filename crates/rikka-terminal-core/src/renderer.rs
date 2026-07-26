@@ -184,12 +184,13 @@ pub fn color_to_rgba(color: ResolvedColor) -> Rgba {
     }
 }
 
-/// Resolve the display fg/bg for a [`Run`], applying SGR inverse/dim and
+/// Resolve the display fg/bg for a [`Run`], applying SGR dim/inverse and
 /// block-cursor inversion (in that order — the cursor inverts whatever the
-/// cell already displays).
+/// cell already displays). An OSC 12 `cursor_color` replaces the inverted
+/// block's background when set.
 ///
 /// Returns `(fg, bg_opt)`.  `None` bg means transparent.
-fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
+fn resolve_run_colors(run: &Run, cursor_color: Option<Rgba>) -> (Rgba, Option<Rgba>) {
     let mut fg = color_to_rgba(run.fg);
     let mut bg = match run.bg {
         ResolvedColor::Rgb(r, g, b) => Some(rgba(u32::from_be_bytes([r, g, b, 0xff]))),
@@ -214,7 +215,7 @@ fn resolve_run_colors(run: &Run) -> (Rgba, Option<Rgba>) {
         bg = new_bg;
     }
     if run.is_cursor {
-        let cursor_bg = fg;
+        let cursor_bg = cursor_color.unwrap_or(fg);
         let cursor_fg = bg.unwrap_or_else(default_bg);
         (cursor_fg, Some(cursor_bg))
     } else {
@@ -1205,6 +1206,10 @@ pub fn render_grid(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| (d.as_millis() / 600) % 2 == 1)
             .unwrap_or(false);
+    // OSC 12 cursor color (None = reverse-video block / theme-fg thin bar).
+    let cursor_rgba: Option<Rgba> = snap
+        .cursor_color
+        .map(|(r, g, b)| rgba(u32::from_be_bytes([r, g, b, 0xff])));
     v_flex()
         .font_family(font.to_string())
         .text_size(crate::typography::font_size())
@@ -1305,7 +1310,7 @@ pub fn render_grid(
                     for run in runs {
                         let x = ox + col as f32 * cw;
                         col += run.width;
-                        let (fg_rgba, bg_opt) = resolve_run_colors(&run);
+                        let (fg_rgba, bg_opt) = resolve_run_colors(&run, cursor_rgba);
 
                         if let Some(bg) = bg_opt {
                             window.paint_quad(fill(
@@ -1597,7 +1602,7 @@ pub fn render_grid(
                     if let Some((ccol, wcells)) = cursor_image_marker {
                         let cx0 = ox + ccol as f32 * cw;
                         let w = wcells as f32 * cw;
-                        let outline = default_fg();
+                        let outline = cursor_rgba.unwrap_or_else(default_fg);
                         let wash = Rgba { a: 0.4, ..outline };
                         window.paint_quad(fill(
                             Bounds {
@@ -1689,7 +1694,7 @@ pub fn render_grid(
                                 size: size(px(cw), px(t)),
                             }
                         };
-                        window.paint_quad(fill(b, default_fg()));
+                        window.paint_quad(fill(b, cursor_rgba.unwrap_or_else(default_fg)));
                     }
 
                     // IME preedit: drawn over the cursor row starting at the
@@ -2021,7 +2026,7 @@ mod tests {
                 ..CellStyle::default()
             },
         );
-        let (fg, bg) = resolve_run_colors(&run);
+        let (fg, bg) = resolve_run_colors(&run, None);
         // fg becomes the pane base color (transparent default bg), bg the ink.
         assert_eq!(fg, default_bg());
         assert_eq!(bg, Some(rgba(0xc80a0aff)));
@@ -2037,7 +2042,7 @@ mod tests {
                 ..CellStyle::default()
             },
         );
-        let (fg, bg) = resolve_run_colors(&run);
+        let (fg, bg) = resolve_run_colors(&run, None);
         assert!((fg.r - 0.6).abs() < 1e-5);
         assert_eq!(bg, Some(rgba(0x0000ffff)));
     }

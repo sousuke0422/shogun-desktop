@@ -972,6 +972,19 @@ impl TerminalSession {
         self.notify.notify_one();
     }
 
+    /// Rebuild the snapshot from the current terminal state under the
+    /// CURRENT global palette. A tab switch swaps the palette, but this
+    /// session's last snapshot baked its ANSI colors under whichever
+    /// palette was global when the PTY last printed — a background tab
+    /// could wear another tab's colors until its next output.
+    pub fn rebuild_snapshot(&self) {
+        let t = self.term.lock();
+        *self.snapshot.lock() = take_snapshot(&t);
+        drop(t);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.notify.notify_one();
+    }
+
     /// Resize the terminal to the given dimensions.
     ///
     /// This updates the internal `alacritty_terminal::Term` geometry **and**
@@ -1018,6 +1031,9 @@ pub struct GridSnapshot {
     pub cursor: (usize, usize),
     /// How to draw the cursor cell (DECSCUSR / DECTCEM).
     pub cursor_shape: CursorShapeKind,
+    /// OSC 12 cursor color, when the application set one. `None` = paint
+    /// the reverse-video block / theme-foreground thin cursor as always.
+    pub cursor_color: Option<(u8, u8, u8)>,
     /// The cursor blinks (DECSCUSR 1/3/5 or DECSET ?12) — rides the same
     /// 600 ms phase and 300 ms refresh timer as SGR blink.
     pub cursor_blink: bool,
@@ -1048,6 +1064,7 @@ impl GridSnapshot {
             cells: vec![vec![SnapshotCell::blank(); cols]; rows],
             cursor: (0, 0),
             cursor_shape: CursorShapeKind::default(),
+            cursor_color: None,
             cursor_blink: false,
             selection: None,
             display_offset: 0,
@@ -1755,6 +1772,9 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         // passes `rows` and simply stops matching any painted row.
         cursor: ((cur.line.0 + display_offset) as usize, cur.column.0),
         cursor_shape,
+        // OSC 12: the app's dynamic cursor color, honored by the renderer.
+        cursor_color: term.colors()[alacritty_terminal::vte::ansi::NamedColor::Cursor]
+            .map(|c| (c.r, c.g, c.b)),
         // Hidden gates the blink flag so `?25l` apps don't arm the refresh
         // timer for a cursor that never draws.
         cursor_blink: term.cursor_style().blinking && cursor_shape != CursorShapeKind::Hidden,
@@ -2056,12 +2076,14 @@ fn fallback_indexed_color(idx: u8) -> Option<ResolvedColor> {
     Some(ResolvedColor::Rgb(r, g, b))
 }
 
-/// Resolve an OSC color-query index the way the renderer would paint it: an
-/// explicitly set palette entry (OSC 4/10/11 set) wins; otherwise indices
-/// 0–255 use the engine's standard palette, and the dynamic specials mirror
-/// the renderer defaults (`renderer::default_fg` #E8DCC8 / `default_bg`
-/// #1A1A1A; the cursor is drawn in fg). `None` = stay silent, matching
-/// xterm's behavior for unset specials.
+/// Resolve an OSC color-query index the way the renderer actually paints
+/// it. The dynamic default fg/bg answer from the ACTIVE THEME — the theme
+/// is authoritative for what's on screen (OSC 10/11 sets are deliberately
+/// not honored, and answering the stored-but-unpainted value lied to
+/// set-then-query apps). The cursor answers its honored OSC 12 color, else
+/// the theme fg it is drawn in. Palette indices 0–255: an explicitly set
+/// entry (OSC 4) wins — those ARE honored — otherwise the engine's
+/// standard palette.
 pub(crate) fn query_color_rgb(
     colors: &alacritty_terminal::term::color::Colors,
     idx: usize,
@@ -2069,6 +2091,32 @@ pub(crate) fn query_color_rgb(
     use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
     if idx >= alacritty_terminal::term::color::COUNT {
         return None;
+    }
+    if idx == NamedColor::Foreground as usize {
+        let c = crate::theme::foreground();
+        return Some(Rgb {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+        });
+    }
+    if idx == NamedColor::Background as usize {
+        let c = crate::theme::background();
+        return Some(Rgb {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+        });
+    }
+    if idx == NamedColor::Cursor as usize {
+        return Some(colors[idx].unwrap_or_else(|| {
+            let c = crate::theme::foreground();
+            Rgb {
+                r: c.r,
+                g: c.g,
+                b: c.b,
+            }
+        }));
     }
     if let Some(rgb) = colors[idx] {
         return Some(rgb);
@@ -2079,21 +2127,7 @@ pub(crate) fn query_color_rgb(
             _ => None,
         };
     }
-    if idx == NamedColor::Foreground as usize || idx == NamedColor::Cursor as usize {
-        Some(Rgb {
-            r: 0xE8,
-            g: 0xDC,
-            b: 0xC8,
-        })
-    } else if idx == NamedColor::Background as usize {
-        Some(Rgb {
-            r: 0x1A,
-            g: 0x1A,
-            b: 0x1A,
-        })
-    } else {
-        None
-    }
+    None
 }
 
 #[cfg(test)]
@@ -2941,35 +2975,50 @@ mod tests {
     fn query_color_resolution_order() {
         use alacritty_terminal::term::color::Colors;
         use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+        // Theme-relative expectations: another test may install a palette
+        // concurrently (theme state is process-global), and the point here
+        // is exactly that the query mirrors the painted theme.
+        let theme_rgb = |c: crate::theme::Rgb| Rgb {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+        };
         let mut colors = Colors::default();
-        // Unset specials fall back to the renderer defaults…
+        // The dynamic specials answer the active theme (what is painted)…
         assert_eq!(
             query_color_rgb(&colors, NamedColor::Background as usize),
-            Some(Rgb {
-                r: 0x1A,
-                g: 0x1A,
-                b: 0x1A
-            })
+            Some(theme_rgb(crate::theme::background()))
         );
         assert_eq!(
             query_color_rgb(&colors, NamedColor::Foreground as usize),
-            Some(Rgb {
-                r: 0xE8,
-                g: 0xDC,
-                b: 0xC8
-            })
+            Some(theme_rgb(crate::theme::foreground()))
         );
-        // …indexed colors to the standard palette (196 = pure red in the
+        // …indexed colors the standard palette (196 = pure red in the
         // 6×6×6 cube)…
         assert_eq!(
             query_color_rgb(&colors, 196),
             Some(Rgb { r: 255, g: 0, b: 0 })
         );
-        // …and an explicitly set entry wins over every fallback.
+        // …an OSC 11 set does NOT change the answer — the theme stays
+        // authoritative for what's painted, and the query must not claim
+        // an unhonored color is in effect…
         colors[NamedColor::Background as usize] = Some(Rgb { r: 1, g: 2, b: 3 });
         assert_eq!(
             query_color_rgb(&colors, NamedColor::Background as usize),
-            Some(Rgb { r: 1, g: 2, b: 3 })
+            Some(theme_rgb(crate::theme::background()))
+        );
+        // …an explicitly set palette entry (OSC 4) still wins — those ARE
+        // honored by the renderer…
+        colors[196] = Some(Rgb { r: 9, g: 8, b: 7 });
+        assert_eq!(
+            query_color_rgb(&colors, 196),
+            Some(Rgb { r: 9, g: 8, b: 7 })
+        );
+        // …and the honored OSC 12 cursor color answers its set value.
+        colors[NamedColor::Cursor as usize] = Some(Rgb { r: 4, g: 5, b: 6 });
+        assert_eq!(
+            query_color_rgb(&colors, NamedColor::Cursor as usize),
+            Some(Rgb { r: 4, g: 5, b: 6 })
         );
     }
 

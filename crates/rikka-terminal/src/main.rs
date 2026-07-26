@@ -2380,6 +2380,14 @@ impl TabsWindow {
                 .get(self.active)
                 .and_then(|t| t.primary().0.theme()),
         );
+        // The global palette just swapped: this tab's snapshots may have
+        // baked their ANSI colors under another tab's theme (snapshots
+        // refresh on PTY output, whenever that last happened — a background
+        // tab that printed then wears the wrong palette). Rebuild them now
+        // that the right palette is installed.
+        if let Some(tab) = self.tabs.get(self.active) {
+            tab.for_each_entry(|e| e.0.session.rebuild_snapshot());
+        }
         cx.notify();
     }
 

@@ -496,6 +496,13 @@ pub fn build_terminal_session_with_preface(
                                     parser.stop_sync(&mut *t);
                                     crate::repin_screen_selection(&mut t, &screen_sel2);
                                     *snap2.lock() = take_snapshot(&t);
+                                    drop(t);
+                                    // Bump + signal like every other snapshot
+                                    // update — this branch was the only one
+                                    // skipping it, leaving the drain-flushed
+                                    // frame stale until the next real chunk.
+                                    gen2.fetch_add(1, Ordering::Relaxed);
+                                    notify2.notify_one();
                                 }
                                 transfer_pause_parser.mark_drained();
                                 continue;
