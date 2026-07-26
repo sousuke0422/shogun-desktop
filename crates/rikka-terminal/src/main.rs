@@ -717,11 +717,14 @@ struct Tab {
 }
 
 /// One pane of a tab. `measured` is the painted size sink (from the pane
-/// overlay canvas) driving this pane's own PTY fit once the tab is split.
+/// overlay canvas) driving this pane's own PTY fit once the tab is split;
+/// `origin` (window coords) completes the painted bounds so window-level
+/// wheel events can be routed to the pane under the cursor.
 struct Leaf {
     id: usize,
     entry: TabEntry,
     measured: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    origin: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
 }
 
 impl Leaf {
@@ -730,6 +733,7 @@ impl Leaf {
             id,
             entry,
             measured: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
+            origin: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
         }
     }
 }
@@ -1142,6 +1146,13 @@ pub struct TabsWindow {
     /// Fractional wheel accumulators (trackpads deliver sub-line deltas).
     scroll_accum: f32,
     hwheel_accum: f32,
+    /// Session identity (Arc pointer) the accumulators belong to — a wheel
+    /// event for a different pane/tab starts from zero instead of inheriting
+    /// the previous target's fractional residue.
+    wheel_target: Option<usize>,
+    /// Last OS activation state seen by the activation observer, for the
+    /// paths that need it without a `&Window` (focus reporting).
+    window_active: bool,
     /// Last PTY size applied to the ACTIVE tab (0 forces a re-apply, e.g.
     /// after a tab switch or an adoption from another window).
     cols: u16,
@@ -1278,6 +1289,8 @@ impl TabsWindow {
             selection: SelectionState::default(),
             scroll_accum: 0.0,
             hwheel_accum: 0.0,
+            wheel_target: None,
+            window_active: true,
             cols: 0,
             rows: 0,
             applied_title: None,
@@ -1345,6 +1358,76 @@ impl TabsWindow {
     fn paste_input(&self, text: &str) {
         for s in self.input_sessions() {
             s.paste(text);
+        }
+    }
+
+    /// Window-root wheel: route to the pane under the cursor (split tabs)
+    /// with cell coordinates measured from that pane's own painted origin —
+    /// the active pane is the fallback for the gutters, and the only target
+    /// while zoomed (hidden panes' painted bounds are stale). Fractional
+    /// deltas accumulate per target; switching targets drops the residue.
+    fn wheel_scroll(&mut self, event: &ScrollWheelEvent, cw: f32, ch: f32) {
+        use std::sync::atomic::Ordering;
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let (x, y) = (event.position.x / px(1.), event.position.y / px(1.));
+        let mut under: Option<usize> = None;
+        if !(tab.zoomed && tab.is_split()) {
+            tab.root.for_each(&mut |leaf| {
+                if under.is_none() {
+                    let (ox, oy) = leaf.origin.get();
+                    let (mw, mh) = leaf.measured.get();
+                    if mw > 0.0 && (ox..ox + mw).contains(&x) && (oy..oy + mh).contains(&y) {
+                        under = Some(leaf.id);
+                    }
+                }
+            });
+        }
+        let Some(leaf) = under
+            .and_then(|id| tab.root.find(id))
+            .or_else(|| tab.root.find(tab.active_pane))
+        else {
+            return;
+        };
+        let s = &leaf.entry.0.session;
+        let target = std::sync::Arc::as_ptr(&leaf.entry.0) as usize;
+        if self.wheel_target != Some(target) {
+            self.wheel_target = Some(target);
+            self.scroll_accum = 0.0;
+            self.hwheel_accum = 0.0;
+        }
+        let (ox, oy) = leaf.origin.get();
+        let cols = s.cols.load(Ordering::Relaxed).max(1) as usize;
+        let rows = s.rows.load(Ordering::Relaxed).max(1) as usize;
+        let col = (((x - ox) / cw).max(0.0) as usize).min(cols - 1);
+        let row = (((y - oy) / ch).max(0.0) as usize).min(rows - 1);
+        let mods = ReportMods {
+            alt: event.modifiers.alt,
+            ctrl: event.modifiers.control,
+        };
+        // Vertical: PTY first (mouse reporting / alternate scroll), local
+        // scrollback otherwise.
+        self.scroll_accum += match &event.delta {
+            ScrollDelta::Pixels(p) => (p.y / px(1.)) / ch,
+            ScrollDelta::Lines(l) => l.y,
+        };
+        let whole = self.scroll_accum.trunc() as i32;
+        if whole != 0 {
+            self.scroll_accum -= whole as f32;
+            if !s.wheel_to_pty(whole, col, row, mods) {
+                s.scroll_display(whole);
+            }
+        }
+        // Horizontal: reporting-only (buttons 66/67).
+        self.hwheel_accum += match &event.delta {
+            ScrollDelta::Pixels(p) => (p.x / px(1.)) / cw,
+            ScrollDelta::Lines(l) => l.x,
+        };
+        let whole_x = self.hwheel_accum.trunc() as i32;
+        if whole_x != 0 {
+            self.hwheel_accum -= whole_x as f32;
+            s.hwheel_to_pty(whole_x, col, row, mods);
         }
     }
 
@@ -2010,6 +2093,7 @@ impl TabsWindow {
                     inset: 0.0,
                     caret_enabled: focused,
                     measured: Some(leaf.measured.clone()),
+                    origin: Some(leaf.origin.clone()),
                 },
                 // Pipe the caret rect to TSF so the IME candidate window
                 // opens at the terminal cursor (focused pane only).
@@ -2995,6 +3079,9 @@ impl Render for TabsWindow {
             // (both axes fold into horizontal, browser-style), and never
             // reaches the terminal below. No-op when the tabs already fit.
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _win, cx| {
+                // Swallow FIRST: wheel over the strip must never fall through
+                // to the terminal scroll handler, tabs overflowing or not.
+                cx.stop_propagation();
                 let maxw = this.strip_scroll.max_offset().width / px(1.);
                 if maxw <= 0.0 {
                     return;
@@ -3009,7 +3096,6 @@ impl Render for TabsWindow {
                 let cur = this.strip_scroll.offset().x / px(1.);
                 let nx = (cur + step).clamp(-maxw, 0.0);
                 this.strip_scroll.set_offset(point(px(nx), px(0.)));
-                cx.stop_propagation();
                 cx.notify();
             }))
             .when(needs_scroll, |s| {
@@ -3309,46 +3395,7 @@ impl Render for TabsWindow {
             }))
             .on_scroll_wheel(
                 cx.listener(move |this, event: &ScrollWheelEvent, _win, _cx| {
-                    let Some(s) = this.active_session() else {
-                        return;
-                    };
-                    let pad = PAD / 2.0;
-                    let cols = s.cols.load(Ordering::Relaxed).max(1) as usize;
-                    let rows = s.rows.load(Ordering::Relaxed).max(1) as usize;
-                    let col = ((((event.position.x / px(1.)) - pad) / cw).max(0.0) as usize)
-                        .min(cols - 1);
-                    let row = ((((event.position.y / px(1.)) - TAB_STRIP_H) / ch).max(0.0)
-                        as usize)
-                        .min(rows - 1);
-                    let mods = ReportMods {
-                        alt: event.modifiers.alt,
-                        ctrl: event.modifiers.control,
-                    };
-                    // Vertical: PTY first (mouse reporting / alternate scroll),
-                    // local scrollback otherwise.
-                    this.scroll_accum += match &event.delta {
-                        ScrollDelta::Pixels(p) => (p.y / px(1.)) / ch,
-                        ScrollDelta::Lines(l) => l.y,
-                    };
-                    let whole = this.scroll_accum.trunc() as i32;
-                    if whole != 0 {
-                        this.scroll_accum -= whole as f32;
-                        let s = this.active_session().unwrap();
-                        if !s.wheel_to_pty(whole, col, row, mods) {
-                            s.scroll_display(whole);
-                        }
-                    }
-                    // Horizontal: reporting-only (buttons 66/67).
-                    this.hwheel_accum += match &event.delta {
-                        ScrollDelta::Pixels(p) => (p.x / px(1.)) / cw,
-                        ScrollDelta::Lines(l) => l.x,
-                    };
-                    let whole_x = this.hwheel_accum.trunc() as i32;
-                    if whole_x != 0 {
-                        this.hwheel_accum -= whole_x as f32;
-                        let s = this.active_session().unwrap();
-                        s.hwheel_to_pty(whole_x, col, row, mods);
-                    }
+                    this.wheel_scroll(event, cw, ch);
                 }),
             )
             .child(strip)

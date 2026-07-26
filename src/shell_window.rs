@@ -610,6 +610,7 @@ impl Render for ShellWindow {
                     inset: TERMINAL_PANE_PADDING_PX / 2.0,
                     caret_enabled: crate::tsf::enabled(),
                     measured: Some(pane_measured),
+                    origin: None,
                 },
                 // TSF (gated by caret_enabled above): feed the caret rect
                 // (client physical px) so the IME candidate window opens at

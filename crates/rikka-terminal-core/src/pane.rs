@@ -70,6 +70,12 @@ where
     /// host can resize the PTY to the true painted fit instead of estimating
     /// chrome. `None` hosts (rikka) derive the size from the viewport.
     pub measured: Option<Rc<Cell<(f32, f32)>>>,
+    /// Optional origin sink: the painted pane origin (logical px, window
+    /// coords) written back each paint. Together with `measured` it gives the
+    /// host the pane's window-space bounds, so window-level events that gpui
+    /// delivers with window coordinates (the wheel) can be routed to the pane
+    /// under the cursor with correct cell coordinates.
+    pub origin: Option<Rc<Cell<(f32, f32)>>>,
 }
 
 /// The overlay canvas, pinned over its relative parent's content box.
@@ -105,10 +111,16 @@ where
         inset,
         caret_enabled,
         measured,
+        origin,
     } = args;
     canvas(
         |_bounds, _window, _cx| (),
         move |bounds: Bounds<Pixels>, (), window: &mut Window, cx| {
+            // Report the painted pane origin back (no notify — layout moves
+            // already repaint; the value is only read on later events).
+            if let Some(origin) = &origin {
+                origin.set((bounds.origin.x / px(1.), bounds.origin.y / px(1.)));
+            }
             // Report the painted pane size back to the host (deferred notify —
             // we are inside paint) so the PTY is resized to the true fit.
             // Hosts that estimate the size from the viewport pass `None`.
