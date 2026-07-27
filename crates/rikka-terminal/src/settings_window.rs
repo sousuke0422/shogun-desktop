@@ -54,6 +54,13 @@ enum Page {
     Terminal,
     Logging,
     Keys,
+    About,
+}
+
+/// `x.y.z-hash` — the crate version plus the commit it was built from
+/// (`+` suffix = the tree had uncommitted changes; see build.rs).
+pub fn version_string() -> String {
+    format!("{}-{}", env!("CARGO_PKG_VERSION"), env!("RIKKA_BUILD_HASH"))
 }
 
 /// The text-editable fields (click to focus, type/backspace/Ctrl+V).
@@ -944,6 +951,38 @@ impl SettingsWindow {
             )
             .into_any_element()
     }
+
+    fn page_about(c: &SearchColors) -> AnyElement {
+        let dim = |text: String| {
+            div()
+                .text_size(px(12.))
+                .text_color(rgba((c.text << 8) | 0x90))
+                .child(text)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(Self::page_title("Rikka Terminal について", c))
+            .child(
+                div()
+                    .mt(px(6.))
+                    .text_size(px(20.))
+                    .text_color(rgb(c.text))
+                    .child(version_string()),
+            )
+            .child(dim(format!(
+                "バージョン {} / コミット {}",
+                env!("CARGO_PKG_VERSION"),
+                env!("RIKKA_BUILD_HASH"),
+            )))
+            .child(div().h(px(10.)))
+            .child(dim(match crate::config::config_path() {
+                Some(p) => format!("設定ファイル: {}", p.display()),
+                None => "設定ファイル: 場所を解決できません".to_string(),
+            }))
+            .into_any_element()
+    }
 }
 
 impl Render for SettingsWindow {
@@ -990,7 +1029,10 @@ impl Render for SettingsWindow {
                             .child(self.nav_item(Page::Theme, "テーマ", 1, cx))
                             .child(self.nav_item(Page::Terminal, "ターミナル", 2, cx))
                             .child(self.nav_item(Page::Logging, "セッションログ", 3, cx))
-                            .child(self.nav_item(Page::Keys, "キー操作", 4, cx)),
+                            .child(self.nav_item(Page::Keys, "キー操作", 4, cx))
+                            // Pushed to the bottom of the rail, wt-style.
+                            .child(div().flex_1())
+                            .child(self.nav_item(Page::About, "Rikka Terminal について", 5, cx)),
                     )
                     .child(
                         div()
@@ -1006,6 +1048,7 @@ impl Render for SettingsWindow {
                                 Page::Terminal => self.page_terminal(&c, cx),
                                 Page::Logging => self.page_logging(&c, cx),
                                 Page::Keys => self.page_keys(&c),
+                                Page::About => Self::page_about(&c),
                             })),
                     ),
             )

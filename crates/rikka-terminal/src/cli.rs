@@ -188,7 +188,12 @@ pub fn parse(args: Vec<String>) -> Result<Launch, String> {
                         }
                     }
                     "-v" | "--version" => {
-                        return Err(concat!("RikkaTerminal ", env!("CARGO_PKG_VERSION")).into());
+                        // Same x.y.z-hash string the About page shows, so a
+                        // screenshot and a shell both name the same build.
+                        return Err(format!(
+                            "RikkaTerminal {}",
+                            crate::settings_window::version_string()
+                        ));
                     }
                     "-f" | "--focus" => {
                         it.next(); // always focused; accepted for compat
