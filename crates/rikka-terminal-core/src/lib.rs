@@ -2151,6 +2151,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sync_probe_2026_buffering() {
+        let mut term = make_term(20, 5);
+        let mut parser = Processor::<StdSyncHandler>::new();
+        for &b in b"\x1b[?2026h\x1b[1;1HXYZ".iter() {
+            parser.advance(&mut term, b);
+        }
+        let mid = take_snapshot(&term);
+        assert_eq!(
+            mid.cells[0][0].c, ' ',
+            "grid changed mid-sync - BSU not buffering"
+        );
+        for &b in b"\x1b[?2026l".iter() {
+            parser.advance(&mut term, b);
+        }
+        let after = take_snapshot(&term);
+        assert_eq!(
+            after.cells[0][0].c, 'X',
+            "ESU did not apply the buffered frame"
+        );
+    }
+
     /// Double-click = word (semantic boundaries), triple-click = whole line:
     /// the kind expands the range beyond the clicked cell, and survives the
     /// streaming re-pin.
