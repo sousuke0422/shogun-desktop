@@ -330,6 +330,9 @@ impl SettingsWindow {
             .py(px(6.))
             .rounded(px(4.))
             .text_size(px(13.))
+            // A label wider than the rail must clip, not spill into the page
+            // area beside it.
+            .overflow_hidden()
             .when(selected, |d| d.bg(rgb(c.input_bg)).text_color(rgb(c.text)))
             .when(!selected, |d| {
                 d.text_color(rgba((c.text << 8) | 0xA0))
@@ -347,6 +350,10 @@ impl SettingsWindow {
                 div()
                     .w(px(3.))
                     .h(px(14.))
+                    // Never let a long label squeeze the selection marker
+                    // away: without this the flex row shrinks it to nothing
+                    // and the selected page loses its accent bar.
+                    .flex_shrink_0()
                     .rounded(px(2.))
                     .when(selected, |d| d.bg(rgb(c.accent))),
             )
@@ -1032,7 +1039,9 @@ impl Render for SettingsWindow {
                             .child(self.nav_item(Page::Keys, "キー操作", 4, cx))
                             // Pushed to the bottom of the rail, wt-style.
                             .child(div().flex_1())
-                            .child(self.nav_item(Page::About, "Rikka Terminal について", 5, cx)),
+                            // Short enough for the 140px rail; the page itself
+                            // carries the full product name.
+                            .child(self.nav_item(Page::About, "バージョン情報", 5, cx)),
                     )
                     .child(
                         div()
