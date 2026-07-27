@@ -260,6 +260,13 @@ fn launch_client(
         ("COLORTERM", "truecolor"),
         ("TERM_PROGRAM", term_program),
         ("TERM_PROGRAM_VERSION", term_program_version),
+        // cargo's OSC 9;4 progress auto-detection only recognizes
+        // WT_SESSION / ConEmuANSI / TERM_PROGRAM ∈ {WezTerm, ghostty} —
+        // never a terminal it doesn't know, however capable. We render
+        // OSC 9;4 (tab bar + taskbar button) but identify honestly, so
+        // flip cargo's own switch instead of masquerading: the CARGO_
+        // namespace can't leak into any other tool's detection.
+        ("CARGO_TERM_PROGRESS_TERM_INTEGRATION", "true"),
     ]);
 
     let mut size: usize = 0;
