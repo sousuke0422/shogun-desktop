@@ -579,6 +579,11 @@ impl LineLayoutCache {
                 // the old running count.
                 let mut cell = 0usize;
                 let mut last_index = 0usize;
+                // Natural x of the glyph that opened the current cluster, read
+                // before that glyph was re-pinned — the anchor intra-cluster
+                // offsets (combining marks) are preserved against.
+                let mut cluster_index = usize::MAX;
+                let mut cluster_natural_x = px(0.);
                 for run in layout.runs.iter_mut() {
                     for glyph in run.glyphs.iter_mut() {
                         cell = if glyph.index >= last_index {
@@ -590,10 +595,23 @@ impl LineLayoutCache {
                             text[..glyph.index].chars().count()
                         };
                         last_index = glyph.index;
-                        let target = cell as f32 * force_width;
-                        if (glyph.position.x - target).abs() > px(1.) {
-                            glyph.position.x = target;
+                        if glyph.index != cluster_index {
+                            cluster_index = glyph.index;
+                            cluster_natural_x = glyph.position.x;
                         }
+                        // Pin UNCONDITIONALLY. Snapping only when a glyph sat
+                        // more than a pixel off its cell left its x depending
+                        // on how the shaping happened to come out, so any run
+                        // whose boundaries move between frames — a spinner
+                        // shimmer coloring each cell separately, the cursor
+                        // cell isolating itself, a redraw re-splitting a line —
+                        // flipped glyphs between their natural and snapped
+                        // positions and the text visibly danced left-right at
+                        // the animation's rate. Pinned outright, x is a pure
+                        // function of the cell; the cluster-relative delta
+                        // keeps a combining mark on its base.
+                        glyph.position.x =
+                            cell as f32 * force_width + (glyph.position.x - cluster_natural_x);
                     }
                 }
             }

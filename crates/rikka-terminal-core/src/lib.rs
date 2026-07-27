@@ -2151,6 +2151,62 @@ mod tests {
         }
     }
 
+    /// Replay a captured PTY dump (`RIKKA_DUMP_REPLAY=<path>`) frame by frame
+    /// and report where each frame put the row matching `RIKKA_DUMP_MATCH`
+    /// (default "interrupt"). A column that oscillates between frames means
+    /// the horizontal jitter is already in the engine's grid; a stable column
+    /// puts it downstream in the renderer. Ignored by default — a diagnostic,
+    /// not a gate.
+    #[test]
+    #[ignore]
+    fn replay_dump_frame_columns() {
+        let Some(path) = std::env::var_os("RIKKA_DUMP_REPLAY") else {
+            eprintln!("set RIKKA_DUMP_REPLAY=<dump path> to run");
+            return;
+        };
+        let data = std::fs::read(&path).expect("read dump");
+        let cols: usize = std::env::var("RIKKA_DUMP_COLS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let rows: usize = std::env::var("RIKKA_DUMP_ROWS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(37);
+        let needle = std::env::var("RIKKA_DUMP_MATCH").unwrap_or_else(|_| "interrupt".into());
+        let mut term = make_term(cols, rows);
+        let mut parser = Processor::<StdSyncHandler>::new();
+        const ESU: &[u8] = b"\x1b[?2026l";
+        let mut frames = 0usize;
+        let mut seen: Vec<(usize, usize, usize, String)> = Vec::new();
+        for (i, &b) in data.iter().enumerate() {
+            parser.advance(&mut term, b);
+            // Frame boundary: the byte just consumed completed an ESU.
+            if i + 1 >= ESU.len() && &data[i + 1 - ESU.len()..=i] == ESU {
+                frames += 1;
+                let snap = take_snapshot(&term);
+                for (r, row) in snap.cells.iter().enumerate() {
+                    let text: String = row.iter().map(|c| c.c).collect();
+                    if text.contains(&needle) {
+                        let first = text.find(|c: char| c != ' ').unwrap_or(0);
+                        seen.push((frames, r, first, text.trim().chars().take(46).collect()));
+                    }
+                    let _ = &text;
+                }
+            }
+        }
+        eprintln!("frames={frames} matches={}", seen.len());
+        for (f, r, col, text) in seen.iter().take(40) {
+            eprintln!("frame {f:4} row {r:2} startcol {col:3}  {text}");
+        }
+        let cols_seen: std::collections::BTreeSet<usize> =
+            seen.iter().map(|(_, _, c, _)| *c).collect();
+        let rows_seen: std::collections::BTreeSet<usize> =
+            seen.iter().map(|(_, r, _, _)| *r).collect();
+        eprintln!("distinct start columns: {cols_seen:?}");
+        eprintln!("distinct rows: {rows_seen:?}");
+    }
+
     #[test]
     fn sync_probe_2026_buffering() {
         let mut term = make_term(20, 5);
