@@ -80,6 +80,9 @@ bitflags! {
         /// DECLRMM (private mode 69): the application may set left/right
         /// margins, and `CSI s` means DECSLRM instead of SCOSC.
         const LEFT_RIGHT_MARGIN       = 1 << 23;
+        /// DECSCNM (private mode 5): the whole screen renders with fg and bg
+        /// swapped. terminfo's `flash` is `?5h` then `?5l` — the visual bell.
+        const SCREEN_REVERSE          = 1 << 24;
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
@@ -2135,6 +2138,13 @@ impl<T: EventListener> Handler for Term<T> {
                 self.margins = Column(0)..Column(self.columns());
                 return;
             },
+            // DECSCNM: the visual bell (terminfo `flash`) is `?5h`, a pause,
+            // then `?5l`.
+            PrivateMode::Unknown(5) => {
+                self.mode.insert(TermMode::SCREEN_REVERSE);
+                self.mark_fully_damaged();
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {} in set_private_mode", mode);
                 return;
@@ -2200,6 +2210,11 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(69) => {
                 self.mode.remove(TermMode::LEFT_RIGHT_MARGIN);
                 self.margins = Column(0)..Column(self.columns());
+                return;
+            },
+            PrivateMode::Unknown(5) => {
+                self.mode.remove(TermMode::SCREEN_REVERSE);
+                self.mark_fully_damaged();
                 return;
             },
             PrivateMode::Unknown(mode) => {

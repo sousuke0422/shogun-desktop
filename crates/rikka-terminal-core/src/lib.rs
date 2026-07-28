@@ -1034,6 +1034,9 @@ pub struct GridSnapshot {
     /// OSC 12 cursor color, when the application set one. `None` = paint
     /// the reverse-video block / theme-foreground thin cursor as always.
     pub cursor_color: Option<(u8, u8, u8)>,
+    /// DECSCNM (`?5`): the whole screen renders with fg and bg swapped.
+    /// terminfo's `flash` sets it, waits, and clears it — the visual bell.
+    pub reverse_screen: bool,
     /// The cursor blinks (DECSCUSR 1/3/5 or DECSET ?12) — rides the same
     /// 600 ms phase and 300 ms refresh timer as SGR blink.
     pub cursor_blink: bool,
@@ -1065,6 +1068,7 @@ impl GridSnapshot {
             cursor: (0, 0),
             cursor_shape: CursorShapeKind::default(),
             cursor_color: None,
+            reverse_screen: false,
             cursor_blink: false,
             selection: None,
             display_offset: 0,
@@ -1775,6 +1779,9 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         // OSC 12: the app's dynamic cursor color, honored by the renderer.
         cursor_color: term.colors()[alacritty_terminal::vte::ansi::NamedColor::Cursor]
             .map(|c| (c.r, c.g, c.b)),
+        reverse_screen: term
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::SCREEN_REVERSE),
         // Hidden gates the blink flag so `?25l` apps don't arm the refresh
         // timer for a cursor that never draws.
         cursor_blink: term.cursor_style().blinking && cursor_shape != CursorShapeKind::Hidden,
@@ -2318,6 +2325,25 @@ mod tests {
             row0.starts_with("AAAA2"),
             "full-width scroll broke: {:?}",
             row0
+        );
+    }
+
+    /// DECSCNM: terminfo declares `flash` as `?5h` … `?5l`, so the visual
+    /// bell only exists if the mode actually reaches the snapshot.
+    #[test]
+    fn decscnm_reverses_the_screen() {
+        let mut term = make_term(10, 3);
+        advance_bytes(&mut term, b"hi");
+        assert!(!take_snapshot(&term).reverse_screen);
+        advance_bytes(&mut term, b"\x1b[?5h");
+        assert!(
+            take_snapshot(&term).reverse_screen,
+            "?5h did not set DECSCNM"
+        );
+        advance_bytes(&mut term, b"\x1b[?5l");
+        assert!(
+            !take_snapshot(&term).reverse_screen,
+            "?5l did not clear DECSCNM"
         );
     }
 

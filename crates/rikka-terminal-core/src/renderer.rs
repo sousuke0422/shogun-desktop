@@ -184,18 +184,30 @@ pub fn color_to_rgba(color: ResolvedColor) -> Rgba {
     }
 }
 
-/// Resolve the display fg/bg for a [`Run`], applying SGR dim/inverse and
-/// block-cursor inversion (in that order — the cursor inverts whatever the
+/// Resolve the display fg/bg for a [`Run`], applying DECSCNM, SGR dim/inverse
+/// and block-cursor inversion (in that order — the cursor inverts whatever the
 /// cell already displays). An OSC 12 `cursor_color` replaces the inverted
 /// block's background when set.
 ///
 /// Returns `(fg, bg_opt)`.  `None` bg means transparent.
-fn resolve_run_colors(run: &Run, cursor_color: Option<Rgba>) -> (Rgba, Option<Rgba>) {
+fn resolve_run_colors(
+    run: &Run,
+    cursor_color: Option<Rgba>,
+    reverse_screen: bool,
+) -> (Rgba, Option<Rgba>) {
     let mut fg = color_to_rgba(run.fg);
     let mut bg = match run.bg {
         ResolvedColor::Rgb(r, g, b) => Some(rgba(u32::from_be_bytes([r, g, b, 0xff]))),
         ResolvedColor::Default => None,
     };
+    if reverse_screen {
+        // DECSCNM (?5): the screen as a whole is inverted, BEFORE per-cell
+        // SGR — so a cell that also carries SGR 7 swaps back to normal, which
+        // is what makes an inverted selection still stand out during a flash.
+        let new_bg = Some(fg);
+        fg = bg.unwrap_or_else(default_bg);
+        bg = new_bg;
+    }
     if run.style.dim {
         // SGR 2 (faint): scale the ink toward black, leaving bg untouched.
         // Applied BEFORE inverse (xterm order): faint dims the original
@@ -1207,6 +1219,8 @@ pub fn render_grid(
             .map(|d| (d.as_millis() / 600) % 2 == 1)
             .unwrap_or(false);
     // OSC 12 cursor color (None = reverse-video block / theme-fg thin bar).
+    // DECSCNM: hoisted out of the paint closure, it applies to every run.
+    let reverse_screen = snap.reverse_screen;
     let cursor_rgba: Option<Rgba> = snap
         .cursor_color
         .map(|(r, g, b)| rgba(u32::from_be_bytes([r, g, b, 0xff])));
@@ -1310,7 +1324,8 @@ pub fn render_grid(
                     for run in runs {
                         let x = ox + col as f32 * cw;
                         col += run.width;
-                        let (fg_rgba, bg_opt) = resolve_run_colors(&run, cursor_rgba);
+                        let (fg_rgba, bg_opt) =
+                            resolve_run_colors(&run, cursor_rgba, reverse_screen);
 
                         if let Some(bg) = bg_opt {
                             window.paint_quad(fill(
@@ -2026,7 +2041,7 @@ mod tests {
                 ..CellStyle::default()
             },
         );
-        let (fg, bg) = resolve_run_colors(&run, None);
+        let (fg, bg) = resolve_run_colors(&run, None, false);
         // fg becomes the pane base color (transparent default bg), bg the ink.
         assert_eq!(fg, default_bg());
         assert_eq!(bg, Some(rgba(0xc80a0aff)));
@@ -2042,7 +2057,7 @@ mod tests {
                 ..CellStyle::default()
             },
         );
-        let (fg, bg) = resolve_run_colors(&run, None);
+        let (fg, bg) = resolve_run_colors(&run, None, false);
         assert!((fg.r - 0.6).abs() < 1e-5);
         assert_eq!(bg, Some(rgba(0x0000ffff)));
     }
