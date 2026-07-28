@@ -240,16 +240,37 @@ additional fonts"). The window is also smaller and in a different font than
 the shots above. This picture exists to answer one question, and it is not
 comparable on the rest.
 
-### Alacritty (upstream, system conhost)
+### Alacritty upstream — and what our fork actually adds
+
+RikkaTerminal's engine is a vendored fork of `alacritty_terminal`, so upstream
+Alacritty is the closest thing to a control for our own engine. It is worth
+unmasking, and it can be: Alacritty loads a sideloaded `conpty.dll` when one
+sits beside the exe and falls back to the system API otherwise
+(`tty/windows/conpty.rs`). The install ships no pair, so by default it runs on
+the in-box conhost — but drop ours next to a copy of `alacritty.exe` and the
+engine comes out from behind the host.
+
+Same binary, same window, two hosts:
+
+| | rows 2 / 3 | SGR 58 red px | row 12 DECSLRM |
+|---|---|---|---|
+| in-box conhost 10.0.19041.4522 | fail | **0** | fail |
+| our `OpenConsole.exe` 1.24.2607.10001 | pass | **312** | **still fails** |
+
+![Alacritty on a modern ConPTY pair](probe-alacritty-modern-host.png)
+
+On a modern host upstream passes **eleven of twelve**. The colon-form rows
+were never its fault, exactly as with wezterm. What does not come back is
+DECSLRM, and that one is the engine's own: upstream keeps no margin state,
+and its `vte` dependency does not even hand `CSI s` to the terminal with its
+parameters. Both are local additions here — which makes this screenshot the
+honest measure of what the fork contributes, rather than the assertion that
+used to stand in this section.
+
+For contrast, the same binary on the in-box conhost, which is what a user
+gets by default:
 
 ![Alacritty running the probe](probe-alacritty.png)
-
-RikkaTerminal's engine is a vendored fork of `alacritty_terminal`, and DECSLRM
-is one of the local additions: upstream keeps no margin state, and its vte
-dependency does not even hand `CSI s` to the terminal with its parameters. So
-the margin row is answerable from source rather than from this screenshot — it
-would fail on the engine's own merits, host notwithstanding. The other rows
-are the shared inheritance, and they match.
 
 ### Konsole for Windows (system conhost)
 
