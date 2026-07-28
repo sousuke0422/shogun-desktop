@@ -162,6 +162,16 @@ dir = "C:\\work"                     # 開始ディレクトリ（任意）
 例: `rt --pos 150,150 --size 100,30 nt -d C:\work --title 作業 ; nt -p cmd ; ping localhost`
 例: `rt -e ssh anchor` ・ `rt --geometry 120x40+100+100 -- btop` ・ `rt . C:\work`
 
+## 端末能力（実測）
+
+`TERM=xterm-ghostty` を名乗る以上、その terminfo が宣言する能力には実装で応える
+必要がある。宣言分を1本のスクリプトで叩き、Windows Terminal と同じフォント・
+同じ窓サイズで並べた実測が [docs/compat/](../../docs/compat/) にある。
+
+DECSLRM（左右マージン）は tmux がペイン1枚だけをスクロールするのに使う。
+無視すると全幅がスクロールして**隣のペインの内容が消え**、tmux は「端末が指示
+通り処理した」前提で再送しないため、出力の無いペインは空白のまま取り残される。
+
 ## 非目標（プロトタイプでは持たない）
 
 - 分割・設定ファイル・フォント同梱・検索・タブDnD（ロードマップ P1 残）

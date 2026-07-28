@@ -68,6 +68,8 @@ cargo run --release
 
 - ユニットテスト: `cargo test`
 - GUI E2E（実バイナリ＋合成入力）: [e2e/](e2e/) — pwsh 7 で実行、対話デスクトップ必須
+- 端末能力の実証: [docs/compat/](docs/compat/) — `xterm-ghostty` が宣言する能力を
+  1本のスクリプトで叩き、Windows Terminal と並べた実測スクリーンショットを置いている
 
 ## アーキテクチャ
 
