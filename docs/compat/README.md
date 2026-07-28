@@ -120,8 +120,6 @@ parser does not handle the colon syntax. That reading is wrong. Run the
 **same build** on Linux, where ConPTY is not in the path at all, and all
 three pass:
 
-![wezterm 20240203 on Linux](probe-wezterm-linux.png)
-
 | | rows 2 / 3 | SGR 58 red pixels |
 |---|---|---|
 | wezterm 20240203, Windows, its own 2024-era ConPTY | fail | **0** |
@@ -130,7 +128,9 @@ three pass:
 Same binary, same probe. What differs is the console host, so the strip
 belongs to the 2024-era ConPTY pair wezterm bundles — not to its engine. A
 Windows user does see the failures, which is why the row stays in the table,
-but nothing here says anything about wezterm's own VT parsing.
+but nothing here says anything about wezterm's own VT parsing. The screenshot
+behind those numbers is in [an aside](#wezterm-on-linux-the-colon-form-control),
+kept out of the way because it cannot be read as a full capability run.
 
 That also joins up with the section below: the in-box conhost drops **the
 same three things**. Stripping colon-form SGR sub-parameters looks like a
@@ -221,6 +221,24 @@ even though the code has moved on.
 
 Worth recording that it does so through ConPTY **1.22.2502.04002**, an older
 host than the 1.24.2607.10001 we carry.
+
+### wezterm on Linux (the colon-form control)
+
+![wezterm 20240203 on Linux](probe-wezterm-linux.png)
+
+The `20240203-110809-5046fc22` AppImage — the same build as the Windows
+stable — run under WSLg, so the shell is reached through a real pty and no
+console host is involved. Rows 2, 3 and 4 pass here and fail on Windows,
+which is what pins those failures on the bundled ConPTY rather than on
+wezterm.
+
+**Do not read the other rows off this image.** The AppImage sandbox has no
+CJK fonts, so row 9's `日本語` and `ﾊﾟ` come out as replacement boxes; that
+is the font situation in a stripped container, not the terminal dropping
+anything. wezterm says as much on startup ("You may wish to install
+additional fonts"). The window is also smaller and in a different font than
+the shots above. This picture exists to answer one question, and it is not
+comparable on the rest.
 
 ### Alacritty (upstream, system conhost)
 
