@@ -13,9 +13,12 @@ Every sequence it uses is one the `xterm-ghostty` entry declares.
 bash docs/compat/terminal-capability-probe.sh
 ```
 
-Both screenshots below are the same script, at the same font (Cascadia Mono
-13pt) and the same window size, so the differences are engine behaviour and
-nothing else.
+The two screenshots below are the same script at the same font (Cascadia Mono
+13pt) and the same window size. Both terminals feed their shell through a
+modern ConPTY — RikkaTerminal through the `conpty.dll` + `OpenConsole.exe`
+pair it ships, Windows Terminal through the one it bundles — so the
+differences between them are engine behaviour. (That premise is not free on
+Windows; see [On Windows the console host counts too](#on-windows-the-console-host-counts-too).)
 
 ## RikkaTerminal
 
@@ -42,19 +45,44 @@ nothing else.
 | 11 | DECSCNM (`?5`) screen reverse | yes | yes |
 | 12 | **DECSLRM left/right margins** | yes | **yes** |
 
-## Aside: the same probe behind ConPTY
+## On Windows the console host counts too
+
+Every terminal here drives the shell through ConPTY, so what reaches its
+engine is whatever the console host chose to forward. **Which host** matters
+as much as the engine. RikkaTerminal ships `conpty.dll` and `OpenConsole.exe`
+beside the exe and drives that pair directly; Windows Terminal bundles its
+own; everything else falls back to the copy in `C:\Windows\System32`.
+
+That fallback is not equivalent. Below is the *same RikkaTerminal binary* —
+the engine that produced the correct picture above — with the sideloaded pair
+removed so it lands on the in-box conhost:
+
+![RikkaTerminal forced onto the system conhost](probe-rikka-on-system-conhost.png)
+
+The margin block comes out in the "wrong" shape: whole lines moved, `M01`/`M02`
+scrolled away, every `B` still present. **The in-box conhost strips DECSLRM**,
+so the fence never arrives and whether the engine implements it stops
+mattering.
+
+So a screenshot taken on the system conhost cannot tell you what that
+terminal's engine supports. Two are kept below anyway, labelled as such,
+because they show what the older host costs.
+
+### Alacritty (upstream, system conhost)
+
+![Alacritty running the probe](probe-alacritty.png)
+
+RikkaTerminal's engine is a vendored fork of `alacritty_terminal`, and DECSLRM
+is one of the local additions: upstream keeps no margin state, and its vte
+dependency does not even hand `CSI s` to the terminal with its parameters. So
+the margin row would fail on the engine's own merits here regardless of the
+host. The other rows are the shared inheritance, and they match.
+
+### Konsole for Windows (system conhost)
 
 ![Konsole for Windows running the probe](probe-konsole-via-conpty.png)
 
-This is Konsole's Windows build, and it is **not a third data point about
-Konsole** — on Windows it drives the shell through ConPTY, so conhost parses
-the stream and re-synthesises it before Konsole's own engine ever sees it.
-What the picture measures is that path.
-
-It is worth keeping for one thing: the margin block comes out in the "wrong"
-shape (whole lines moved, `M01`/`M02` scrolled away, every `B` still present),
-which is what a DECSLRM fence that never arrives looks like. Any terminal
-hosted behind ConPTY inherits that, however capable its own engine is.
+Konsole's own engine is not on trial here, for the same reason.
 
 ## Notes
 
