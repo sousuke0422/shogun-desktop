@@ -411,6 +411,27 @@ keyboard protocol・Tera Term 風セッションログ・検索の regex/全マ�
 
 ## 将来構想
 
+> **マイルストーン（殿見立て 2026-07-28）**: このペースなら遅くとも **2026年9月**
+> に「ConPTY ボトルネック解消」へ着手する。下の 2 案は排他ではない。**忠実度が
+> 要るのは WSL 側（tmux・エージェント群）だけ**なので、まず経路を二分して
+> WSL 側だけ迂回し、Windows native は ConPTY のまま置くのが現実解。
+
+- [ ] **ConPTY を通らない WSL 経路（本命）** — 2026-07-28 の実測で下地が揃った。
+      WSL 内の中継エージェントへ socket で繋げば **Linux の本物の pty** に届く
+      ので、conhost 起因の損失（APC 剥がし・kitty keyboard 不通・teardown 丸呑み・
+      DECSLRM 剥がし）が **一括で消える**。sd の家老陣タブが ssh 経由で同じ
+      忠実度を出している＝**達成可能性は実証済み**。常駐プロセスなので
+      rikka daemon manager の最初の実用ユニットにもなる（命名・実装は保留中）。
+      - **ssh → Windows sshd は逆効果**（同日調査）。`sshd.exe` 内に
+        `CreatePseudoConsole` / `is_conpty_supported` があり、対話セッションでは
+        sshd 自身が疑似コンソールを張る。しかも張るのが sshd 側なので**同梱
+        OpenConsole を使わせられず、システム conhost に固定**される。加えて
+        LogonUser トークン由来の権限差（ネットワークドライブ・DPAPI・
+        プロファイル初期化）。常用経路にする理由なし。
+      - fallback 実装 `ssh-shellhost.exe` も `ReadConsoleOutputW` /
+        `WriteConsoleInputW` で**画面バッファを読んで再構成する**方式＝
+        どちらの道もコンソールを経由する。
+
 - [ ] **own OpenConsole（fork 保有）** — 殿意向 2026-07-16。conhost 起因の実害が
       累積しており（①APC 剥がし=ローカル kitty 画像不可・sixel 迂回中
       ②OSC 0 タブタイトル不達疑い ③kitty keyboard pop で終了 burst 丸呑み
@@ -427,6 +448,10 @@ keyboard protocol・Tera Term 風セッションログ・検索の regex/全マ�
       - **着手トリガー**: 端末側回避が不可能な要求が出た時。筆頭candidate=
         ローカル kitty graphics passthrough（conhost が APC を落とす限り
         こちら側では原理的に直せない）。
+      - **上の WSL 経路が入ると射程が狭まる**: kitty graphics も含め、WSL 側の
+        要求は迂回で片付く。fork の残る正当性は **Windows native シェル
+        （pwsh/cmd）でも同じ忠実度が要る場合**に限られる。C++/MSVC toolchain
+        と upstream 追従のコストを踏まえ、**WSL 経路を先に打つ**のが安い。
 
 ## 保守メモ
 
