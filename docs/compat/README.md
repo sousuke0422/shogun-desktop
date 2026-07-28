@@ -180,10 +180,16 @@ quantity instead of an environment variable.
 ![wezterm nightly running the probe](probe-wezterm-nightly.png)
 
 `wezterm-gui.exe 20260716-195552-76b606ec` passes **all twelve**, including
-the three colon-form rows the 2024 stable fails. It is not in the main table
-because it is a nightly build a user has to go and fetch, while the stable
-install is what one gets by default — but it is the honest answer to "does
-wezterm support this": the current code does, the shipping stable does not.
+the three colon-form rows the 2024 stable fails. That is the honest answer to
+"does wezterm support this": the current code does, the shipping stable does
+not.
+
+It sits in an aside rather than the main table because the stable build is
+what one gets by default — not because the nightly is hard to come by. There
+is an installer for it, and it is carried by winget and by scoop's `versions`
+bucket. It is absent from the GitHub releases page, though; the download
+comes from the project's own site instead, which is enough of a detour that
+someone who does not already know to look for it will turn back.
 
 Worth recording that it does so through ConPTY **1.22.2502.04002**, an older
 host than the 1.24.2607.10001 we carry.
