@@ -31,14 +31,41 @@ rather than one build. The wezterm shots therefore use its default font at
 11pt. Compare the capabilities, not the typography, and do not read anything
 into glyph shapes in those two images.
 
-**The screen is not stable immediately after the probe.** Line 11 restores
-from DECSCNM with `?5l`, and for several seconds afterwards a repaint can be
-incomplete — foreground text missing while backgrounds and emoji are already
-there. Screenshots taken ~10s in were missing the first ten lines entirely;
-the same window at ~30s was complete. Seen on wezterm and on RikkaTerminal
-driven by the in-box conhost. **Wait for the display to settle before
-capturing**, or you will publish a picture of a repaint and call it a
-capability.
+**wezterm does not finish painting after the probe.** Line 11 restores from
+DECSCNM with `?5l`, and everything printed before it can be left unpainted:
+the first ten lines lose their foreground text while their backgrounds, the
+red SGR 58 underline and the emoji are already on screen. Lines printed after
+the toggle are fine.
+
+The text is not lost. **Select the region and the glyphs are there** — the
+cells are in wezterm's model and simply are not being drawn, and selecting
+them forces the repaint that shows them. So a capability read from one of
+these windows is still valid once it has been painted; what is at risk is
+reading "missing" off a screenshot.
+
+How long it stays unpainted tracks the ConPTY generation, and not in the
+direction one would guess:
+
+| Terminal | ConPTY it drove | After `?5l` |
+|---|---|---|
+| wezterm nightly | its own 1.22.2502.04002 | repainted within ~30s |
+| wezterm nightly | our 1.24.2607.10001 | still unpainted; does not recover |
+| RikkaTerminal | 1.22.2502.04002 | complete within 10s |
+| RikkaTerminal | 1.24.2607.10001 | complete within 10s |
+
+The **newer** host is the worse one for wezterm, while the same binary of
+ours is unaffected by either. So this is not "old hosts drop things" and not
+the host alone — it is wezterm's repainting, and a newer ConPTY apparently
+stops handing it whatever it was relying on to invalidate the region.
+
+Practically: force a repaint, or take two captures minutes apart and compare
+them, before publishing one. And do not read a delta between two captures as
+correctness — a window that is stuck shows no change at all, which is exactly
+how the 1.24 row above first got mistaken for "stable".
+
+RikkaTerminal driven by the in-box conhost has also been seen to sit
+incomplete for a while. That case is not explained here; it is a much older
+host and may be a different mechanism.
 
 Captures here are taken with `PrintWindow(PW_RENDERFULLCONTENT)` against a
 background window, from a DPI-aware process. Never with synthetic keystrokes:
