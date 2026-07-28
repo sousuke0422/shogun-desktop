@@ -41,10 +41,10 @@ jobs:
           restore-keys: macos14-cargo-
 
       - name: Build (release)
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Install ImageMagick
         run: brew install imagemagick
@@ -89,10 +89,10 @@ jobs:
           restore-keys: windows-cargo-
 
       - name: Build (release)
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -139,10 +139,10 @@ jobs:
           restore-keys: linux-cargo-
 
       - name: Build (release)
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -179,7 +179,7 @@ jobs:
 
       # Plain clippy (no -D warnings): 22 existing warnings would fail CI.
       - name: clippy
-        run: cargo clippy --workspace --tests
+        run: cargo clippy --workspace --tests --locked
 
       - name: rustfmt check
         run: cargo fmt --all --check
