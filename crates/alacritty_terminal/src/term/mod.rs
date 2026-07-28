@@ -77,6 +77,9 @@ bitflags! {
         const REPORT_ALTERNATE_KEYS   = 1 << 20;
         const REPORT_ALL_KEYS_AS_ESC  = 1 << 21;
         const REPORT_ASSOCIATED_TEXT  = 1 << 22;
+        /// DECLRMM (private mode 69): the application may set left/right
+        /// margins, and `CSI s` means DECSLRM instead of SCOSC.
+        const LEFT_RIGHT_MARGIN       = 1 << 23;
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
@@ -300,6 +303,13 @@ pub struct Term<T> {
     /// Range going from top to bottom of the terminal, indexed from the top of the viewport.
     scroll_region: Range<Line>,
 
+    /// DECSLRM left/right margins: the column range scrolling is confined to
+    /// while [`TermMode::LEFT_RIGHT_MARGIN`] is set. Full width otherwise —
+    /// and a full-width range takes the ordinary path, so scrollback still
+    /// works exactly as before for every application that never asks for
+    /// margins.
+    margins: Range<Column>,
+
     /// Modified terminal colors.
     colors: Colors,
 
@@ -425,6 +435,7 @@ impl<T> Term<T> {
         Term {
             inactive_grid,
             scroll_region,
+            margins: Column(0)..Column(num_cols),
             event_proxy,
             damage,
             config,
@@ -773,8 +784,10 @@ impl<T> Term<T> {
             cmp::max(cmp::min(vi_point.line, viewport_bottom), viewport_top);
         self.vi_mode_cursor.point.column = cmp::min(vi_point.column, self.last_column());
 
-        // Reset scrolling region.
+        // Reset scrolling region and margins — a stale right margin past the
+        // new width would silently narrow every later scroll.
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        self.margins = Column(0)..Column(self.columns());
 
         // Resize damage information.
         self.damage.resize(num_cols, num_lines);
@@ -823,6 +836,13 @@ impl<T> Term<T> {
 
         let region = origin..self.scroll_region.end;
 
+        // DECSLRM: confined to a column band, so whole-line movement (and the
+        // selection/vi bookkeeping that goes with it) does not apply.
+        if self.scroll_is_column_bounded() {
+            self.scroll_band_down(region, lines);
+            return;
+        }
+
         // Scroll selection.
         self.selection =
             self.selection.take().and_then(|s| s.rotate(self, &region, -(lines as i32)));
@@ -850,6 +870,12 @@ impl<T> Term<T> {
 
         let region = origin..self.scroll_region.end;
 
+        // DECSLRM: see `scroll_down_relative`.
+        if self.scroll_is_column_bounded() {
+            self.scroll_band_up(region, lines);
+            return;
+        }
+
         // Scroll selection.
         self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
 
@@ -861,6 +887,78 @@ impl<T> Term<T> {
         let line = &mut self.vi_mode_cursor.point.line;
         if (top <= *line) && region.end > *line {
             *line = cmp::max(*line - lines, top);
+        }
+        self.mark_fully_damaged();
+    }
+
+    /// The DECSLRM margins, as an effective column range — full width unless
+    /// the application both enabled DECLRMM and set a narrower pair.
+    #[inline]
+    fn effective_margins(&self) -> Range<Column> {
+        if self.mode.contains(TermMode::LEFT_RIGHT_MARGIN) {
+            let end = cmp::min(self.margins.end, Column(self.columns()));
+            self.margins.start..cmp::max(end, self.margins.start)
+        } else {
+            Column(0)..Column(self.columns())
+        }
+    }
+
+    /// True when scrolling must stay inside a column band rather than move
+    /// whole lines (which is what feeds the scrollback).
+    #[inline]
+    fn scroll_is_column_bounded(&self) -> bool {
+        let m = self.effective_margins();
+        m.start > Column(0) || m.end < Column(self.columns())
+    }
+
+    /// Scroll a COLUMN BAND of `region` up by `lines`, leaving every cell
+    /// outside the band untouched — DECSLRM's whole purpose, and what a
+    /// multiplexer relies on to scroll one pane without disturbing the panes
+    /// beside it. Nothing enters the scrollback: these lines are not leaving
+    /// the screen, only the band's slice of them is.
+    fn scroll_band_up(&mut self, region: Range<Line>, lines: usize) {
+        let cols = self.effective_margins();
+        let height = (region.end - region.start).0 as usize;
+        let lines = cmp::min(lines, height);
+        if lines == 0 || cols.start >= cols.end {
+            return;
+        }
+        for target in region.start.0..(region.end.0 - lines as i32) {
+            let source = target + lines as i32;
+            for col in cols.start.0..cols.end.0 {
+                let cell = self.grid[Line(source)][Column(col)].clone();
+                self.grid[Line(target)][Column(col)] = cell;
+            }
+        }
+        let template = self.grid.cursor.template.clone();
+        for line in (region.end.0 - lines as i32)..region.end.0 {
+            for col in cols.start.0..cols.end.0 {
+                self.grid[Line(line)][Column(col)] = template.clone();
+            }
+        }
+        self.mark_fully_damaged();
+    }
+
+    /// [`Self::scroll_band_up`] downwards.
+    fn scroll_band_down(&mut self, region: Range<Line>, lines: usize) {
+        let cols = self.effective_margins();
+        let height = (region.end - region.start).0 as usize;
+        let lines = cmp::min(lines, height);
+        if lines == 0 || cols.start >= cols.end {
+            return;
+        }
+        for target in ((region.start.0 + lines as i32)..region.end.0).rev() {
+            let source = target - lines as i32;
+            for col in cols.start.0..cols.end.0 {
+                let cell = self.grid[Line(source)][Column(col)].clone();
+                self.grid[Line(target)][Column(col)] = cell;
+            }
+        }
+        let template = self.grid.cursor.template.clone();
+        for line in region.start.0..(region.start.0 + lines as i32) {
+            for col in cols.start.0..cols.end.0 {
+                self.grid[Line(line)][Column(col)] = template.clone();
+            }
         }
         self.mark_fully_damaged();
     }
@@ -1930,6 +2028,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        self.margins = Column(0)..Column(self.columns());
         self.tabs = TabStops::new(self.columns());
         self.title_stack = Vec::new();
         self.title = None;
@@ -2029,6 +2128,13 @@ impl<T: EventListener> Handler for Term<T> {
     fn set_private_mode(&mut self, mode: PrivateMode) {
         let mode = match mode {
             PrivateMode::Named(mode) => mode,
+            // DECLRMM: vte has no name for 69, but honoring it is what makes
+            // `CSI s` mean DECSLRM — see `set_left_right_margins`.
+            PrivateMode::Unknown(69) => {
+                self.mode.insert(TermMode::LEFT_RIGHT_MARGIN);
+                self.margins = Column(0)..Column(self.columns());
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {} in set_private_mode", mode);
                 return;
@@ -2089,6 +2195,13 @@ impl<T: EventListener> Handler for Term<T> {
     fn unset_private_mode(&mut self, mode: PrivateMode) {
         let mode = match mode {
             PrivateMode::Named(mode) => mode,
+            // DECLRMM off: margins go back to full width, and `CSI s` is
+            // SCOSC again.
+            PrivateMode::Unknown(69) => {
+                self.mode.remove(TermMode::LEFT_RIGHT_MARGIN);
+                self.margins = Column(0)..Column(self.columns());
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {} in unset_private_mode", mode);
                 return;
@@ -2244,6 +2357,28 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     #[inline]
+    /// DECSLRM, or SCOSC when the application never enabled DECLRMM — `CSI s`
+    /// is both, and only the mode tells them apart.
+    #[inline]
+    fn set_left_right_margins(&mut self, left: Option<usize>, right: Option<usize>) {
+        if !self.mode.contains(TermMode::LEFT_RIGHT_MARGIN) {
+            self.save_cursor_position();
+            return;
+        }
+        let columns = self.columns();
+        // 1-based and inclusive on the wire; empty/0 means the extreme.
+        let start = Column(left.unwrap_or(1).saturating_sub(1));
+        let end = Column(cmp::min(right.unwrap_or(columns), columns));
+        if start >= end {
+            debug!("Invalid margins: ({start};{end})");
+            return;
+        }
+        trace!("Setting left/right margins: ({start};{end})");
+        self.margins = start..end;
+        // DECSLRM homes the cursor, like DECSTBM.
+        self.goto(0, 0);
+    }
+
     fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>) {
         // Fallback to the last line as default.
         let bottom = bottom.unwrap_or_else(|| self.screen_lines());

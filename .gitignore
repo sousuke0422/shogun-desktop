@@ -10,3 +10,4 @@ target-win-verify/
 # WiX installer outputs (packaging/build-installer.ps1)
 *.msi
 *.wixpdb
+crates/*/target/

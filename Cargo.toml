@@ -13,7 +13,7 @@ members = [
     "crates/rikka-terminal-ipc",
     "crates/shogun-core",
 ]
-exclude = ["crates/alacritty_terminal", "crates/gpui"]
+exclude = ["crates/alacritty_terminal", "crates/gpui", "crates/vte"]
 
 [package]
 name = "shogun-desktop"
@@ -89,6 +89,11 @@ alacritty_terminal = { path = "crates/alacritty_terminal" }
 # were silently skipped and emoji fell through to Segoe UI Emoji.
 # See crates/gpui/src/platform/windows/direct_write.rs "PATCHED".
 gpui = { path = "crates/gpui" }
+# Vendored for one fix: vte never dispatched DECSLRM (CSI l;r s), so
+# left/right margins could not reach the terminal at all — tmux scrolls a
+# pane rectangle with them and the neighbours were wiped instead.
+# See crates/vte/src/ansi.rs "PATCHED".
+vte = { path = "crates/vte" }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

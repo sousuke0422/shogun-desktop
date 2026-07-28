@@ -350,11 +350,24 @@ pub fn build_terminal_session_with_preface(
                 let mut buf = [0u8; 4096];
                 // RIKKA_PTY_DUMP=<path>: tee the raw PTY output for protocol
                 // forensics (what did the app REALLY emit, post-transport).
+                // One file PER SESSION (`<path>.<n>`) — a host with several
+                // live terminals (shogun-desktop's tabs) would otherwise
+                // interleave every stream into one file, which cannot be
+                // replayed against an emulator at all.
                 let mut dump = std::env::var_os("RIKKA_PTY_DUMP").and_then(|p| {
+                    static SEQ: std::sync::atomic::AtomicUsize =
+                        std::sync::atomic::AtomicUsize::new(0);
+                    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+                    let mut path = std::path::PathBuf::from(p);
+                    let name = path
+                        .file_name()
+                        .map(|f| format!("{}.{n}", f.to_string_lossy()))
+                        .unwrap_or_else(|| format!("dump.{n}"));
+                    path.set_file_name(name);
                     std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
-                        .open(p)
+                        .open(&path)
                         .ok()
                 });
                 loop {

@@ -2184,6 +2184,37 @@ mod tests {
             // Frame boundary: the byte just consumed completed an ESU.
             if i + 1 >= ESU.len() && &data[i + 1 - ESU.len()..=i] == ESU {
                 frames += 1;
+                // RIKKA_DUMP_BOX="r0,r1,c0,c1": report the ink inside that
+                // rectangle whenever it changes, with the byte offset of the
+                // frame that changed it — the way to find which bytes emptied
+                // a region that should have kept its content.
+                if let Ok(spec) = std::env::var("RIKKA_DUMP_BOX") {
+                    let v: Vec<usize> = spec
+                        .split(',')
+                        .filter_map(|s| s.trim().parse().ok())
+                        .collect();
+                    if v.len() == 4 {
+                        let snap = take_snapshot(&term);
+                        let ink: usize = snap
+                            .cells
+                            .iter()
+                            .take(v[1] + 1)
+                            .skip(v[0])
+                            .map(|row| {
+                                row.iter()
+                                    .take(v[3] + 1)
+                                    .skip(v[2])
+                                    .filter(|c| c.c != ' ')
+                                    .count()
+                            })
+                            .sum();
+                        static LAST: std::sync::atomic::AtomicUsize =
+                            std::sync::atomic::AtomicUsize::new(usize::MAX);
+                        if LAST.swap(ink, Ordering::Relaxed) != ink {
+                            eprintln!("frame {frames:5} @byte {i:8} box_ink={ink}");
+                        }
+                    }
+                }
                 let snap = take_snapshot(&term);
                 for (r, row) in snap.cells.iter().enumerate() {
                     let text: String = row.iter().map(|c| c.c).collect();
@@ -2195,6 +2226,18 @@ mod tests {
                 }
             }
         }
+        // RIKKA_DUMP_GRID=1: print the FINAL screen as text. Diffing that
+        // against `tmux capture-pane -p` decides whether a multiplexer's
+        // stream was interpreted faithfully — no screenshots, no OCR.
+        if std::env::var_os("RIKKA_DUMP_GRID").is_some() {
+            let snap = take_snapshot(&term);
+            eprintln!("--- FINAL GRID {}x{} ---", snap.cols, snap.rows);
+            for (r, row) in snap.cells.iter().enumerate() {
+                let text: String = row.iter().map(|c| c.c).collect();
+                eprintln!("{r:02}|{}|", text.trim_end());
+            }
+            eprintln!("--- END GRID ---");
+        }
         eprintln!("frames={frames} matches={}", seen.len());
         for (f, r, col, text) in seen.iter().take(40) {
             eprintln!("frame {f:4} row {r:2} startcol {col:3}  {text}");
@@ -2205,6 +2248,77 @@ mod tests {
             seen.iter().map(|(_, r, _, _)| *r).collect();
         eprintln!("distinct start columns: {cols_seen:?}");
         eprintln!("distinct rows: {rows_seen:?}");
+    }
+
+    /// DECSLRM: a scroll inside left/right margins must move ONLY that column
+    /// band. Without margins the same scroll takes the whole line — which is
+    /// how a multiplexer scrolling one pane wiped the panes beside it (tmux
+    /// asks for margins whenever the terminal claims to have them).
+    #[test]
+    fn decslrm_scroll_stays_inside_the_column_band() {
+        let mut term = make_term(20, 8);
+        // `AAAAn|BnBBB| CCCCC` — the row number appears BOTH outside the band
+        // (index 4) and inside it (index 6), so each side can be checked to
+        // have moved or stayed on its own.
+        for r in 1..=6 {
+            advance_bytes(&mut term, format!("\x1b[{r};1H").as_bytes());
+            advance_bytes(&mut term, format!("AAAA{r}B{r}BBB CCCCC").as_bytes());
+        }
+        // Enable margins, confine to columns 6-10, scroll rows 1-6 up by 2.
+        advance_bytes(&mut term, b"\x1b[?69h\x1b[6;10s\x1b[1;6r\x1b[2S");
+        let snap = take_snapshot(&term);
+        let row = |r: usize| -> String { snap.cells[r].iter().map(|c| c.c).collect() };
+
+        // Outside the band both edges are untouched…
+        assert!(
+            row(0).starts_with("AAAA1"),
+            "left of the band moved: {:?}",
+            row(0)
+        );
+        assert!(
+            row(0).trim_end().ends_with("CCCCC"),
+            "right of the band moved: {:?}",
+            row(0)
+        );
+        // …inside it, row 1 now shows what row 3 held.
+        assert_eq!(&row(0)[5..10], "B3BBB", "band did not scroll: {:?}", row(0));
+        // The bottom two rows of the region are blank INSIDE the band only.
+        assert_eq!(
+            &row(5)[5..10],
+            "     ",
+            "band tail not cleared: {:?}",
+            row(5)
+        );
+        assert!(
+            row(5).starts_with("AAAA6"),
+            "clearing escaped the band: {:?}",
+            row(5)
+        );
+        assert!(
+            row(5).trim_end().ends_with("CCCCC"),
+            "clearing escaped the band: {:?}",
+            row(5)
+        );
+    }
+
+    /// Without DECLRMM the same `CSI s` is SCOSC and scrolling is full-width,
+    /// exactly as before — margins must not change any existing behavior.
+    #[test]
+    fn scroll_without_margins_is_unchanged() {
+        let mut term = make_term(20, 6);
+        for r in 1..=4 {
+            advance_bytes(&mut term, format!("\x1b[{r};1H").as_bytes());
+            advance_bytes(&mut term, format!("AAAA{r}BBBBB CCCCC").as_bytes());
+        }
+        // `CSI 6;10 s` with the mode OFF must NOT become a margin.
+        advance_bytes(&mut term, b"\x1b[6;10s\x1b[1;4r\x1b[1S");
+        let snap = take_snapshot(&term);
+        let row0: String = snap.cells[0].iter().map(|c| c.c).collect();
+        assert!(
+            row0.starts_with("AAAA2"),
+            "full-width scroll broke: {:?}",
+            row0
+        );
     }
 
     #[test]

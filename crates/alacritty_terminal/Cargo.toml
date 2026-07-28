@@ -112,3 +112,9 @@ features = [
     "Win32_System_Threading",
     "Win32_System_WindowsProgramming",
 ]
+
+# The DECSLRM dispatch this crate now implements lives in the vendored vte
+# (upstream drops the parameters of `CSI s`). Patch it here too so building
+# this crate on its own resolves the same source the workspace does.
+[patch.crates-io]
+vte = { path = "../vte" }
