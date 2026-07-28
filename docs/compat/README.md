@@ -187,9 +187,16 @@ not.
 It sits in an aside rather than the main table because the stable build is
 what one gets by default — not because the nightly is hard to come by. There
 is an installer for it, and it is carried by winget and by scoop's `versions`
-bucket. It is absent from the GitHub releases page, though; the download
-comes from the project's own site instead, which is enough of a detour that
-someone who does not already know to look for it will turn back.
+bucket.
+
+Two things keep people on the stable build anyway, and neither is difficulty.
+It is absent from the GitHub releases page, so the download comes from the
+project's own site — a detour rather than an obstacle. And it is called
+*nightly*, which reads as "may be broken today" regardless of whether it is;
+a label like that turns people around before they ever look at what is in the
+build. Between the detour and the word, someone not already looking for it
+goes back — which is why the stable build is the one the main table measures,
+even though the code has moved on.
 
 Worth recording that it does so through ConPTY **1.22.2502.04002**, an older
 host than the 1.24.2607.10001 we carry.
