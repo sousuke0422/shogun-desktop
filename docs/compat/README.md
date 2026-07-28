@@ -58,6 +58,10 @@ ours is unaffected by either. So this is not "old hosts drop things" and not
 the host alone — it is wezterm's repainting, and a newer ConPTY apparently
 stops handing it whatever it was relying on to invalidate the region.
 
+The Linux AppImage of that same build paints normally, which puts ConPTY on
+one side of the interaction and wezterm's renderer on the other, without
+resolving which one to blame.
+
 Practically: force a repaint, or take two captures minutes apart and compare
 them, before publishing one. And do not read a delta between two captures as
 correctness — a window that is stuck shows no change at all, which is exactly
@@ -92,9 +96,9 @@ this machine.
 | # | Capability | Windows Terminal | wezterm 20240203 | RikkaTerminal |
 |---|------------|------------------|------------------|---------------|
 | 1 | SGR truecolor, semicolons | yes | yes | yes |
-| 2 | SGR truecolor, **colons** (`38:2:r:g:b`) | **no** | **no** | **yes** |
-| 3 | Styled underlines (curly / dotted / dashed) | yes | **no** | yes |
-| 4 | Underline colour (SGR 58) | yes | **no** | yes |
+| 2 | SGR truecolor, **colons** (`38:2:r:g:b`) | **no** | **no** (host) | **yes** |
+| 3 | Styled underlines (curly / dotted / dashed) | yes | **no** (host) | yes |
+| 4 | Underline colour (SGR 58) | yes | **no** (host) | yes |
 | 5 | dim / inverse / both | yes | yes | yes |
 | 6 | REP (`CSI b`) | yes | yes | yes |
 | 7 | ECH (`CSI X`) | yes | yes | yes |
@@ -107,14 +111,31 @@ this machine.
 Rows 1, 2 and 4 are colour claims, so they were checked by sampling pixels
 rather than by eye. The SGR 58 underline is the clearest: the probe asks for
 `58:2::255:80:80`, and a row of exactly `(255, 80, 80)` runs the width of the
-words `red-underline` — 182 px in Windows Terminal, 169 px in the wezterm
-nightly, **zero** in wezterm 20240203.
+words `red-underline` — 182 px in Windows Terminal, **zero** in wezterm
+20240203.
 
-wezterm 20240203 fails 2, 3 and 4 together, and they have one thing in
-common: all three are **colon-separated SGR sub-parameters**. The semicolon
-forms on line 1 work, and the plain `CSI 4 m` underline on line 4 appears —
-it is only the colon syntax that is not parsed. See the aside below; the
-nightly closes all three.
+**The wezterm column is not measuring wezterm.** Rows 2, 3 and 4 are all
+colon-separated SGR sub-parameters, and the obvious reading is that its
+parser does not handle the colon syntax. That reading is wrong. Run the
+**same build** on Linux, where ConPTY is not in the path at all, and all
+three pass:
+
+![wezterm 20240203 on Linux](probe-wezterm-linux.png)
+
+| | rows 2 / 3 | SGR 58 red pixels |
+|---|---|---|
+| wezterm 20240203, Windows, its own 2024-era ConPTY | fail | **0** |
+| wezterm 20240203, Linux (AppImage, real pty) | pass | **117** |
+
+Same binary, same probe. What differs is the console host, so the strip
+belongs to the 2024-era ConPTY pair wezterm bundles — not to its engine. A
+Windows user does see the failures, which is why the row stays in the table,
+but nothing here says anything about wezterm's own VT parsing.
+
+That also joins up with the section below: the in-box conhost drops **the
+same three things**. Stripping colon-form SGR sub-parameters looks like a
+trait of older ConPTY hosts generally, fixed somewhere between the pair
+wezterm bundles and 1.22.2502.04002.
 
 ## On Windows the console host counts too
 
