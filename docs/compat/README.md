@@ -48,19 +48,30 @@ direction one would guess:
 
 | Terminal | ConPTY it drove | After `?5l` |
 |---|---|---|
-| wezterm nightly | its own 1.22.2502.04002 | repainted within ~30s |
-| wezterm nightly | our 1.24.2607.10001 | still unpainted; does not recover |
+| wezterm nightly | its own 1.22.2502.04002 | repainted by ~30s |
+| wezterm nightly | our 1.24.2607.10001 | **never repainted** — still blank when the window was closed |
 | RikkaTerminal | 1.22.2502.04002 | complete within 10s |
 | RikkaTerminal | 1.24.2607.10001 | complete within 10s |
 
-The **newer** host is the worse one for wezterm, while the same binary of
-ours is unaffected by either. So this is not "old hosts drop things" and not
-the host alone — it is wezterm's repainting, and a newer ConPTY apparently
-stops handing it whatever it was relying on to invalidate the region.
+Ours is unaffected on either host, so this is not "old hosts drop things" and
+not the host alone — it is wezterm's own repainting. The **newer** host is
+the worse one for it, and on that host the region never came back at all.
 
-The Linux AppImage of that same build paints normally, which puts ConPTY on
-one side of the interaction and wezterm's renderer on the other, without
-resolving which one to blame.
+**It is not confined to ConPTY either.** The same build on Linux, through a
+real pty under WSLg, has shown the identical deficit — unchanged across
+captures at 22s, 23s and 69s, and repainted by itself only when looked at
+again much later. A second Linux run with the same command painted correctly
+from the start. A system font had been added in between, but that was not
+isolated cleanly enough to blame it, so the trigger is not established.
+
+The shape is the same on both platforms — lines printed before the `?5l` lose
+their foreground while backgrounds and emoji stay, and anything that forces a
+redraw brings the text back. What differs is whether it ever recovers on its
+own: minutes on Linux, about thirty seconds on the older ConPTY, and never on
+the newer one.
+
+Treat it as a property of wezterm's rendering to work around when capturing,
+not as a finding about any console host.
 
 Practically: force a repaint, or take two captures minutes apart and compare
 them, before publishing one. And do not read a delta between two captures as
@@ -225,7 +236,6 @@ Details worth knowing before re-running it:
 - WSL here ships no CJK fonts, so row 9 came out as replacement glyphs until
   one was added. No root needed: copy a font from `/mnt/c/Windows/Fonts`
   (`msgothic.ttc` was used) into `~/.local/share/fonts` and run `fc-cache -f`.
-  The wezterm Linux shot below was taken before that and still shows tofu.
 - The DECSCNM label on line 11 comes out truncated in these captures, and
   differently between runs. Not investigated, and not claimed as ghostty
   behaviour — it looks like the capture catching a repaint. Nothing else on
