@@ -206,6 +206,12 @@ is ghostty itself, answering the same probe:
 is one the reference implementation honours in full, and claiming it does not
 overstate what we do.
 
+Row 9 is the one worth looking at closely. ghostty **keeps the mark on
+`ﾟ`**: the half-width katakana and its combining semi-voiced mark come out
+composed, the same as RikkaTerminal and unlike Windows Terminal, which drops
+the mark. That is the row where the three-way comparison actually has
+something to say, so it is worth having real glyphs rather than tofu here.
+
 Details worth knowing before re-running it:
 
 - This is `Ghostty 1.3.0-dev` from the `mkasberg/ghostty-ubuntu` PPA, run
@@ -216,11 +222,14 @@ Details worth knowing before re-running it:
   A ghostty process being alive is not evidence it rendered — check the
   window, which shows "Oh, no. Unable to acquire an OpenGL context" when it
   did not.
-- Row 9's Japanese comes out as replacement glyphs: this WSL environment has
-  no CJK fonts, the same limitation as the wezterm Linux shot below. Not a
-  terminal behaviour.
-- The DECSCNM label on line 11 is partially overwritten in this capture. Not
-  investigated; nothing else on the line depends on it.
+- WSL here ships no CJK fonts, so row 9 came out as replacement glyphs until
+  one was added. No root needed: copy a font from `/mnt/c/Windows/Fonts`
+  (`msgothic.ttc` was used) into `~/.local/share/fonts` and run `fc-cache -f`.
+  The wezterm Linux shot below was taken before that and still shows tofu.
+- The DECSCNM label on line 11 comes out truncated in these captures, and
+  differently between runs. Not investigated, and not claimed as ghostty
+  behaviour — it looks like the capture catching a repaint. Nothing else on
+  the line depends on it.
 
 ## Asides
 
