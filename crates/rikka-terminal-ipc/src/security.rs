@@ -77,19 +77,33 @@ fn capability_path() -> io::Result<std::path::PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no IPC capability directory"))
 }
 
+/// Accept only the exact shape we write: 64 hex digits, nothing else.
+fn parse_capability(raw: &str) -> io::Result<String> {
+    let value = raw.trim();
+    if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(value.to_ascii_lowercase());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "invalid IPC capability file",
+    ))
+}
+
+fn read_capability(path: &std::path::Path) -> io::Result<String> {
+    let mut raw = String::new();
+    std::fs::File::open(path)?.read_to_string(&mut raw)?;
+    parse_capability(&raw)
+}
+
 fn load_or_create_capability() -> io::Result<String> {
-    let path = capability_path()?;
-    if let Ok(mut file) = std::fs::File::open(&path) {
-        let mut value = String::new();
-        file.read_to_string(&mut value)?;
-        let value = value.trim();
-        if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Ok(value.to_ascii_lowercase());
-        }
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid IPC capability file",
-        ));
+    load_or_create_capability_at(&capability_path()?)
+}
+
+fn load_or_create_capability_at(path: &std::path::Path) -> io::Result<String> {
+    if let Ok(mut file) = std::fs::File::open(path) {
+        let mut raw = String::new();
+        file.read_to_string(&mut raw)?;
+        return parse_capability(&raw);
     }
 
     let parent = path
@@ -102,31 +116,38 @@ fn load_or_create_capability() -> io::Result<String> {
     let mut random = [0u8; 32];
     getrandom::fill(&mut random).map_err(io::Error::other)?;
     let value: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(mut file) => {
-            file.write_all(value.as_bytes())?;
-            file.sync_all()?;
-            #[cfg(windows)]
-            windows_impl::protect_path(&path)?;
-            Ok(value)
-        }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            let mut value = String::new();
-            std::fs::File::open(path)?.read_to_string(&mut value)?;
-            let value = value.trim();
-            if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
-                Ok(value.to_ascii_lowercase())
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid IPC capability file",
-                ))
-            }
-        }
+
+    // Publish atomically. `create_new` makes only the file's EXISTENCE
+    // atomic — the bytes land afterwards, so a starter racing us took the
+    // AlreadyExists path, read a file that was still empty, and rejected it
+    // as corrupt (InvalidData where the caller expected a clean mismatch).
+    // Fill a private temp file first and hard-link it into place: the final
+    // name never exists without its full contents, and the link still fails
+    // for everyone but the first writer, so all starters agree on one value.
+    // The temp name carries the value so two threads cannot share one.
+    let temp = path.with_file_name(format!(
+        "ipc.cap.{}.{}.tmp",
+        std::process::id(),
+        &value[..16]
+    ));
+    let published = (|| -> io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(value.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        #[cfg(windows)]
+        windows_impl::protect_path(&temp)?;
+        std::fs::hard_link(&temp, path)
+    })();
+    let _ = std::fs::remove_file(&temp);
+
+    match published {
+        Ok(()) => Ok(value),
+        // Lost the race — the winner's file is complete by construction.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => read_capability(path),
         Err(e) => Err(e),
     }
 }
@@ -362,5 +383,83 @@ mod windows_impl {
         }
         .ok()
         .map_err(io::Error::other)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every starter must come away with the SAME capability, and none may
+    /// observe a half-written file. Before the publish was made atomic the
+    /// losers of this race opened the winner's still-empty file and failed
+    /// with InvalidData, which surfaced as a capability check reporting
+    /// corruption where the caller expected a clean mismatch.
+    #[test]
+    fn concurrent_creation_agrees_on_one_capability() {
+        // The window this guards is a few microseconds wide, so one round of
+        // threads rarely lands in it. Release the starters from a barrier so
+        // they collide on purpose, and repeat over fresh directories — the
+        // pre-fix code has to survive every round to pass.
+        const STARTERS: usize = 16;
+        const ROUNDS: usize = 40;
+
+        for round in 0..ROUNDS {
+            let dir =
+                std::env::temp_dir().join(format!("rikka-ipc-cap-{}-{round}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let path = dir.join("ipc.cap");
+
+            let barrier = std::sync::Barrier::new(STARTERS);
+            let results: Vec<io::Result<String>> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..STARTERS)
+                    .map(|_| {
+                        s.spawn(|| {
+                            barrier.wait();
+                            load_or_create_capability_at(&path)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+
+            // No scratch file may outlive a publish, won or lost.
+            let leftovers: Vec<_> = std::fs::read_dir(&dir)
+                .expect("the capability directory exists")
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .filter(|n| n.to_string_lossy().ends_with(".tmp"))
+                .collect();
+            let _ = std::fs::remove_dir_all(&dir);
+
+            let first = results[0]
+                .as_ref()
+                .unwrap_or_else(|e| panic!("round {round}: the first starter failed: {e}"));
+            assert_eq!(first.len(), 64, "a capability is 64 hex digits");
+            for (i, result) in results.iter().enumerate() {
+                match result {
+                    Ok(value) => {
+                        assert_eq!(value, first, "round {round}: starter {i} disagreed")
+                    }
+                    Err(e) => panic!("round {round}: starter {i} failed: {e}"),
+                }
+            }
+            assert!(
+                leftovers.is_empty(),
+                "round {round}: temp files left behind: {leftovers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_exact_shape_is_accepted() {
+        assert_eq!(parse_capability(&"a".repeat(64)).unwrap(), "a".repeat(64));
+        assert_eq!(parse_capability(&"AB".repeat(32)).unwrap(), "ab".repeat(32));
+        for bad in ["", &"a".repeat(32), &"a".repeat(65), &"z".repeat(64)] {
+            assert_eq!(
+                parse_capability(bad).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "rejected: {bad:?}"
+            );
+        }
     }
 }
