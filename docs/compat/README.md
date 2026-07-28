@@ -42,6 +42,22 @@ nothing else.
 | 11 | DECSCNM (`?5`) screen reverse | yes | yes |
 | 12 | **DECSLRM left/right margins** | yes | **yes** |
 
+## Aside: the same probe behind ConPTY
+
+![Konsole for Windows running the probe](probe-konsole-via-conpty.png)
+
+This is Konsole's Windows build, and it is **not a third data point about
+Konsole** — on Windows it drives the shell through ConPTY, so conhost parses
+the stream and re-synthesises it before Konsole's own engine ever sees it.
+What the picture measures is that path.
+
+It is worth keeping for one thing: the margin block comes out in the "wrong"
+shape (whole lines moved, `M01`/`M02` scrolled away, every `B` still present),
+which is what a DECSLRM fence that never arrives looks like. Any terminal
+hosted behind ConPTY inherits that, however capable its own engine is.
+
+## Notes
+
 Line 2 matters more than it looks: the `xterm-ghostty` entry spells `setrgbf`
 with **colons**, so this is the form an application actually sends when it
 believes it is talking to ghostty. Windows Terminal never claims that entry,
