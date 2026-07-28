@@ -75,6 +75,15 @@ in-box path there is expected to behave differently; nothing here measures
 that. Read this section as "the host is a variable, and on this machine it is
 the older one", not as a verdict on `conhost.exe` in general.
 
+It is also why the sideloaded pair is not a developer convenience. A host of
+this vintage is not an artefact of one stale desktop: Server releases, the
+LTSC and IoT LTSC channels, and machines carried on extended security updates
+all keep the console host they shipped with, for support horizons measured in
+years. A terminal that only behaves correctly on an up-to-date consumer
+Windows would be broken on a large, long-lived slice of the fleet. Carrying
+`conpty.dll` + `OpenConsole.exe` makes the host a known quantity instead of
+an environment variable.
+
 The consequence for the two screenshots below is the same either way: taken on
 this machine's system conhost, neither can tell you what its terminal's engine
 supports.
