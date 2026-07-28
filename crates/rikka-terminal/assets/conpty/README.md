@@ -46,29 +46,47 @@ build.rs がビルドのたびにこの 2 ファイルをバイナリの隣へ�
    **赤ブロックが描画されている**（DCS 素通し OK）ことを確認。
    ペイン無出力ならペア世代不整合——両ファイルを同一版で取り直すこと。
 
-## なぜ 1.25 系（preview）を採らないか — 2026-07-28 実測
+## 1.25 系（preview）を今は採らない — 2026-07-28 実測
 
-1.25 の売りに **kitty keyboard protocol 対応**があり、`src/terminal/input/`
-（cascadia ではなく**ホスト側の共有入力層**）に実装が入っている
-（`terminalInput.hpp`: 1.24 で 0 箇所 → 1.25 で 22 箇所）。`mark_conpty()` で
-kitty keyboard の広告を止めている我々には効きそうに見えるが、**効かない**。
+1.25 の売りに **kitty keyboard protocol 対応**があり、実装は cascadia ではなく
+`src/terminal/input/`（`terminalInput.hpp`: 1.24 で 0 箇所 → 1.25 で 22 箇所）に
+入っている。そこは **OpenConsole/conhost もリンクする共有ライブラリ**である
+（`src/host/VtIo.cpp` `input.cpp` `inputBuffer.cpp` `outputStream.cpp` が参照）。
 
-1.25.260710002-preview のペアを実際に積んで ConPTY 越しに問い合わせた結果:
+見送る理由は「効かないと分かったから」では**ない**。以下が実測できた範囲。
 
-| クエリ | 応答 |
-|---|---|
-| XTVERSION `CSI >0q` | `rikka-terminal 0.1.0` — 素通しで**我々**が応答 |
-| DA1 `CSI c` | `?62;4;22c`（`4` = sixel 健在） |
-| **kitty kbd `CSI ?u`** | **無応答** |
-| DECRQM `?2026` | `?2026;2$y`（認識済み） |
+### 測れたこと
 
-ホストは XTVERSION と同じくクエリを**素通しするだけ**で、kitty keyboard を
-引き受けない。1.25 の実装は Windows Terminal 自身が端末として振る舞うための
-物であって、ConPTY 経路には出てこない。能力プローブ 12 項目は 1.25 でも全通過
-するので「動かない」わけではないが、**preview を積む見返りが無い**。
+1.25 のペアを積んでも**能力プローブ 12 項目は全通過**する（DECSLRM・sixel 含む）。
+`RIKKA_PTY_DUMP` で「ホストが我々へ何を転送したか」を見ると、**両世代とも
+kitty のシーケンスは素通ししている**:
 
-1.25 固有で価値があるのは `winconpty.h` に増えた
-`PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE (0x20)`（East Asian Ambiguous 幅の解釈を
-ホストと合意する口）だが、これは `CreatePseudoConsole` に渡して初めて効く。
-portable-pty がこのフラグを通せるか確認するまでは使えない。**採るならその
-確認が先。**
+| 送ったもの | 1.24.260710001 | 1.25.260710002-preview |
+|---|---|---|
+| query `CSI ?u` | 届く | 届く |
+| PUSH `CSI >1u` | 届く | 届く |
+| SET `CSI =5;1u` | 届く | 届く |
+| POP `CSI <u` | 届く | 届く |
+| `?1049h` / `?1049l` | 届く | 届く |
+
+つまり **「client の push は conhost に食われるので ConPTY 経由では原理的に
+機能しない」という従来の断定は、現行ホストでは再現しない。** 単発クエリに
+`CSI ?u` の応答が返らないのは、こちらが `mark_conpty()` で広告を止めている
+からであって、ホストの能力を示す証拠ではない（XTVERSION は同じ経路を通って
+`rikka-terminal 0.1.0` を返す）。
+
+### 測れていないこと（ここが本丸）
+
+上の試験は各シーケンスを **0.4 秒間隔で個別に**送っている。yazi 事件の実態は
+**プロセス終了時の teardown burst を途中から丸呑みされる**ことで、その条件は
+一切再現していない。`mark_conpty()` の kitty 無効化を外してよいかは、
+`alt_exit_probe`（要 yazi）でバーストを再現するまで**判断材料が無い**。
+
+### 判断
+
+したがって 1.25 は「見返りが無い」のではなく、**見返りがあるか未確認**。
+preview を配布物に積む前に上のバースト検証を通すのが順序。1.25 固有で確実に
+価値があるのは `winconpty.h` に増えた `PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE (0x20)`
+（East Asian Ambiguous 幅の解釈をホストと合意する口）だが、これは
+`CreatePseudoConsole` に渡して初めて効くので、portable-pty がこのフラグを
+通せるかの確認が先。

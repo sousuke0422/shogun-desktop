@@ -458,8 +458,16 @@ keyboard protocol・Tera Term 風セッションログ・検索の regex/全マ�
 - **ConPTY 越しに kitty keyboard を広告するな**（2026-07-16 yazi 事件）:
   `CSI ? u` に `?0u` を返すと TUI が push/pop を使い、OpenConsole 1.24 が
   終了 restore burst の途中から丸呑み → `?1049l` が届かず alt screen 残留。
-  そもそも client の push は conhost に食われて端末へ届かない（プロトコルは
-  ConPTY 経由では機能しない）。恒久対処 = `mark_conpty()`（conpty reflow
+  ~~そもそも client の push は conhost に食われて端末へ届かない（プロトコルは
+  ConPTY 経由では機能しない）~~ ← **2026-07-28 に再現せず**。`RIKKA_PTY_DUMP`
+  でホストの転送内容を直接見ると、`CSI ?u` / `CSI >1u`（push）/ `CSI =5;1u` /
+  `CSI <u`（pop）/ `?1049h` / `?1049l` は **1.24.260710001 でも 1.25 preview
+  でも全て端末まで届く**（各 0.4 秒間隔で個別送信）。単発クエリに応答が
+  返らないのはこちらが広告を止めているためで、ホストが食っている証拠ではない。
+  **ただし burst 条件は未検証** — 事件の実態は teardown の連続出力を途中から
+  丸呑みされることで、そこは `alt_exit_probe`（要 yazi）でしか測れない。
+  したがって kitty 無効化を外す根拠はまだ無いが、「原理的に不可能」でもない。
+  恒久対処 = `mark_conpty()`（conpty reflow
   semantics + kitty keyboard 無効化を一元化）。証跡 probe = `alt_exit_probe`
   （fix変種=1049l 到達 / bug変種=丸呑み を対で記録）。wt が無事なのは
   wt 自身が `? u` に答えないから。SSH セッションは従来どおり広告する。
