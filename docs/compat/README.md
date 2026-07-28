@@ -13,6 +13,10 @@ Every sequence it uses is one the `xterm-ghostty` entry declares.
 bash docs/compat/terminal-capability-probe.sh
 ```
 
+Captured on Windows 10 build 19045 — in-box `conhost.exe` 10.0.19041.4522,
+sideloaded `OpenConsole.exe` 1.24.2605.12001 — with the shell reached through
+`wsl.exe`. Both numbers matter; see below.
+
 The two screenshots below are the same script at the same font (Cascadia Mono
 13pt) and the same window size. Both terminals feed their shell through a
 modern ConPTY — RikkaTerminal through the `conpty.dll` + `OpenConsole.exe`
@@ -60,13 +64,20 @@ removed so it lands on the in-box conhost:
 ![RikkaTerminal forced onto the system conhost](probe-rikka-on-system-conhost.png)
 
 The margin block comes out in the "wrong" shape: whole lines moved, `M01`/`M02`
-scrolled away, every `B` still present. **The in-box conhost strips DECSLRM**,
-so the fence never arrives and whether the engine implements it stops
-mattering.
+scrolled away, every `B` still present. The fence never arrives, so whether the
+engine implements DECSLRM stops mattering.
 
-So a screenshot taken on the system conhost cannot tell you what that
-terminal's engine supports. Two are kept below anyway, labelled as such,
-because they show what the older host costs.
+**This is one host version, not a law.** These captures are from Windows 10
+build 19045, whose in-box `conhost.exe` reports 10.0.19041.4522 — a 2020-era
+build, against the 1.24.2605 OpenConsole shipped beside the exe. Later Windows
+releases ship a console host built from the OpenConsole sources, so the
+in-box path there is expected to behave differently; nothing here measures
+that. Read this section as "the host is a variable, and on this machine it is
+the older one", not as a verdict on `conhost.exe` in general.
+
+The consequence for the two screenshots below is the same either way: taken on
+this machine's system conhost, neither can tell you what its terminal's engine
+supports.
 
 ### Alacritty (upstream, system conhost)
 
@@ -75,8 +86,9 @@ because they show what the older host costs.
 RikkaTerminal's engine is a vendored fork of `alacritty_terminal`, and DECSLRM
 is one of the local additions: upstream keeps no margin state, and its vte
 dependency does not even hand `CSI s` to the terminal with its parameters. So
-the margin row would fail on the engine's own merits here regardless of the
-host. The other rows are the shared inheritance, and they match.
+the margin row is answerable from source rather than from this screenshot — it
+would fail on the engine's own merits, host notwithstanding. The other rows are
+the shared inheritance, and they match.
 
 ### Konsole for Windows (system conhost)
 
