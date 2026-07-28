@@ -4,6 +4,21 @@
 # AND a red block rendered between the command and SIXEL-AFTER (DCS passed
 # through and decoded). A silent/empty pane = mismatched conpty pair.
 # Keep this file ASCII-only.
+#
+# DO NOT RUN THIS WHILE SOMEONE IS USING THE DESKTOP.
+# Run-Cmd types with keybd_event, which goes to whatever holds focus -- not
+# to a window handle. SetForegroundWindow (below) is a REQUEST that Windows
+# refuses when the caller does not already own the foreground, and the script
+# does not check its return. When it is refused the payload is typed into the
+# user's own window instead, and CopyFromScreen grabs screen coordinates, so
+# the shot captures whatever was actually on top. It still prints SHOT-DONE:
+# a pass here means nothing unless you look at the image. (Observed 2026-07-28:
+# the sixel command landed in a live Claude Code prompt.)
+#
+# To check the pair without touching focus, drive the payload from INSIDE the
+# app -- launch with `-e wsl.exe bash <script>` so the shell emits the DCS
+# itself -- and capture with PrintWindow(PW_RENDERFULLCONTENT), which renders
+# a background window. No synthetic input, no foreground change.
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
