@@ -194,6 +194,34 @@ all keep the console host they shipped with, for support horizons measured in
 years. Carrying `conpty.dll` + `OpenConsole.exe` makes the host a known
 quantity instead of an environment variable.
 
+## The terminal we claim to be
+
+The page opens by calling `TERM=xterm-ghostty` a promise. The control for that
+is ghostty itself, answering the same probe:
+
+![ghostty running the probe](probe-ghostty.png)
+
+**Twelve of twelve**, with the SGR 58 underline measuring 117 px of exactly
+`(255, 80, 80)` — the same reading RikkaTerminal gives. So the entry we claim
+is one the reference implementation honours in full, and claiming it does not
+overstate what we do.
+
+Details worth knowing before re-running it:
+
+- This is `Ghostty 1.3.0-dev` from the `mkasberg/ghostty-ubuntu` PPA, run
+  under WSLg. We report ourselves as `ghostty 1.3.1`.
+- The **AppImage build will not start here**: ghostty requires OpenGL 4.3,
+  WSLg's d3d12 path offers 3.3, and forcing `GALLIUM_DRIVER=llvmpipe` fails
+  earlier still with "Could not initialize EGL display". The PPA build runs.
+  A ghostty process being alive is not evidence it rendered — check the
+  window, which shows "Oh, no. Unable to acquire an OpenGL context" when it
+  did not.
+- Row 9's Japanese comes out as replacement glyphs: this WSL environment has
+  no CJK fonts, the same limitation as the wezterm Linux shot below. Not a
+  terminal behaviour.
+- The DECSCNM label on line 11 is partially overwritten in this capture. Not
+  investigated; nothing else on the line depends on it.
+
 ## Asides
 
 ### wezterm nightly
