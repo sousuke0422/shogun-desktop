@@ -36,7 +36,9 @@ mod tsf;
 mod wt_profiles;
 mod wt_schemes;
 
+use std::cell::Cell;
 use std::io::{Read, Write};
+use std::rc::Rc;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -72,6 +74,9 @@ const PAD: f32 = 8.0;
 /// on top (TabViewHeaderPadding) + 32px tab zone (TabViewItemMinHeight).
 const TAB_STRIP_H: f32 = 40.0;
 const TAB_H: f32 = 32.0;
+/// Transparent margin around the chip inside the drag-follower window, so the
+/// popup's own edges have somewhere to misbehave that is not the chip.
+const FOLLOWER_INSET: f32 = 8.0;
 // ── chrome palette: Files (files.community) = WinUI TabView restyled ─────────
 // Tokens lifted from TabView_themeresources.xaml / Common_themeresources_any
 // (both MIT), dark theme — including the dark-gray surface ladder:
@@ -1141,11 +1146,13 @@ impl Render for TabDragGhost {
             .text_color(rgb(TEXT_PRIMARY))
             .child(self.title.clone());
         if self.windowed {
+            // A fixed inset, NOT centring: the caller places the window so
+            // that this inset lands the chip exactly where the in-window
+            // ghost would have been, and centring would make that depend on
+            // the chip's content width.
             div()
                 .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
+                .p(px(FOLLOWER_INSET))
                 .child(chip)
                 .into_any_element()
         } else {
@@ -1194,6 +1201,10 @@ pub struct TabsWindow {
     /// Title of the tab riding the active drag, kept so the follower window
     /// below can be built without reaching into the drag payload.
     drag_title: Option<String>,
+    /// Where inside the tab the pointer grabbed it, in logical px. Written by
+    /// the drag closure (which has no `&mut self`), read when placing the
+    /// follower so the preview keeps the same grip on both sides of the frame.
+    drag_grab: Rc<Cell<(f32, f32)>>,
     /// The preview that carries a tab drag across the desktop. A window
     /// cannot draw outside itself, so once the pointer leaves our frame the
     /// in-window ghost is replaced by this borderless, unfocused, top-most
@@ -1330,6 +1341,7 @@ impl TabsWindow {
             dragging_tab: None,
             dragging_pane: None,
             drag_title: None,
+            drag_grab: Rc::new(Cell::new((0.0, 0.0))),
             drag_follower: None,
             divider_drag: None,
             broadcast_all: false,
@@ -1831,10 +1843,16 @@ impl TabsWindow {
             return;
         }
 
-        // Screen space, offset down-right so the preview trails the cursor
-        // instead of sitting under it (and swallowing its own hit-testing).
+        // Put the chip exactly where gpui would have drawn the in-window
+        // ghost: under the point the tab was grabbed by. gpui uses
+        // `mouse - cursor_offset`; do the same, then step back by the
+        // window's transparent inset so the CHIP, not the popup, lands there.
+        let (gx, gy) = self.drag_grab.get();
         let root = window.bounds().origin;
-        let origin = point(root.x + pos.x + px(14.), root.y + pos.y + px(10.));
+        let origin = point(
+            root.x + pos.x - px(gx) - px(FOLLOWER_INSET),
+            root.y + pos.y - px(gy) - px(FOLLOWER_INSET),
+        );
 
         if let Some(handle) = self.drag_follower {
             let _ = handle.update(cx, |_, win, _| win.set_position(origin));
@@ -1842,9 +1860,11 @@ impl TabsWindow {
         }
         let bounds = Bounds {
             origin,
-            // Roomier than the chip so the chip floats inside a transparent
-            // margin: whatever the popup does at its own edges stays off it.
-            size: size(px(220.), px(TAB_H + 16.)),
+            // Chip plus the inset on every side.
+            size: size(
+                px(200. + FOLLOWER_INSET * 2.),
+                px(TAB_H + FOLLOWER_INSET * 2.),
+            ),
         };
         self.drag_follower = cx
             .open_window(
@@ -3141,12 +3161,20 @@ impl Render for TabsWindow {
                             ix,
                             title: drag_title,
                         },
-                        |drag, _offset, _window, cx| {
-                            let title = drag.title.clone();
-                            cx.new(|_| TabDragGhost {
-                                title,
-                                windowed: false,
-                            })
+                        {
+                            // Where inside the tab it was grabbed. gpui keeps
+                            // the in-window ghost under that same point; the
+                            // follower has to honour it too or the preview
+                            // jumps to a different grip at the window edge.
+                            let grab = self.drag_grab.clone();
+                            move |drag, offset, _window, cx| {
+                                grab.set((offset.x / px(1.), offset.y / px(1.)));
+                                let title = drag.title.clone();
+                                cx.new(|_| TabDragGhost {
+                                    title,
+                                    windowed: false,
+                                })
+                            }
                         },
                     )
                     .drag_over::<TabDrag>(|style, _, _, _| {
