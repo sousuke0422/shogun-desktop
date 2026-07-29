@@ -18,7 +18,7 @@ git log --oneline -- crates/gpui/
 | `716d1ee` | Typography defaults | Seed the default feature set into every typography | A `FontFeatures` with no entries otherwise disabled the font's own defaults |
 | `89e241c` | Cluster math | Harden RTL / non-monotonic cluster handling | Saturating math; combining marks survive the snapshot round-trip |
 | `1031a65` | `force_width` glyph pinning | Pin every glyph to its cell unconditionally (cluster-relative delta preserves combining marks) | A conditional snap made glyph x depend on shaping context, so animated lines whose run boundaries shift each frame danced left-right |
-| _this commit_ | `Window::set_position` (`window.rs`, `platform.rs`, `platform/windows/window.rs`) | New API: move a window without resizing or activating it (`SWP_NOSIZE \| SWP_NOACTIVATE`). Default no-op on other platforms | A window cannot draw outside itself, so carrying a tab drag across the desktop means moving a real borderless unfocused window under the cursor. `SWP_NOACTIVATE` is load-bearing: taking focus would end the drag |
+| `dc9f382` | `Window::set_position` (`window.rs`, `platform.rs`, `platform/windows/window.rs`) | New API: move a window without resizing or activating it (`SWP_NOSIZE \| SWP_NOACTIVATE`). Default no-op on other platforms | A window cannot draw outside itself, so carrying a tab drag across the desktop means moving a real borderless unfocused window under the cursor. `SWP_NOACTIVATE` is load-bearing: taking focus would end the drag |
 
 ## Re-vendor checklist
 
