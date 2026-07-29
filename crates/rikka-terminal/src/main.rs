@@ -1120,6 +1120,57 @@ struct PaneDrag {
     title: String,
 }
 
+/// Open the borderless popup that carries a tab drag outside its window, with
+/// the chip's top-left at `chip_origin` in screen coordinates.
+///
+/// Shared with `RIKKA_DEBUG_FOLLOWER`, which opens one standalone so its
+/// appearance can be inspected without performing a drag.
+fn open_drag_follower_window(
+    title: String,
+    chip_origin: gpui::Point<gpui::Pixels>,
+    cx: &mut App,
+) -> Option<gpui::WindowHandle<TabDragGhost>> {
+    let bounds = Bounds {
+        // Step back by the inset so the CHIP lands on `chip_origin`, not the
+        // window's corner.
+        origin: point(
+            chip_origin.x - px(FOLLOWER_INSET),
+            chip_origin.y - px(FOLLOWER_INSET),
+        ),
+        // Chip plus the inset on every side.
+        size: size(
+            px(200. + FOLLOWER_INSET * 2.),
+            px(TAB_H + FOLLOWER_INSET * 2.),
+        ),
+    };
+    let handle = cx
+        .open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: None,
+                // Never take activation: focus leaving the dragging window
+                // would end the drag.
+                focus: false,
+                show: true,
+                kind: gpui::WindowKind::PopUp,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: gpui::WindowBackgroundAppearance::Transparent,
+                ..Default::default()
+            },
+            |_, cx| {
+                cx.new(|_| TabDragGhost {
+                    title,
+                    windowed: true,
+                })
+            },
+        )
+        .ok();
+    strip_tool_window_shadows();
+    handle
+}
+
 /// The floating preview under the pointer while a tab is dragged.
 struct TabDragGhost {
     title: String,
@@ -1849,47 +1900,16 @@ impl TabsWindow {
         // window's transparent inset so the CHIP, not the popup, lands there.
         let (gx, gy) = self.drag_grab.get();
         let root = window.bounds().origin;
-        let origin = point(
-            root.x + pos.x - px(gx) - px(FOLLOWER_INSET),
-            root.y + pos.y - px(gy) - px(FOLLOWER_INSET),
-        );
+        let chip = point(root.x + pos.x - px(gx), root.y + pos.y - px(gy));
 
         if let Some(handle) = self.drag_follower {
-            let _ = handle.update(cx, |_, win, _| win.set_position(origin));
+            // set_position places the WINDOW, so step back by the inset the
+            // chip sits behind.
+            let win_origin = point(chip.x - px(FOLLOWER_INSET), chip.y - px(FOLLOWER_INSET));
+            let _ = handle.update(cx, |_, win, _| win.set_position(win_origin));
             return;
         }
-        let bounds = Bounds {
-            origin,
-            // Chip plus the inset on every side.
-            size: size(
-                px(200. + FOLLOWER_INSET * 2.),
-                px(TAB_H + FOLLOWER_INSET * 2.),
-            ),
-        };
-        self.drag_follower = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: None,
-                    // Never take activation: focus leaving the dragging
-                    // window would end the drag.
-                    focus: false,
-                    show: true,
-                    kind: gpui::WindowKind::PopUp,
-                    is_movable: false,
-                    is_resizable: false,
-                    is_minimizable: false,
-                    window_background: gpui::WindowBackgroundAppearance::Transparent,
-                    ..Default::default()
-                },
-                |_, cx| {
-                    cx.new(|_| TabDragGhost {
-                        title,
-                        windowed: true,
-                    })
-                },
-            )
-            .ok();
+        self.drag_follower = open_drag_follower_window(title, chip, cx);
         // The popup exists now; take DWM's shadow off it before it is seen.
         strip_tool_window_shadows();
     }
@@ -4026,6 +4046,13 @@ fn open_tabs_window_opts(cx: &mut App, initial: Vec<TabEntry>, launch: &cli::Lau
     } else {
         WindowBounds::Windowed(bounds)
     };
+    // RIKKA_DEBUG_FOLLOWER=1 opens the tab-drag follower on its own, at a
+    // fixed spot, so its appearance can be screenshotted without performing a
+    // drag. Synthetic-input drags go to whatever holds focus, which is not
+    // something to run on a desktop somebody is using.
+    if std::env::var_os("RIKKA_DEBUG_FOLLOWER").is_some() {
+        open_drag_follower_window("DEBUG follower".to_string(), point(px(200.), px(200.)), cx);
+    }
     let handle = cx
         .open_window(
             WindowOptions {

@@ -15,7 +15,8 @@ use crate::{
     SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, SystemWindowTab,
     SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextStyle, TextStyleRefinement,
     TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
+    WindowBounds, WindowControls, WindowDecorations, WindowKind, WindowOptions, WindowParams,
+    WindowTextSystem,
     point, prelude::*, px, rems, size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
@@ -871,6 +872,11 @@ pub struct Window {
     pending_modifier: ModifierState,
     pub(crate) pending_input_observers: SubscriberSet<(), AnyObserver>,
     prompt: Option<RenderablePromptHandle>,
+    /// PATCHED: kept so `draw` can tell a popup from an application window.
+    /// `App::active_drag` is global, so EVERY window that draws during a drag
+    /// paints the drag preview — including a popup whose whole job is to BE
+    /// that preview, which then shows two of them.
+    pub(crate) kind: WindowKind,
     pub(crate) client_inset: Option<Pixels>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     inspector: Option<Entity<Inspector>>,
@@ -1254,6 +1260,7 @@ impl Window {
             pending_modifier: ModifierState::default(),
             pending_input_observers: SubscriberSet::new(),
             prompt: None,
+            kind,
             client_inset: None,
             image_cache_stack: Vec::new(),
             #[cfg(any(feature = "inspector", debug_assertions))]
@@ -2063,14 +2070,20 @@ impl Window {
             element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
             prompt_element = Some(element);
             self.prompt = Some(prompt);
-        } else if let Some(active_drag) = cx.active_drag.take() {
+        } else if self.kind != WindowKind::PopUp
+            && let Some(active_drag) = cx.active_drag.take()
+        {
+            // PATCHED: popups are excluded. `active_drag` is App-global, so
+            // without this every popup open during a drag paints its own copy
+            // of the preview on top of its content — and rikka-terminal's
+            // drag follower IS a popup showing that preview, so it came out
+            // as two overlapping chips.
+            //
+            // The offset is left unclamped on purpose: once the pointer
+            // leaves the frame this lands outside the drawable area and is
+            // clipped, which is what we want, because the follower window is
+            // out there instead (see `TabsWindow::sync_drag_follower`).
             let mut element = active_drag.view.clone().into_any();
-            // Left unclamped on purpose. Once the pointer leaves the frame
-            // this preview lands outside the drawable area and is clipped —
-            // which is what we want, because rikka-terminal stands a real
-            // follower window under the cursor out there (see
-            // `TabsWindow::sync_drag_follower`). Clamping it to the edge
-            // instead would leave two previews on screen at once.
             let offset = self.mouse_position() - active_drag.cursor_offset;
             element.prepaint_as_root(offset, AvailableSpace::min_size(), self, cx);
             active_drag_element = Some(element);

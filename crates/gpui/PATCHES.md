@@ -19,6 +19,7 @@ git log --oneline -- crates/gpui/
 | `89e241c` | Cluster math | Harden RTL / non-monotonic cluster handling | Saturating math; combining marks survive the snapshot round-trip |
 | `1031a65` | `force_width` glyph pinning | Pin every glyph to its cell unconditionally (cluster-relative delta preserves combining marks) | A conditional snap made glyph x depend on shaping context, so animated lines whose run boundaries shift each frame danced left-right |
 | `dc9f382` | `Window::set_position` (`window.rs`, `platform.rs`, `platform/windows/window.rs`) | New API: move a window without resizing or activating it (`SWP_NOSIZE \| SWP_NOACTIVATE`). Default no-op on other platforms | A window cannot draw outside itself, so carrying a tab drag across the desktop means moving a real borderless unfocused window under the cursor. `SWP_NOACTIVATE` is load-bearing: taking focus would end the drag |
+| _this commit_ | Drag preview skipped in popups (`window.rs`) | `Window` remembers its `WindowKind`; `draw` no longer paints `App::active_drag` in a `PopUp` | `active_drag` is App-global, so every window drawn during a drag paints its own copy of the preview. The follower popup exists to BE that preview, so it drew a second one over itself — two overlapping chips |
 
 ## Re-vendor checklist
 
