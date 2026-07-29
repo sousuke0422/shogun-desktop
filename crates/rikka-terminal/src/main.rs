@@ -1174,6 +1174,15 @@ pub struct TabsWindow {
     /// (the drop handlers and the root mouse-up).
     dragging_tab: Option<usize>,
     dragging_pane: Option<usize>,
+    /// Title of the tab riding the active drag, kept so the follower window
+    /// below can be built without reaching into the drag payload.
+    drag_title: Option<String>,
+    /// The preview that carries a tab drag across the desktop. A window
+    /// cannot draw outside itself, so once the pointer leaves our frame the
+    /// in-window ghost is replaced by this borderless, unfocused, top-most
+    /// window moving under the cursor — the Chrome gesture. Alive only while
+    /// the pointer is outside; back inside, the normal ghost takes over.
+    drag_follower: Option<gpui::WindowHandle<TabDragGhost>>,
     /// A live divider resize: the Split's path in the active tab's tree
     /// (`false` = a, `true` = b) plus its orientation. Mouse moves on the
     /// window root steer the ratio while this is set.
@@ -1303,6 +1312,8 @@ impl TabsWindow {
             strip_scroll: ScrollHandle::default(),
             dragging_tab: None,
             dragging_pane: None,
+            drag_title: None,
+            drag_follower: None,
             divider_drag: None,
             broadcast_all: false,
             ime_reset_pending: false,
@@ -1776,6 +1787,108 @@ impl TabsWindow {
         .clamp(0.1, 0.9);
         tab.root.set_ratio(&path, ratio);
         cx.notify();
+    }
+
+    /// Keep the drag preview under the pointer even past our own frame.
+    ///
+    /// The pointer is captured for the whole gesture, so positions keep
+    /// arriving after it leaves the window — but nothing we draw can appear
+    /// out there. While it is outside, stand a borderless unfocused top-most
+    /// window under it and move that instead; back inside, tear it down and
+    /// let gpui's in-window ghost resume. Purely visual: the drop targets and
+    /// the outside-release tear-off are untouched.
+    fn sync_drag_follower(
+        &mut self,
+        pos: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let vp = window.viewport_size();
+        let outside = pos.x < px(0.) || pos.y < px(0.) || pos.x > vp.width || pos.y > vp.height;
+        let Some(title) = self.drag_title.clone() else {
+            self.close_drag_follower(cx);
+            return;
+        };
+        if !cx.has_active_drag() || !outside {
+            self.close_drag_follower(cx);
+            return;
+        }
+
+        // Screen space, offset down-right so the preview trails the cursor
+        // instead of sitting under it (and swallowing its own hit-testing).
+        let root = window.bounds().origin;
+        let origin = point(root.x + pos.x + px(14.), root.y + pos.y + px(10.));
+
+        if let Some(handle) = self.drag_follower {
+            let _ = handle.update(cx, |_, win, _| win.set_position(origin));
+            return;
+        }
+        let bounds = Bounds {
+            origin,
+            size: size(px(200.), px(TAB_H)),
+        };
+        self.drag_follower = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: None,
+                    // Never take activation: focus leaving the dragging
+                    // window would end the drag.
+                    focus: false,
+                    show: true,
+                    kind: gpui::WindowKind::PopUp,
+                    is_movable: false,
+                    is_resizable: false,
+                    is_minimizable: false,
+                    window_background: gpui::WindowBackgroundAppearance::Transparent,
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|_| TabDragGhost { title }),
+            )
+            .ok();
+    }
+
+    /// Retire the follower window, if one is up.
+    fn close_drag_follower(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.drag_follower.take() {
+            let _ = handle.update(cx, |_, win, _| win.remove_window());
+        }
+    }
+
+    /// A zero-size canvas that exists only to register window-global mouse
+    /// listeners: outside the frame no element is hit, so element handlers
+    /// stop firing — and `on_mouse_event` is legal only during paint, which
+    /// a canvas paint closure is.
+    fn drag_follower_hook(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let view = cx.entity();
+        gpui::canvas(
+            |_, _, _| (),
+            move |_bounds, _, window, _cx| {
+                let moved = view.clone();
+                window.on_mouse_event(move |ev: &gpui::MouseMoveEvent, phase, window, cx| {
+                    if phase != gpui::DispatchPhase::Bubble {
+                        return;
+                    }
+                    let pos = ev.position;
+                    moved.update(cx, |this, cx| this.sync_drag_follower(pos, window, cx));
+                });
+                let released = view.clone();
+                window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, _window, cx| {
+                    if phase != gpui::DispatchPhase::Bubble {
+                        return;
+                    }
+                    // The release resolves the gesture wherever it lands, so
+                    // the preview goes with it — a move event may never come.
+                    released.update(cx, |this, cx| {
+                        this.close_drag_follower(cx);
+                        this.drag_title = None;
+                    });
+                });
+            },
+        )
+        .absolute()
+        .size_0()
+        .into_any_element()
     }
 
     /// A strip tab dropped onto a pane edge: the tab leaves the strip and
@@ -3292,6 +3405,8 @@ impl Render for TabsWindow {
             .flex()
             .flex_col()
             .bg(pane_fill())
+            // Carries the drag preview past our own frame (see the method).
+            .child(self.drag_follower_hook(cx))
             // ── tab tear-off ─────────────────────────────────────────────
             // Track which tab rides the active drag; on a mouse up OUTSIDE
             // the window (SetCapture routes it here) no drop target can
@@ -3300,7 +3415,9 @@ impl Render for TabsWindow {
             // that no drop target consumed just cancels.
             .on_drag_move::<TabDrag>(cx.listener(
                 |this, ev: &gpui::DragMoveEvent<TabDrag>, _w, cx| {
-                    this.dragging_tab = Some(ev.drag(cx).ix);
+                    let drag = ev.drag(cx);
+                    this.dragging_tab = Some(drag.ix);
+                    this.drag_title = Some(drag.title.clone());
                 },
             ))
             .on_drag_move::<PaneDrag>(cx.listener(

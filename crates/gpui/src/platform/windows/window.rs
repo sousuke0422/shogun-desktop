@@ -562,6 +562,37 @@ impl PlatformWindow for WindowsWindow {
             .detach();
     }
 
+    /// PATCHED: move without resizing or activating.
+    ///
+    /// `SWP_NOACTIVATE` is the load-bearing flag: the preview must never take
+    /// focus from the window the drag started in, or the drag ends. Runs on
+    /// the executor like `resize` above, so it is safe to call from a paint.
+    fn set_position(&mut self, origin: Point<Pixels>) {
+        let hwnd = self.0.hwnd;
+        let scale = self.scale_factor();
+        let x = (origin.x.0 * scale).round() as i32;
+        let y = (origin.y.0 * scale).round() as i32;
+
+        self.0
+            .executor
+            .spawn(async move {
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        None,
+                        x,
+                        y,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    )
+                    .context("unable to move window")
+                    .log_err();
+                }
+            })
+            .detach();
+    }
+
     fn scale_factor(&self) -> f32 {
         self.0.state.borrow().scale_factor
     }

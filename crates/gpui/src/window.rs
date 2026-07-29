@@ -1694,6 +1694,17 @@ impl Window {
         self.platform_window.resize(size);
     }
 
+    /// PATCHED: move the window's top-left to `origin` in screen coordinates,
+    /// without resizing it and without taking activation.
+    ///
+    /// Needed to carry a drag preview across the desktop: a window cannot
+    /// draw outside itself, so following the pointer past the frame means
+    /// moving a real (borderless, unfocused) window under it. Implemented on
+    /// Windows; a no-op elsewhere.
+    pub fn set_position(&mut self, origin: Point<Pixels>) {
+        self.platform_window.set_position(origin);
+    }
+
     /// Returns whether or not the window is currently fullscreen
     pub fn is_fullscreen(&self) -> bool {
         self.platform_window.is_fullscreen()
@@ -2054,26 +2065,14 @@ impl Window {
             self.prompt = Some(prompt);
         } else if let Some(active_drag) = cx.active_drag.take() {
             let mut element = active_drag.view.clone().into_any();
-            // PATCHED: keep the drag preview inside the window.
-            //
-            // The pointer is captured for the whole gesture, so it keeps
-            // reporting positions after it leaves the frame. Placing the
-            // preview at those positions put it outside the drawable area,
-            // where it was clipped away — the preview vanished mid-drag even
-            // though the drag was still live, which reads as "the tab was
-            // dropped" and makes tear-off feel broken.
-            //
-            // Clamp to the viewport instead: the preview slides along the
-            // edge nearest the pointer and stays visible until release.
-            let size = element.layout_as_root(AvailableSpace::min_size(), self, cx);
-            let raw = self.mouse_position() - active_drag.cursor_offset;
-            let offset = point(
-                raw.x
-                    .clamp(px(0.), (root_size.width - size.width).max(px(0.))),
-                raw.y
-                    .clamp(px(0.), (root_size.height - size.height).max(px(0.))),
-            );
-            element.prepaint_at(offset, self, cx);
+            // Left unclamped on purpose. Once the pointer leaves the frame
+            // this preview lands outside the drawable area and is clipped —
+            // which is what we want, because rikka-terminal stands a real
+            // follower window under the cursor out there (see
+            // `TabsWindow::sync_drag_follower`). Clamping it to the edge
+            // instead would leave two previews on screen at once.
+            let offset = self.mouse_position() - active_drag.cursor_offset;
+            element.prepaint_as_root(offset, AvailableSpace::min_size(), self, cx);
             active_drag_element = Some(element);
             cx.active_drag = Some(active_drag);
         } else {

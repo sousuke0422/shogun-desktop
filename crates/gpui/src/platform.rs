@@ -463,6 +463,10 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn window_bounds(&self) -> WindowBounds;
     fn content_size(&self) -> Size<Pixels>;
     fn resize(&mut self, size: Size<Pixels>);
+    /// PATCHED: move the window without resizing or activating it. Defaults
+    /// to a no-op so only the platforms that need it implement it — today
+    /// just Windows, for carrying a drag preview outside the frame.
+    fn set_position(&mut self, _origin: Point<Pixels>) {}
     fn scale_factor(&self) -> f32;
     fn appearance(&self) -> WindowAppearance;
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>>;
