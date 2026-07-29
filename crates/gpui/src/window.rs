@@ -2054,8 +2054,26 @@ impl Window {
             self.prompt = Some(prompt);
         } else if let Some(active_drag) = cx.active_drag.take() {
             let mut element = active_drag.view.clone().into_any();
-            let offset = self.mouse_position() - active_drag.cursor_offset;
-            element.prepaint_as_root(offset, AvailableSpace::min_size(), self, cx);
+            // PATCHED: keep the drag preview inside the window.
+            //
+            // The pointer is captured for the whole gesture, so it keeps
+            // reporting positions after it leaves the frame. Placing the
+            // preview at those positions put it outside the drawable area,
+            // where it was clipped away — the preview vanished mid-drag even
+            // though the drag was still live, which reads as "the tab was
+            // dropped" and makes tear-off feel broken.
+            //
+            // Clamp to the viewport instead: the preview slides along the
+            // edge nearest the pointer and stays visible until release.
+            let size = element.layout_as_root(AvailableSpace::min_size(), self, cx);
+            let raw = self.mouse_position() - active_drag.cursor_offset;
+            let offset = point(
+                raw.x
+                    .clamp(px(0.), (root_size.width - size.width).max(px(0.))),
+                raw.y
+                    .clamp(px(0.), (root_size.height - size.height).max(px(0.))),
+            );
+            element.prepaint_at(offset, self, cx);
             active_drag_element = Some(element);
             cx.active_drag = Some(active_drag);
         } else {
