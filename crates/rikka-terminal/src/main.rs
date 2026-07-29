@@ -1546,6 +1546,33 @@ impl TabsWindow {
         true
     }
 
+    /// Paste whatever the clipboard holds — the ONE place that decides how.
+    ///
+    /// There are several ways to ask for a paste (the action, the context
+    /// menu, the middle click) and they used to each read the clipboard
+    /// themselves. Fixing one left the others behind, which is exactly how
+    /// pasting a copied file stayed unquoted after the file handling was
+    /// "fixed": Ctrl+V never went through the branch that was changed.
+    fn paste_from_clipboard(&self, cx: &mut App) {
+        // Files first: gpui does surface CF_HDROP, but as the names
+        // concatenated with no separator and no quoting, which is unusable
+        // for anything under `C:\Program Files`. That mangled string is also
+        // what the text branch would return, so it has to be checked first.
+        let files = format_dropped_paths(&clipboard_file_paths());
+        if !files.is_empty() {
+            self.paste_input(&files);
+            return;
+        }
+        if let Some(item) = cx.read_from_clipboard()
+            && let Some(text) = item.text()
+        {
+            self.paste_input(&text);
+        }
+        // An image is deliberately left alone: the TUIs that accept one read
+        // the clipboard themselves, and only get the chance because the
+        // terminal sends nothing.
+    }
+
     /// [`Self::send_input`] for pastes (bracketed-paste aware per pane).
     fn paste_input(&self, text: &str) {
         for s in self.input_sessions() {
@@ -1707,11 +1734,7 @@ impl TabsWindow {
             }
             Copy => selection::copy_to_clipboard(&self.selection, self.active_session(), cx),
             Paste => {
-                if let Some(item) = cx.read_from_clipboard()
-                    && let Some(text) = item.text()
-                {
-                    self.paste_input(&text);
-                }
+                self.paste_from_clipboard(cx);
             }
             CycleBack => self.cycle(false, cx),
             // Shell integration: hop between OSC 133 prompt marks.
@@ -3477,16 +3500,7 @@ impl Render for TabsWindow {
                     // Reading the format ourselves is what makes the shell see
                     // usable arguments. Checked before text because that
                     // mangled string IS what the text branch would return.
-                    let files = format_dropped_paths(&clipboard_file_paths());
-                    if !files.is_empty() {
-                        this.paste_input(&files);
-                        return;
-                    }
-                    if let Some(item) = cx.read_from_clipboard()
-                        && let Some(text) = item.text()
-                    {
-                        this.paste_input(&text);
-                    }
+                    this.paste_from_clipboard(cx);
                     // An image on the clipboard is deliberately left alone.
                     // Typing a path for it would be meddling: the TUIs that
                     // accept images already read the clipboard themselves
@@ -3737,11 +3751,7 @@ impl Render for TabsWindow {
                     return;
                 }
                 if !m.control && m.shift && ks.key == "insert" {
-                    if let Some(item) = cx.read_from_clipboard()
-                        && let Some(text) = item.text()
-                    {
-                        this.paste_input(&text);
-                    }
+                    this.paste_from_clipboard(cx);
                     cx.stop_propagation();
                     return;
                 }
