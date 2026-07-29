@@ -1128,7 +1128,9 @@ struct PaneDrag {
 /// and a paste would otherwise be a no-op.
 #[cfg(windows)]
 fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
+    use windows::Win32::Foundation::HGLOBAL;
     use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
     use windows::Win32::System::Ole::CF_HDROP;
     use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
@@ -1138,7 +1140,13 @@ fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
             return out;
         }
         if let Ok(handle) = GetClipboardData(CF_HDROP.0 as u32) {
-            let hdrop = HDROP(handle.0);
+            // The clipboard hands back a movable HGLOBAL. DragQueryFileW wants
+            // the LOCKED pointer, not the handle — passing the handle straight
+            // through simply reports zero files, which is how this silently
+            // fell through to the text branch and pasted gpui's unseparated,
+            // unquoted string instead.
+            let global = HGLOBAL(handle.0);
+            let hdrop = HDROP(GlobalLock(global));
             let count = DragQueryFileW(hdrop, u32::MAX, None);
             for i in 0..count {
                 let len = DragQueryFileW(hdrop, i, None) as usize;
@@ -1154,6 +1162,7 @@ fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
                     )));
                 }
             }
+            let _ = GlobalUnlock(global);
         }
         let _ = CloseClipboard();
     }
@@ -4162,6 +4171,19 @@ fn open_tabs_window_opts(cx: &mut App, initial: Vec<TabEntry>, launch: &cli::Lau
     // fixed spot, so its appearance can be screenshotted without performing a
     // drag. Synthetic-input drags go to whatever holds focus, which is not
     // something to run on a desktop somebody is using.
+    // RIKKA_DEBUG_CLIPBOARD=<file> writes what a paste WOULD insert for the
+    // current clipboard. The app has no console, and driving a real paste
+    // needs synthetic input, so this is the only way to check the CF_HDROP
+    // path without guessing.
+    if let Some(out) = std::env::var_os("RIKKA_DEBUG_CLIPBOARD") {
+        let paths = clipboard_file_paths();
+        let report = format!(
+            "files found: {}\nformatted  : {}\n",
+            paths.len(),
+            format_dropped_paths(&paths)
+        );
+        let _ = std::fs::write(std::path::PathBuf::from(out), report);
+    }
     if std::env::var_os("RIKKA_DEBUG_FOLLOWER").is_some() {
         open_drag_follower_window("DEBUG follower".to_string(), point(px(200.), px(200.)), cx);
     }
