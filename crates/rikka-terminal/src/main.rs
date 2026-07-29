@@ -77,6 +77,9 @@ const TAB_H: f32 = 32.0;
 /// Transparent margin around the chip inside the drag-follower window, so the
 /// popup's own edges have somewhere to misbehave that is not the chip.
 const FOLLOWER_INSET: f32 = 8.0;
+/// Width the follower window reserves for the chip. The chip hugs its title,
+/// so this is only a ceiling — the surplus is transparent.
+const FOLLOWER_MAX_W: f32 = 420.0;
 // ── chrome palette: Files (files.community) = WinUI TabView restyled ─────────
 // Tokens lifted from TabView_themeresources.xaml / Common_themeresources_any
 // (both MIT), dark theme — including the dark-gray surface ladder:
@@ -1137,9 +1140,11 @@ fn open_drag_follower_window(
             chip_origin.x - px(FOLLOWER_INSET),
             chip_origin.y - px(FOLLOWER_INSET),
         ),
-        // Chip plus the inset on every side.
+        // Deliberately wider than any chip will be: the chip sizes itself to
+        // its title and the rest of the window is transparent, so a generous
+        // window costs nothing visually and never clips a long tab name.
         size: size(
-            px(200. + FOLLOWER_INSET * 2.),
+            px(FOLLOWER_MAX_W + FOLLOWER_INSET * 2.),
             px(TAB_H + FOLLOWER_INSET * 2.),
         ),
     };
@@ -1201,9 +1206,18 @@ impl Render for TabDragGhost {
             // that this inset lands the chip exactly where the in-window
             // ghost would have been, and centring would make that depend on
             // the chip's content width.
+            //
+            // `flex` + `items_start` so the chip hugs its text on BOTH axes.
+            // gpui lays the in-window ghost out at `AvailableSpace::min_size`,
+            // i.e. content width; a block child of a full-size parent would
+            // instead stretch to the window, and the preview would visibly
+            // change size the moment it crossed the frame.
             div()
                 .size_full()
                 .p(px(FOLLOWER_INSET))
+                .flex()
+                .items_start()
+                .justify_start()
                 .child(chip)
                 .into_any_element()
         } else {
