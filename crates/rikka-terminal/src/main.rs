@@ -1123,6 +1123,71 @@ struct PaneDrag {
     title: String,
 }
 
+/// Paths on the clipboard as `CF_HDROP` — what Explorer puts there when you
+/// copy files. It carries no text form, so `read_from_clipboard` sees nothing
+/// and a paste would otherwise be a no-op.
+#[cfg(windows)]
+fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows::Win32::System::Ole::CF_HDROP;
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+
+    let mut out = Vec::new();
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return out;
+        }
+        if let Ok(handle) = GetClipboardData(CF_HDROP.0 as u32) {
+            let hdrop = HDROP(handle.0);
+            let count = DragQueryFileW(hdrop, u32::MAX, None);
+            for i in 0..count {
+                let len = DragQueryFileW(hdrop, i, None) as usize;
+                if len == 0 {
+                    continue;
+                }
+                // +1 for the terminator DragQueryFileW writes but does not count.
+                let mut buf = vec![0u16; len + 1];
+                let got = DragQueryFileW(hdrop, i, Some(&mut buf)) as usize;
+                if got > 0 {
+                    out.push(std::path::PathBuf::from(String::from_utf16_lossy(
+                        &buf[..got],
+                    )));
+                }
+            }
+        }
+        let _ = CloseClipboard();
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
+
+/// Render dropped or pasted paths the way Windows Terminal types them:
+/// space-separated, each quoted only when it has to be.
+///
+/// A path containing a space is ambiguous to every shell, so it gets quoted.
+/// One that already contains a double quote cannot be made safe by wrapping
+/// alone, so its quotes are doubled first — the escape both cmd and PowerShell
+/// accept inside a quoted string. Everything else is passed through untouched,
+/// because quoting unconditionally would be noise in the common case.
+fn format_dropped_paths(paths: &[std::path::PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| {
+            let s = p.to_string_lossy();
+            if s.contains(' ') || s.contains('"') {
+                format!("\"{}\"", s.replace('"', "\"\""))
+            } else {
+                s.into_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Open the borderless popup that carries a tab drag outside its window, with
 /// the chip's top-left at `chip_origin` in screen coordinates.
 ///
@@ -3400,6 +3465,15 @@ impl Render for TabsWindow {
                         && let Some(text) = item.text()
                     {
                         this.paste_input(&text);
+                        return;
+                    }
+                    // Copying in Explorer puts CF_HDROP on the clipboard and
+                    // no text at all, so the branch above finds nothing and
+                    // the paste silently does nothing. wt types the paths
+                    // instead; match that.
+                    let text = format_dropped_paths(&clipboard_file_paths());
+                    if !text.is_empty() {
+                        this.paste_input(&text);
                     }
                 }))
                 .on_action(cx.listener(|this, _: &PaneToTab, _window, cx| {
@@ -3454,6 +3528,19 @@ impl Render for TabsWindow {
                         )
                     }
                 })
+                // Files or folders dropped from Explorer type their paths, as
+                // Windows Terminal does — the shell decides what to do with
+                // them, we only insert the text.
+                .on_drop(
+                    cx.listener(|this: &mut Self, paths: &gpui::ExternalPaths, _w, cx| {
+                        let text = format_dropped_paths(paths.paths());
+                        if !text.is_empty() {
+                            this.paste_input(&text);
+                        }
+                        cx.notify();
+                    }),
+                )
+                .drag_over::<gpui::ExternalPaths>(|style, _, _, _| style.bg(gpui::rgba(0x3465A426)))
                 // Right-click menu, same actions as the Ctrl+Shift chords.
                 // Attached to the pane — a plain flex div, NEVER a scroll
                 // container: the open menu injects a window-sized absolute
@@ -5304,6 +5391,32 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_paths_are_quoted_only_when_they_need_it() {
+        use std::path::PathBuf;
+        let p = |s: &str| PathBuf::from(s);
+
+        // The common case stays bare — quoting everything would be noise.
+        assert_eq!(
+            format_dropped_paths(&[p(r"C:\src\main.rs")]),
+            r"C:\src\main.rs"
+        );
+        // A space is ambiguous to every shell.
+        assert_eq!(
+            format_dropped_paths(&[p(r"C:\Program Files\app.exe")]),
+            r#""C:\Program Files\app.exe""#
+        );
+        // Wrapping alone cannot make an embedded quote safe: double it first,
+        // the form both cmd and PowerShell accept inside a quoted string.
+        assert_eq!(format_dropped_paths(&[p(r#"C:\a"b\c"#)]), r#""C:\a""b\c""#);
+        // Several at once are space-separated, each judged on its own.
+        assert_eq!(
+            format_dropped_paths(&[p(r"C:\a"), p(r"C:\b c")]),
+            r#"C:\a "C:\b c""#
+        );
+        assert_eq!(format_dropped_paths(&[]), "");
+    }
 
     #[test]
     fn strip_insert_index_picks_the_nearest_gap() {
