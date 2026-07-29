@@ -18,7 +18,7 @@ git log --oneline -- crates/gpui/
 | `716d1ee` | Typography defaults | Seed the default feature set into every typography | A `FontFeatures` with no entries otherwise disabled the font's own defaults |
 | `89e241c` | Cluster math | Harden RTL / non-monotonic cluster handling | Saturating math; combining marks survive the snapshot round-trip |
 | `1031a65` | `force_width` glyph pinning | Pin every glyph to its cell unconditionally (cluster-relative delta preserves combining marks) | A conditional snap made glyph x depend on shaping context, so animated lines whose run boundaries shift each frame danced left-right |
-| `4159605` | Drag preview placement (`window.rs`) | Clamp the active drag's preview to the viewport instead of drawing it at the raw pointer position | The pointer is captured for the whole gesture, so it keeps reporting positions outside the frame; the preview was placed there, clipped away, and appeared to have been dropped while the drag was still live |
+| `9d3d1dc` | Drag preview placement (`window.rs`) | Clamp the active drag's preview to the viewport instead of drawing it at the raw pointer position | The pointer is captured for the whole gesture, so it keeps reporting positions outside the frame; the preview was placed there, clipped away, and appeared to have been dropped while the drag was still live |
 
 ## Re-vendor checklist
 
