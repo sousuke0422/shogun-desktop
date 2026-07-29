@@ -1118,22 +1118,33 @@ struct PaneDrag {
 /// The floating preview under the pointer while a tab is dragged.
 struct TabDragGhost {
     title: String,
+    /// True when this is the root of the follower window rather than an
+    /// overlay inside the terminal. The chip then fills its window edge to
+    /// edge: anything it leaves uncovered is window background, which reads
+    /// as a stray frame around the preview.
+    windowed: bool,
 }
 
 impl Render for TabDragGhost {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .h(px(TAB_H))
+        let chip = div()
             .px(px(12.))
             .flex()
             .items_center()
-            .rounded(px(8.))
             .bg(pane_fill())
-            .border_1()
-            .border_color(gpui::rgba(DIVIDER))
             .text_size(px(12.))
             .text_color(rgb(TEXT_PRIMARY))
-            .child(self.title.clone())
+            .child(self.title.clone());
+        if self.windowed {
+            // Square and flush — a rounded corner here would expose the
+            // window behind it at each corner.
+            chip.size_full()
+        } else {
+            chip.h(px(TAB_H))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(gpui::rgba(DIVIDER))
+        }
     }
 }
 
@@ -1843,9 +1854,16 @@ impl TabsWindow {
                     window_background: gpui::WindowBackgroundAppearance::Transparent,
                     ..Default::default()
                 },
-                |_, cx| cx.new(|_| TabDragGhost { title }),
+                |_, cx| {
+                    cx.new(|_| TabDragGhost {
+                        title,
+                        windowed: true,
+                    })
+                },
             )
             .ok();
+        // The popup exists now; take DWM's shadow off it before it is seen.
+        strip_tool_window_shadows();
     }
 
     /// Retire the follower window, if one is up.
@@ -2336,7 +2354,10 @@ impl TabsWindow {
                                     },
                                     |drag, _offset, _window, cx| {
                                         let title = drag.title.clone();
-                                        cx.new(|_| TabDragGhost { title })
+                                        cx.new(|_| TabDragGhost {
+                                            title,
+                                            windowed: false,
+                                        })
                                     },
                                 ),
                         ),
@@ -3114,7 +3135,10 @@ impl Render for TabsWindow {
                         },
                         |drag, _offset, _window, cx| {
                             let title = drag.title.clone();
-                            cx.new(|_| TabDragGhost { title })
+                            cx.new(|_| TabDragGhost {
+                                title,
+                                windowed: false,
+                            })
                         },
                     )
                     .drag_over::<TabDrag>(|style, _, _, _| {
@@ -3855,6 +3879,53 @@ impl Render for TabsWindow {
 /// itself is hidden (appears_transparent), but the attribute still colors
 /// the remaining 1px window border and any pre-first-paint frame flash.
 /// DWM attribute only — no gpui changes.
+/// Strip the DWM drop shadow from our tool windows — today only the tab-drag
+/// follower, which is the sole `WindowKind::PopUp` we open.
+///
+/// The follower is borderless by style (`WS_EX_TOOLWINDOW`, no caption), but
+/// DWM still frames a top-level window with a shadow. Floating over the
+/// desktop mid-drag that reads as a stray border around the preview rather
+/// than as depth. `DWMNCRP_DISABLED` turns off non-client rendering for that
+/// window only. DWM attribute only — no gpui changes, same as the dark
+/// titlebar pass below.
+#[cfg(windows)]
+fn strip_tool_window_shadows() {
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::Graphics::Dwm::{
+        DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY, DwmSetWindowAttribute,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GWL_EXSTYLE, GetWindowLongPtrW, GetWindowThreadProcessId, WS_EX_TOOLWINDOW,
+    };
+    use windows::core::BOOL;
+    unsafe extern "system" fn apply(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        if pid == lparam.0 as u32 {
+            let ex = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+            if ex & WS_EX_TOOLWINDOW.0 != 0 {
+                let policy = DWMNCRP_DISABLED;
+                unsafe {
+                    let _ = DwmSetWindowAttribute(
+                        hwnd,
+                        DWMWA_NCRENDERING_POLICY,
+                        &raw const policy as *const _,
+                        std::mem::size_of_val(&policy) as u32,
+                    );
+                }
+            }
+        }
+        BOOL(1)
+    }
+    unsafe {
+        let _ = EnumWindows(Some(apply), LPARAM(GetCurrentProcessId() as isize));
+    }
+}
+
+#[cfg(not(windows))]
+fn strip_tool_window_shadows() {}
+
 #[cfg(windows)]
 fn apply_dark_titlebars() {
     use windows::Win32::Foundation::{HWND, LPARAM};
