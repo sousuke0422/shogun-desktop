@@ -1119,31 +1119,37 @@ struct PaneDrag {
 struct TabDragGhost {
     title: String,
     /// True when this is the root of the follower window rather than an
-    /// overlay inside the terminal. The chip then fills its window edge to
-    /// edge: anything it leaves uncovered is window background, which reads
-    /// as a stray frame around the preview.
+    /// overlay inside the terminal. The chip is identical either way — what
+    /// you are holding must not change appearance at the window edge — so
+    /// this only wraps it in a transparent margin, which keeps any edge
+    /// artefact of the popup off the chip itself.
     windowed: bool,
 }
 
 impl Render for TabDragGhost {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let chip = div()
+            .h(px(TAB_H))
             .px(px(12.))
             .flex()
             .items_center()
+            .rounded(px(8.))
             .bg(pane_fill())
+            .border_1()
+            .border_color(gpui::rgba(DIVIDER))
             .text_size(px(12.))
             .text_color(rgb(TEXT_PRIMARY))
             .child(self.title.clone());
         if self.windowed {
-            // Square and flush — a rounded corner here would expose the
-            // window behind it at each corner.
-            chip.size_full()
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(chip)
+                .into_any_element()
         } else {
-            chip.h(px(TAB_H))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(gpui::rgba(DIVIDER))
+            chip.into_any_element()
         }
     }
 }
@@ -1836,7 +1842,9 @@ impl TabsWindow {
         }
         let bounds = Bounds {
             origin,
-            size: size(px(200.), px(TAB_H)),
+            // Roomier than the chip so the chip floats inside a transparent
+            // margin: whatever the popup does at its own edges stays off it.
+            size: size(px(220.), px(TAB_H + 16.)),
         };
         self.drag_follower = cx
             .open_window(
