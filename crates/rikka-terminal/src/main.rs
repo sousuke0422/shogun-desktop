@@ -1165,6 +1165,38 @@ fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
     Vec::new()
 }
 
+/// Write a clipboard image to a temp file and return its path.
+///
+/// A terminal has no way to hand raw bytes to the program running in it, so an
+/// image on the clipboard is otherwise unpasteable — Windows Terminal simply
+/// ignores it. Spilling it to a file turns "I copied a screenshot" into a path
+/// the running program can open, which is what image-taking TUIs expect.
+///
+/// The file is left behind on purpose: the program is about to read it, and
+/// deleting it on any schedule we could pick would race that.
+fn spill_clipboard_image(item: &gpui::ClipboardItem) -> Option<std::path::PathBuf> {
+    let image = item.entries().iter().find_map(|e| match e {
+        gpui::ClipboardEntry::Image(image) => Some(image),
+        _ => None,
+    })?;
+    let ext = match image.format {
+        gpui::ImageFormat::Png => "png",
+        gpui::ImageFormat::Jpeg => "jpg",
+        gpui::ImageFormat::Webp => "webp",
+        gpui::ImageFormat::Gif => "gif",
+        gpui::ImageFormat::Svg => "svg",
+        gpui::ImageFormat::Bmp => "bmp",
+        _ => "bin",
+    };
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let path = std::env::temp_dir().join(format!("rikka-paste-{stamp}.{ext}"));
+    std::fs::write(&path, &image.bytes).ok()?;
+    Some(path)
+}
+
 /// Render dropped or pasted paths the way Windows Terminal types them:
 /// space-separated, each quoted only when it has to be.
 ///
@@ -3461,19 +3493,31 @@ impl Render for TabsWindow {
                     selection::copy_to_clipboard(&this.selection, this.active_session(), cx);
                 }))
                 .on_action(cx.listener(|this, _: &TerminalPaste, _window, cx| {
-                    if let Some(item) = cx.read_from_clipboard()
-                        && let Some(text) = item.text()
-                    {
+                    // Files FIRST. gpui does surface CF_HDROP, but as a plain
+                    // string built by concatenating the names with no
+                    // separator at all — two files arrive as `C:\aC:\b`, and
+                    // nothing is quoted, so any `C:\Program Files\…` breaks.
+                    // Reading the format ourselves is what makes the shell see
+                    // usable arguments. Checked before text because that
+                    // mangled string IS what the text branch would return.
+                    let files = format_dropped_paths(&clipboard_file_paths());
+                    if !files.is_empty() {
+                        this.paste_input(&files);
+                        return;
+                    }
+                    let Some(item) = cx.read_from_clipboard() else {
+                        return;
+                    };
+                    if let Some(text) = item.text() {
                         this.paste_input(&text);
                         return;
                     }
-                    // Copying in Explorer puts CF_HDROP on the clipboard and
-                    // no text at all, so the branch above finds nothing and
-                    // the paste silently does nothing. wt types the paths
-                    // instead; match that.
-                    let text = format_dropped_paths(&clipboard_file_paths());
-                    if !text.is_empty() {
-                        this.paste_input(&text);
+                    // A screenshot on the clipboard has no path to type, so
+                    // spill it to a temp file and type THAT — which is how a
+                    // TUI that takes image paths (Claude Code and friends)
+                    // can be handed a screenshot at all.
+                    if let Some(path) = spill_clipboard_image(&item) {
+                        this.paste_input(&format_dropped_paths(&[path]));
                     }
                 }))
                 .on_action(cx.listener(|this, _: &PaneToTab, _window, cx| {
