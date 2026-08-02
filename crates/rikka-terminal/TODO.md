@@ -455,6 +455,20 @@ keyboard protocol・Tera Term 風セッションログ・検索の regex/全マ�
 
 ## 保守メモ
 
+- **配備物は 4 つある。`rikka-handoff.exe` を置き去りにするな**（2026-08-03
+  事件）: 既定ターミナルの handoff が壊れた。原因は MSIX ではない
+  （登録済みマニフェストと `packaging/AppxManifest.xml` は 7/12 以降不変で
+  完全一致）。`rikka-handoff.exe` だけが **7/22 のビルドのまま**で、IPC に
+  認証を足した `a63a073`（7/24）より**古かった** — `auth` を持たないフレームを
+  送り、端末が `PermissionDenied` で撥ねていた。
+  - ビルドは `-p rikka-terminal` だけでは足りない。**必ず
+    `-p rikka-terminal-windows-integration` も**（handoff の bin 名は
+    crate 名と違うので見落としやすい）。
+  - 配備スクリプトのハッシュ比較は「ビルドし直していない」を
+    「最新」と誤読する。**古い出力と古い配備物は当然一致する。**
+  - 疑うべき順序: ①handoff バイナリの日付 vs IPC 契約変更の日付
+    ②`HKCU:\Console\%%Startup` の Delegation* が CLSID を指しているか
+    ③マニフェスト差分。①で即決した。
 - **ConPTY 越しに kitty keyboard を広告するな**（2026-07-16 yazi 事件）:
   `CSI ? u` に `?0u` を返すと TUI が push/pop を使い、OpenConsole 1.24 が
   終了 restore burst の途中から丸呑み → `?1049l` が届かず alt screen 残留。
