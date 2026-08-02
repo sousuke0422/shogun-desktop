@@ -41,6 +41,29 @@ build.rs がビルドのたびにこの 2 ファイルをバイナリの隣へ�
 
 3. この README の版数と sha256 を書き換える。
 4. `cargo build --release -p rikka-terminal`（build.rs が隣へ配置し直す）。
+
+   **⚠ 既定ターミナルを使っているなら、配備先の `OpenConsole.exe` を
+   上書きした後で CLSID パッチを当て直すこと**（2026-08-03 に実際に壊した）。
+   同梱の OpenConsole は Stable ブランドで、`-Embedding` COM サーバとしては
+   **Windows Terminal の**コンソール CLSID `{2EACA947-…}` を名乗る。
+   `packaging/install-default-terminal.ps1` の手順 1b が、**配備されたコピー
+   だけ**をこちらの `{77F531BA-…}` にバイナリ書き換えしている。原本を
+   そのまま配ると委譲が解決せず、Windows は黙って conhost に戻る
+   （エラーは出ない。`rikka-handoff.exe` すら起動しない）。
+
+   したがって **配備物の sha256 は原本と一致してはならない**。「原本と同じ
+   なら最新」という配備スクリプトの検証は、この一点において逆である。
+   確認は CLSID のバイト列で行う:
+
+   ```powershell
+   # 1 以上なら我々のブランドが入っている
+   (Select-String -Path "$env:LOCALAPPDATA\RikkaTerminal\OpenConsole.exe" `
+     -Encoding Byte -Pattern 'never-matches' -AllMatches) # 実用にはxxd等を使う
+   ```
+   ```sh
+   xxd -p "$LOCALAPPDATA/RikkaTerminal/OpenConsole.exe" | tr -d '\n' \
+     | grep -c ba31f577bd46804eb0df8e45e1f7183b
+   ```
 5. 検証: `pwsh -File e2e/rikka-sixel-local.ps1` を流し、スクショで
    **シェルのバナー/プロンプトが出ている**（ペア整合 OK）かつ
    **赤ブロックが描画されている**（DCS 素通し OK）ことを確認。

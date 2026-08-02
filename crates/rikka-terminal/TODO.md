@@ -455,6 +455,16 @@ keyboard protocol・Tera Term 風セッションログ・検索の regex/全マ�
 
 ## 保守メモ
 
+- **既定ターミナルが壊れたら、まず配備済み OpenConsole の CLSID を疑え**
+  （2026-08-03 事件の本命）: ConPTY ペアを更新した際、配備先の
+  `OpenConsole.exe` を NuGet 原本で上書きし、`install-default-terminal.ps1`
+  手順 1b のブランド書き換え（WT の `{2EACA947-…}` → 我々の
+  `{77F531BA-…}`）を消してしまった。委譲は解決せず Windows は**無言で
+  conhost に戻る** — `rikka-handoff.exe` すら起動しないので handoff 側を
+  いくら調べても出てこない。確認は
+  `xxd -p …/OpenConsole.exe | tr -d '\n' | grep -c ba31f577bd46804eb0df8e45e1f7183b`
+  （0 なら消えている）。復旧は手順 1b の再適用のみで足り、証明書も
+  再登録も要らない。詳細は `assets/conpty/README.md` の更新手順に記載。
 - **配備物は 4 つある。`rikka-handoff.exe` を置き去りにするな**（2026-08-03
   事件）: 既定ターミナルの handoff が壊れた。原因は MSIX ではない
   （登録済みマニフェストと `packaging/AppxManifest.xml` は 7/12 以降不変で
