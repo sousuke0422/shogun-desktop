@@ -5,7 +5,7 @@ use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
 use crate::window::{AgentsState, ShogunWindow};
 use gpui::{Context, IntoElement, ParentElement, Styled, div, prelude::*, px, rgb};
-use gpui_component::{Sizable, button::Button, scroll::ScrollableElement, v_flex};
+use gpui_component::{Sizable, button::Button, scroll::ScrollableElement, text::TextView, v_flex};
 use shogun_core::{
     StatusCategory, build_agent_card, build_karo_card, status_category, truncate_summary,
 };
@@ -107,7 +107,7 @@ fn clamp_summary(s: &str) -> String {
     }
 }
 
-fn render_agent_card(card: &AgentCardData) -> impl IntoElement {
+fn render_agent_card(card: &AgentCardData, cx: &mut Context<ShogunWindow>) -> gpui::AnyElement {
     let status_col = status_color(&card.status);
     let inbox_color = if card.inbox_unread > 0 {
         Colors::kurenai()
@@ -119,8 +119,19 @@ fn render_agent_card(card: &AgentCardData) -> impl IntoElement {
     } else {
         clamp_summary(&card.summary)
     };
+    let name = card.name.clone();
 
     div()
+        .id(gpui::SharedString::from(format!(
+            "agent-card-{}",
+            card.name
+        )))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.agents_state.selected = Some(name.clone());
+            cx.notify();
+        }))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgb(0x2C2C2C)))
         .w(px(320.))
         .m_1()
         .p_3()
@@ -196,15 +207,17 @@ fn render_agent_card(card: &AgentCardData) -> impl IntoElement {
                     .child(summary),
             )
         })
+        .into_any_element()
 }
 
-fn render_card_grid(cards: &[AgentCardData]) -> impl IntoElement {
+fn render_card_grid(cards: &[AgentCardData], cx: &mut Context<ShogunWindow>) -> gpui::AnyElement {
     if cards.is_empty() {
         return div()
             .text_sm()
             .font_family(MONO_FONT)
             .text_color(Colors::zouge())
-            .child("（エージェントカード未取得）");
+            .child("（エージェントカード未取得）")
+            .into_any_element();
     }
 
     // Fixed-width cards in a wrapping row: the column count follows the
@@ -215,10 +228,155 @@ fn render_card_grid(cards: &[AgentCardData]) -> impl IntoElement {
         .flex_row()
         .flex_wrap()
         .w_full()
-        .children(cards.iter().map(render_agent_card))
+        .children(
+            cards
+                .iter()
+                .map(|c| render_agent_card(c, cx))
+                .collect::<Vec<_>>(),
+        )
+        .into_any_element()
 }
 
-pub fn render_agents_tab(state: &AgentsState, cx: &mut Context<ShogunWindow>) -> impl IntoElement {
+/// Full-text view of one card, opened by clicking it. The card clamps its
+/// summary to stay a card; this is where the whole report is readable — and
+/// selectable, so a task id or a commit hash in it can be copied out.
+fn render_detail_overlay(
+    card: &AgentCardData,
+    window: &mut gpui::Window,
+    cx: &mut Context<ShogunWindow>,
+) -> gpui::AnyElement {
+    let status_col = status_color(&card.status);
+    let meta_line = |label: &str, value: String, color: gpui::Rgba| {
+        div()
+            .text_xs()
+            .font_family(MONO_FONT)
+            .text_color(color)
+            .child(format!("{label}{value}"))
+    };
+
+    div()
+        .id("agents-detail-backdrop")
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .bg(gpui::rgba(0x000000B0))
+        // Clicking the wash closes; the panel below stops propagation so a
+        // click inside it (text selection!) does not.
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.agents_state.selected = None;
+            cx.notify();
+        }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .id("agents-detail-panel")
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.stop_propagation();
+                }))
+                .w(px(560.))
+                .max_h(px(640.))
+                .m_4()
+                .p_4()
+                .rounded(px(8.))
+                .bg(rgb(CARD_BG))
+                .border_1()
+                .border_color(Colors::muted())
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(status_col))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_family(MONO_FONT)
+                                        .text_color(Colors::kinpaku())
+                                        .child(card.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_family(MONO_FONT)
+                                        .text_color(status_col)
+                                        .child(card.status.clone()),
+                                ),
+                        )
+                        .child(
+                            Button::new("agents-detail-close")
+                                .small()
+                                .label("閉じる")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.agents_state.selected = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .when(!is_placeholder(&card.task_id), |el| {
+                    el.child(meta_line("task: ", card.task_id.clone(), Colors::zouge()))
+                })
+                .child(meta_line(
+                    "inbox: ",
+                    card.inbox_unread.to_string(),
+                    if card.inbox_unread > 0 {
+                        Colors::kurenai()
+                    } else {
+                        Colors::muted()
+                    },
+                ))
+                .when(!is_placeholder(&card.last_report_at), |el| {
+                    el.child(meta_line(
+                        "",
+                        format!("{} 更新", card.last_report_at),
+                        Colors::muted(),
+                    ))
+                })
+                .child(
+                    // Same scroll arrangement as the dashboard: the OUTER
+                    // container scrolls and TextView fits its full height, so
+                    // selection tracks the text instead of sticking to the
+                    // viewport (see dashboard_tab for the long version).
+                    div()
+                        .id("agents-detail-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scrollbar()
+                        .child(if card.summary.is_empty() {
+                            div()
+                                .text_xs()
+                                .font_family(MONO_FONT)
+                                .text_color(Colors::muted())
+                                .child("（報告なし）")
+                                .into_any_element()
+                        } else {
+                            TextView::markdown("agents-detail-md", card.summary.clone(), window, cx)
+                                .text_color(Colors::zouge())
+                                .selectable(true)
+                                .into_any_element()
+                        }),
+                ),
+        )
+        .into_any_element()
+}
+
+pub fn render_agents_tab(
+    state: &AgentsState,
+    window: &mut gpui::Window,
+    cx: &mut Context<ShogunWindow>,
+) -> impl IntoElement {
     let bg_color = if state.is_connected {
         Colors::matsuba()
     } else {
@@ -242,7 +400,7 @@ pub fn render_agents_tab(state: &AgentsState, cx: &mut Context<ShogunWindow>) ->
             .child(format!("❌ {err}"))
             .into_any_element()
     } else if !state.cards.is_empty() {
-        render_card_grid(&state.cards).into_any_element()
+        render_card_grid(&state.cards, cx)
     } else if state.content.is_empty() {
         div()
             .text_sm()
@@ -254,9 +412,16 @@ pub fn render_agents_tab(state: &AgentsState, cx: &mut Context<ShogunWindow>) ->
         render_ansi_lines(&state.content).into_any_element()
     };
 
+    let detail = state
+        .selected
+        .as_ref()
+        .and_then(|name| state.cards.iter().find(|c| &c.name == name))
+        .map(|card| render_detail_overlay(card, window, cx));
+
     v_flex()
         .flex_1()
         .size_full()
+        .relative()
         .bg(Colors::shikkoku())
         .child(
             div()
@@ -292,6 +457,7 @@ pub fn render_agents_tab(state: &AgentsState, cx: &mut Context<ShogunWindow>) ->
                 .p_2()
                 .child(body),
         )
+        .when_some(detail, |el, overlay| el.child(overlay))
 }
 
 fn render_ansi_lines(raw: &str) -> impl IntoElement {

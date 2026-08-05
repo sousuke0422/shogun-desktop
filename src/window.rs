@@ -78,6 +78,10 @@ pub use crate::terminal::renderer::measure_cell_metrics;
 pub struct AgentsState {
     pub content: String,
     pub cards: Vec<AgentCardData>,
+    /// Agent name whose card is opened in the detail overlay. Keyed by name,
+    /// not index: a refresh replaces `cards`, and an index would silently
+    /// start pointing at a different agent.
+    pub selected: Option<String>,
     pub is_connected: bool,
     pub error_message: Option<String>,
     pub last_refresh: SystemTime,
@@ -88,6 +92,7 @@ impl Default for AgentsState {
         Self {
             content: String::new(),
             cards: Vec::new(),
+            selected: None,
             is_connected: false,
             error_message: None,
             last_refresh: SystemTime::UNIX_EPOCH,
@@ -144,7 +149,8 @@ enum SearchUiEvent {
 pub struct ShogunWindow {
     selected_tab: usize,
     settings_tab: SettingsTab,
-    agents_state: AgentsState,
+    /// pub(crate): the agents tab's click handlers set `selected` directly.
+    pub(crate) agents_state: AgentsState,
     dashboard_state: DashboardState,
     pub shogun_session: Option<TerminalSession>,
     pub multiagent_session: Option<TerminalSession>,
@@ -1611,7 +1617,7 @@ impl Render for ShogunWindow {
                     cx,
                 )
             }
-            1 => render_agents_tab(&self.agents_state, cx).into_any_element(),
+            1 => render_agents_tab(&self.agents_state, window, cx).into_any_element(),
             2 => render_dashboard_tab(&self.dashboard_state, window, cx).into_any_element(),
             3 => {
                 let save_btn = Button::new("save-settings")
