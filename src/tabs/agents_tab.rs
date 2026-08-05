@@ -13,12 +13,14 @@ use gpui_component::{
     text::TextView,
     v_flex,
 };
+use rikka_terminal_agent_integration::usage::window_label;
 use shogun_core::{
     StatusCategory, build_agent_card, build_karo_card, status_category, truncate_summary,
 };
 
 const CARD_BG: u32 = 0x242424;
 
+pub use rikka_terminal_agent_integration::usage::UsageData;
 pub use shogun_core::AgentCardData;
 
 pub fn run_fetch_agents(settings: ShogunDesktopSettings) -> anyhow::Result<String> {
@@ -465,67 +467,6 @@ fn render_detail_overlay(
                 ),
         )
         .into_any_element()
-}
-
-/// Parsed `scripts/usage_status.sh` output (key=value lines). Missing keys
-/// stay None — "unknown" must never render as 0%.
-#[derive(Clone, Default, Debug, PartialEq)]
-pub struct UsageData {
-    pub claude_ok: bool,
-    pub claude_five_hour_pct: Option<f32>,
-    pub claude_five_hour_resets: Option<String>,
-    pub claude_seven_day_pct: Option<f32>,
-    pub claude_seven_day_resets: Option<String>,
-    pub codex_ok: bool,
-    pub codex_plan: Option<String>,
-    pub codex_age_minutes: Option<u32>,
-    pub codex_primary_pct: Option<f32>,
-    pub codex_primary_window: Option<u32>,
-    pub codex_primary_resets: Option<String>,
-    pub codex_secondary_pct: Option<f32>,
-    pub codex_secondary_window: Option<u32>,
-    pub codex_secondary_resets: Option<String>,
-}
-
-impl UsageData {
-    pub fn parse(raw: &str) -> Self {
-        let mut u = Self::default();
-        for line in raw.lines() {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let (key, value) = (key.trim(), value.trim());
-            match key {
-                "claude.ok" => u.claude_ok = value == "true",
-                "claude.five_hour_pct" => u.claude_five_hour_pct = value.parse().ok(),
-                "claude.five_hour_resets" => u.claude_five_hour_resets = Some(value.into()),
-                "claude.seven_day_pct" => u.claude_seven_day_pct = value.parse().ok(),
-                "claude.seven_day_resets" => u.claude_seven_day_resets = Some(value.into()),
-                "codex.ok" => u.codex_ok = value == "true",
-                "codex.plan" => u.codex_plan = Some(value.into()),
-                "codex.age_minutes" => u.codex_age_minutes = value.parse().ok(),
-                "codex.primary_pct" => u.codex_primary_pct = value.parse().ok(),
-                "codex.primary_window_minutes" => u.codex_primary_window = value.parse().ok(),
-                "codex.primary_resets" => u.codex_primary_resets = Some(value.into()),
-                "codex.secondary_pct" => u.codex_secondary_pct = value.parse().ok(),
-                "codex.secondary_window_minutes" => u.codex_secondary_window = value.parse().ok(),
-                "codex.secondary_resets" => u.codex_secondary_resets = Some(value.into()),
-                _ => {}
-            }
-        }
-        u
-    }
-}
-
-/// "10080 minutes" reads as nothing; name the window like a human would.
-fn window_label(minutes: u32) -> String {
-    match minutes {
-        10080 => "7日".into(),
-        300 => "5時間".into(),
-        m if m % 1440 == 0 => format!("{}日", m / 1440),
-        m if m % 60 == 0 => format!("{}時間", m / 60),
-        m => format!("{m}分"),
-    }
 }
 
 /// One gauge row: label, filled bar coloured by pressure, percentage, reset.

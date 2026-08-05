@@ -121,3 +121,5 @@ mod tests {
         assert_eq!(t.current(Duration::ZERO), None);
     }
 }
+
+pub mod usage;
