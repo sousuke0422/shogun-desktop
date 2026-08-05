@@ -166,8 +166,12 @@ pub fn parse_report_yaml(raw: &Option<String>) -> (String, String) {
     };
     let ts = yaml_str(&v, &["timestamp"]).unwrap_or_else(|| PLACEHOLDER.into());
     let last_report_at = format_timestamp_hhmm(&ts);
+    // The FULL summary, untouched. Truncation is a presentation decision:
+    // the card clamps for card size, the detail overlay scrolls the whole
+    // thing — and a parse-time first_line/120-char cap silently made the
+    // overlay's "full text" a lie that ended mid-word.
     let summary = yaml_str(&v, &["result", "summary"])
-        .map(|s| first_line(&s))
+        .map(|s| s.trim().to_string())
         .unwrap_or_default();
     (last_report_at, summary)
 }
@@ -257,7 +261,9 @@ result:
 "#;
         let (at, sum) = parse_report_yaml(&Some(raw.into()));
         assert_eq!(at, "11:32");
-        assert_eq!(sum, "第一行の要約");
+        // The WHOLE summary survives parsing. Truncation is presentation:
+        // clamping here once made the detail view's "full text" end mid-word.
+        assert_eq!(sum, "第一行の要約\n第二行");
     }
 
     #[test]
