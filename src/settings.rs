@@ -310,13 +310,69 @@ pub fn load_settings() -> Result<ShogunDesktopSettings> {
         return Ok(ShogunDesktopSettings::default());
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    let settings = toml::from_str(&raw).context("parse settings.toml")?;
+    let mut settings: ShogunDesktopSettings =
+        toml::from_str(&raw).context("parse settings.toml")?;
+    hydrate_password(&mut settings);
     Ok(settings)
+}
+
+/// The OS credential store holding the SSH password: Credential Manager on
+/// Windows, Keychain on macOS, and the freedesktop Secret Service on Linux —
+/// which on Plasma is KWallet itself (it serves that D-Bus API natively since
+/// 6.2), with no Qt linkage on our side.
+fn password_entry() -> Option<keyring::Entry> {
+    keyring::Entry::new("shogun-desktop", "ssh-password").ok()
+}
+
+/// Fill `ssh.password` from the credential store, migrating a legacy
+/// plaintext value out of settings.toml the first time one is seen.
+fn hydrate_password(settings: &mut ShogunDesktopSettings) {
+    let Some(entry) = password_entry() else {
+        return; // no store on this platform/session: plaintext keeps working
+    };
+    match entry.get_password() {
+        Ok(secret) if settings.ssh.password.is_empty() => {
+            settings.ssh.password = secret;
+        }
+        Ok(secret) => {
+            // The file ALSO has a password. Editing settings.toml by hand is
+            // a supported path, so a differing file value is the user's
+            // newest intent: the store follows the file, never the reverse.
+            // Either way the plaintext copy is scrubbed (save_settings blanks
+            // it once the store write succeeds) — this runs once, because
+            // afterwards the file value is empty.
+            if secret == settings.ssh.password || entry.set_password(&settings.ssh.password).is_ok()
+            {
+                let _ = save_settings(settings);
+            }
+        }
+        Err(keyring::Error::NoEntry) if !settings.ssh.password.is_empty() => {
+            // Legacy plaintext: move it into the store, then scrub the file.
+            // Only scrub once the store definitely holds it — losing the
+            // password would be worse than leaving it readable.
+            if entry.set_password(&settings.ssh.password).is_ok() {
+                let _ = save_settings(settings);
+            }
+        }
+        Err(_) => {}
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Manual probe (`--ignored`): confirm the credential store holds the
+    /// migrated password without ever printing it.
+    #[test]
+    #[ignore]
+    fn keyring_probe_reports_length_only() {
+        let entry = password_entry().expect("store available");
+        match entry.get_password() {
+            Ok(secret) => println!("stored password length = {}", secret.chars().count()),
+            Err(e) => println!("no stored password: {e}"),
+        }
+    }
 
     #[test]
     fn control_path_type_serde_roundtrip() {
@@ -542,7 +598,18 @@ pub fn save_settings(settings: &ShogunDesktopSettings) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("create config dir {}", parent.display()))?;
     }
-    let raw = toml::to_string_pretty(settings)?;
+    // The password goes to the OS credential store, and settings.toml gets an
+    // empty string — ONLY once the store has confirmed the write. If there is
+    // no store (headless Linux session, locked wallet), the plaintext falls
+    // through to the file exactly as before: readable is bad, lost is worse.
+    let mut on_disk = settings.clone();
+    if !on_disk.ssh.password.is_empty()
+        && let Some(entry) = password_entry()
+        && entry.set_password(&on_disk.ssh.password).is_ok()
+    {
+        on_disk.ssh.password = String::new();
+    }
+    let raw = toml::to_string_pretty(&on_disk)?;
     fs::write(&path, raw).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
