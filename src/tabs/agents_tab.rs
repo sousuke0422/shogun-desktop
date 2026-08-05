@@ -302,6 +302,12 @@ fn render_detail_overlay(
     cx: &mut Context<ShogunWindow>,
 ) -> gpui::AnyElement {
     let status_col = status_color(&card.status);
+    // Read the selection HERE, in render, and freeze it into the menu
+    // builder below. The builder runs deferred, outside any view render,
+    // where use_keyed_state (inside selection_of) panics on current_view —
+    // that was the 0xc0000409 abort ~a minute after opening the overlay.
+    // Selection changes repaint, so the frozen value is fresh at menu time.
+    let selection = TextView::selection_of("agents-detail-md", window, cx);
     let meta_line = |label: &str, value: String, color: gpui::Rgba| {
         div()
             .text_xs()
@@ -422,6 +428,41 @@ fn render_detail_overlay(
                                 .text_color(Colors::zouge())
                                 .selectable(true)
                                 .into_any_element()
+                        })
+                        .context_menu({
+                            let full = card.summary.clone();
+                            let close = cx.entity();
+                            move |menu, _window, _cx| {
+                                let menu = if let Some(text) = selection.clone() {
+                                    menu.item(PopupMenuItem::label("選択をコピー").on_click(
+                                        move |_, _, cx| {
+                                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                                text.clone(),
+                                            ));
+                                        },
+                                    ))
+                                } else {
+                                    menu
+                                };
+                                let full = full.clone();
+                                let close = close.clone();
+                                menu.item(PopupMenuItem::label("全文をコピー").on_click(
+                                    move |_, _, cx| {
+                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                            full.clone(),
+                                        ));
+                                    },
+                                ))
+                                .separator()
+                                .item(
+                                    PopupMenuItem::label("閉じる").on_click(move |_, _, cx| {
+                                        close.update(cx, |this, cx| {
+                                            this.agents_state.selected = None;
+                                            cx.notify();
+                                        });
+                                    }),
+                                )
+                            }
                         }),
                 ),
         )

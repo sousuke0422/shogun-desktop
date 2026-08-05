@@ -84,6 +84,10 @@ mac-notification-sys = "0.6.15"
 
 [patch.crates-io]
 alacritty_terminal = { path = "crates/alacritty_terminal" }
+# Vendored for one addition: text_view_selection() — TextView's selection is
+# pub(crate) upstream, and the agents tab's context menu needs to read it to
+# offer "copy selection". See crates/gpui-component/PATCHES.md.
+gpui-component = { path = "crates/gpui-component" }
 # Vendored for one fix: generate_font_fallbacks (DirectWrite) never searched
 # the custom font collection, so embedded fallback fonts (bundled Twemoji)
 # were silently skipped and emoji fell through to Segoe UI Emoji.
