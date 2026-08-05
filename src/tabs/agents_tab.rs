@@ -467,6 +467,299 @@ fn render_detail_overlay(
         .into_any_element()
 }
 
+/// Parsed `scripts/usage_status.sh` output (key=value lines). Missing keys
+/// stay None — "unknown" must never render as 0%.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct UsageData {
+    pub claude_ok: bool,
+    pub claude_five_hour_pct: Option<f32>,
+    pub claude_five_hour_resets: Option<String>,
+    pub claude_seven_day_pct: Option<f32>,
+    pub claude_seven_day_resets: Option<String>,
+    pub codex_ok: bool,
+    pub codex_plan: Option<String>,
+    pub codex_age_minutes: Option<u32>,
+    pub codex_primary_pct: Option<f32>,
+    pub codex_primary_window: Option<u32>,
+    pub codex_primary_resets: Option<String>,
+    pub codex_secondary_pct: Option<f32>,
+    pub codex_secondary_window: Option<u32>,
+    pub codex_secondary_resets: Option<String>,
+}
+
+impl UsageData {
+    pub fn parse(raw: &str) -> Self {
+        let mut u = Self::default();
+        for line in raw.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let (key, value) = (key.trim(), value.trim());
+            match key {
+                "claude.ok" => u.claude_ok = value == "true",
+                "claude.five_hour_pct" => u.claude_five_hour_pct = value.parse().ok(),
+                "claude.five_hour_resets" => u.claude_five_hour_resets = Some(value.into()),
+                "claude.seven_day_pct" => u.claude_seven_day_pct = value.parse().ok(),
+                "claude.seven_day_resets" => u.claude_seven_day_resets = Some(value.into()),
+                "codex.ok" => u.codex_ok = value == "true",
+                "codex.plan" => u.codex_plan = Some(value.into()),
+                "codex.age_minutes" => u.codex_age_minutes = value.parse().ok(),
+                "codex.primary_pct" => u.codex_primary_pct = value.parse().ok(),
+                "codex.primary_window_minutes" => u.codex_primary_window = value.parse().ok(),
+                "codex.primary_resets" => u.codex_primary_resets = Some(value.into()),
+                "codex.secondary_pct" => u.codex_secondary_pct = value.parse().ok(),
+                "codex.secondary_window_minutes" => u.codex_secondary_window = value.parse().ok(),
+                "codex.secondary_resets" => u.codex_secondary_resets = Some(value.into()),
+                _ => {}
+            }
+        }
+        u
+    }
+}
+
+/// "10080 minutes" reads as nothing; name the window like a human would.
+fn window_label(minutes: u32) -> String {
+    match minutes {
+        10080 => "7日".into(),
+        300 => "5時間".into(),
+        m if m % 1440 == 0 => format!("{}日", m / 1440),
+        m if m % 60 == 0 => format!("{}時間", m / 60),
+        m => format!("{m}分"),
+    }
+}
+
+/// One gauge row: label, filled bar coloured by pressure, percentage, reset.
+fn usage_row(label: String, pct: Option<f32>, resets: Option<String>) -> gpui::AnyElement {
+    let fill_color = match pct {
+        Some(p) if p >= 90.0 => Colors::kurenai(),
+        Some(p) if p >= 70.0 => Colors::kinpaku(),
+        Some(_) => Colors::matsuba(),
+        None => Colors::muted(),
+    };
+    let frac = pct.map(|p| (p / 100.0).clamp(0.0, 1.0)).unwrap_or(0.0);
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .w(px(96.))
+                .text_xs()
+                .font_family(MONO_FONT)
+                .text_color(Colors::zouge())
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .h(px(10.))
+                .rounded(px(5.))
+                .bg(rgb(0x333333))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .h_full()
+                        .w(gpui::relative(frac))
+                        .rounded(px(5.))
+                        .bg(fill_color),
+                ),
+        )
+        .child(
+            div()
+                .w(px(56.))
+                .text_xs()
+                .font_family(MONO_FONT)
+                .text_color(fill_color)
+                .child(match pct {
+                    Some(p) => format!("{p:.0}%"),
+                    None => "—".into(),
+                }),
+        )
+        .child(
+            div()
+                .w(px(120.))
+                .text_xs()
+                .font_family(MONO_FONT)
+                .text_color(Colors::muted())
+                .child(match resets {
+                    Some(r) => format!("復活 {r}"),
+                    None => String::new(),
+                }),
+        )
+        .into_any_element()
+}
+
+/// Full-screen usage overlay: Claude and Codex subscription gauges.
+fn render_usage_overlay(state: &AgentsState, cx: &mut Context<ShogunWindow>) -> gpui::AnyElement {
+    let mut body: Vec<gpui::AnyElement> = Vec::new();
+    if let Some(err) = &state.usage_error {
+        body.push(
+            div()
+                .text_sm()
+                .font_family(MONO_FONT)
+                .text_color(Colors::kurenai())
+                .child(err.clone())
+                .into_any_element(),
+        );
+    } else if let Some(u) = &state.usage {
+        body.push(section_title("Claude"));
+        if u.claude_ok {
+            body.push(usage_row(
+                "5時間".into(),
+                u.claude_five_hour_pct,
+                u.claude_five_hour_resets.clone(),
+            ));
+            body.push(usage_row(
+                "7日".into(),
+                u.claude_seven_day_pct,
+                u.claude_seven_day_resets.clone(),
+            ));
+        } else {
+            body.push(unavailable_note());
+        }
+        body.push(section_title(match u.codex_plan.as_deref() {
+            Some(plan) => format!("Codex（{plan}）"),
+            None => "Codex".into(),
+        }));
+        if u.codex_ok {
+            if let (Some(pct), Some(win)) = (u.codex_primary_pct, u.codex_primary_window) {
+                body.push(usage_row(
+                    window_label(win),
+                    Some(pct),
+                    u.codex_primary_resets.clone(),
+                ));
+            }
+            if let (Some(pct), Some(win)) = (u.codex_secondary_pct, u.codex_secondary_window) {
+                body.push(usage_row(
+                    window_label(win),
+                    Some(pct),
+                    u.codex_secondary_resets.clone(),
+                ));
+            }
+            if let Some(age) = u.codex_age_minutes {
+                // The snapshot is only as fresh as the last codex turn.
+                let (text, color) = if age > 60 {
+                    (
+                        format!("スナップショットは {age} 分前（codex の最終応答時点）"),
+                        Colors::kinpaku(),
+                    )
+                } else {
+                    (format!("{age} 分前の応答時点"), Colors::muted())
+                };
+                body.push(
+                    div()
+                        .text_xs()
+                        .font_family(MONO_FONT)
+                        .text_color(color)
+                        .child(text)
+                        .into_any_element(),
+                );
+            }
+        } else {
+            body.push(unavailable_note());
+        }
+    } else {
+        body.push(
+            div()
+                .text_sm()
+                .font_family(MONO_FONT)
+                .text_color(Colors::muted())
+                .child("取得中...")
+                .into_any_element(),
+        );
+    }
+
+    div()
+        .id("agents-usage-backdrop")
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .bg(gpui::rgba(0x000000B0))
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.agents_state.usage_visible = false;
+            cx.notify();
+        }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .id("agents-usage-panel")
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.stop_propagation();
+                }))
+                .w(px(640.))
+                .m_4()
+                .p_4()
+                .rounded(px(8.))
+                .bg(rgb(CARD_BG))
+                .border_1()
+                .border_color(Colors::muted())
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_family(MONO_FONT)
+                                .text_color(Colors::kinpaku())
+                                .child("サブスクリプション使用率"),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    Button::new("usage-refresh")
+                                        .small()
+                                        .label("再取得")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.refresh_usage(cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("usage-close").small().label("閉じる").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.agents_state.usage_visible = false;
+                                            cx.notify();
+                                        }),
+                                    ),
+                                ),
+                        ),
+                )
+                .children(body),
+        )
+        .into_any_element()
+}
+
+fn section_title(text: impl Into<String>) -> gpui::AnyElement {
+    div()
+        .mt_1()
+        .text_sm()
+        .font_family(MONO_FONT)
+        .text_color(Colors::zouge())
+        .child(text.into())
+        .into_any_element()
+}
+
+fn unavailable_note() -> gpui::AnyElement {
+    div()
+        .text_xs()
+        .font_family(MONO_FONT)
+        .text_color(Colors::muted())
+        .child("（取得できず — ホスト側の認証情報を確認）")
+        .into_any_element()
+}
+
 pub fn render_agents_tab(
     state: &AgentsState,
     window: &mut gpui::Window,
@@ -531,12 +824,28 @@ pub fn render_agents_tab(
                 .text_size(px(12.))
                 .child(status_text)
                 .child(
-                    Button::new("agents-refresh")
-                        .small()
-                        .label("更新")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.refresh_agents(cx);
-                        })),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            Button::new("agents-usage")
+                                .small()
+                                .label("使用率")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.agents_state.usage_visible = true;
+                                    this.refresh_usage(cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("agents-refresh")
+                                .small()
+                                .label("更新")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.refresh_agents(cx);
+                                })),
+                        ),
                 ),
         )
         .child(
@@ -553,6 +862,9 @@ pub fn render_agents_tab(
                 .child(body),
         )
         .when_some(detail, |el, overlay| el.child(overlay))
+        .when(state.usage_visible, |el| {
+            el.child(render_usage_overlay(state, cx))
+        })
 }
 
 fn render_ansi_lines(raw: &str) -> impl IntoElement {

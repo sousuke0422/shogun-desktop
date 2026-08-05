@@ -82,6 +82,11 @@ pub struct AgentsState {
     /// not index: a refresh replaces `cards`, and an index would silently
     /// start pointing at a different agent.
     pub selected: Option<String>,
+    /// The subscription-usage overlay (Claude / Codex gauges) is open.
+    pub usage_visible: bool,
+    /// Parsed output of scripts/usage_status.sh; None while loading.
+    pub usage: Option<crate::tabs::UsageData>,
+    pub usage_error: Option<String>,
     pub is_connected: bool,
     pub error_message: Option<String>,
     pub last_refresh: SystemTime,
@@ -93,6 +98,9 @@ impl Default for AgentsState {
             content: String::new(),
             cards: Vec::new(),
             selected: None,
+            usage_visible: false,
+            usage: None,
+            usage_error: None,
             is_connected: false,
             error_message: None,
             last_refresh: SystemTime::UNIX_EPOCH,
@@ -966,6 +974,40 @@ impl ShogunWindow {
     }
 
     /// Trigger an immediate agents status refresh.
+    /// Fetch the subscription-usage report over SSH into the agents state.
+    pub fn refresh_usage(&mut self, cx: &mut Context<Self>) {
+        self.agents_state.usage = None;
+        self.agents_state.usage_error = None;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let settings = load_settings().unwrap_or_default();
+                    if settings.project.path.is_empty() {
+                        anyhow::bail!("プロジェクトパス未設定");
+                    }
+                    let client = SshClient::from_settings(&settings)?;
+                    client.exec(&format!(
+                        "bash {}/scripts/usage_status.sh",
+                        settings.project.path
+                    ))
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                match result {
+                    Ok(raw) => {
+                        view.agents_state.usage = Some(crate::tabs::UsageData::parse(&raw));
+                    }
+                    Err(err) => {
+                        view.agents_state.usage_error = Some(format!("取得失敗: {err}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn refresh_agents(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let settings = load_settings().unwrap_or_default();
