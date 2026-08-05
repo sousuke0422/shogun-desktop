@@ -23,6 +23,9 @@ pub struct AgentCardData {
 pub enum StatusCategory {
     Active,
     Done,
+    /// A task that ended in failure — the one state that must never be the
+    /// least visible thing on the board.
+    Failed,
     Idle,
     Unknown,
 }
@@ -31,6 +34,7 @@ pub fn status_category(status: &str) -> StatusCategory {
     match status {
         "assigned" | "work" | "active" => StatusCategory::Active,
         "done" => StatusCategory::Done,
+        "failed" | "error" => StatusCategory::Failed,
         "idle" => StatusCategory::Idle,
         _ => StatusCategory::Unknown,
     }
@@ -264,11 +268,12 @@ result:
     #[test]
     fn status_category_classifies_known_statuses() {
         assert_eq!(status_category("assigned"), StatusCategory::Active);
+        assert_eq!(status_category("failed"), StatusCategory::Failed);
         assert_eq!(status_category("work"), StatusCategory::Active);
         assert_eq!(status_category("active"), StatusCategory::Active);
         assert_eq!(status_category("done"), StatusCategory::Done);
         assert_eq!(status_category("idle"), StatusCategory::Idle);
-        assert_eq!(status_category("failed"), StatusCategory::Unknown);
+        assert_eq!(status_category("mystery"), StatusCategory::Unknown);
     }
 
     #[test]

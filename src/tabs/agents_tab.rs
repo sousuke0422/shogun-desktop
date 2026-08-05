@@ -4,11 +4,10 @@ use crate::ssh::SshClient;
 use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
 use crate::window::{AgentsState, ShogunWindow};
-use gpui::{AlignItems, Context, IntoElement, ParentElement, Styled, div, prelude::*, px, rgb};
+use gpui::{Context, IntoElement, ParentElement, Styled, div, prelude::*, px, rgb};
 use gpui_component::{Sizable, button::Button, scroll::ScrollableElement, v_flex};
 use shogun_core::{
-    StatusCategory, build_agent_card, build_karo_card, status_category, status_indicator,
-    truncate_summary,
+    StatusCategory, build_agent_card, build_karo_card, status_category, truncate_summary,
 };
 
 const CARD_BG: u32 = 0x242424;
@@ -80,7 +79,31 @@ fn status_color(status: &str) -> gpui::Rgba {
     match status_category(status) {
         StatusCategory::Active => Colors::kinpaku(),
         StatusCategory::Done => Colors::matsuba(),
+        StatusCategory::Failed => Colors::kurenai(),
         StatusCategory::Idle | StatusCategory::Unknown => Colors::muted(),
+    }
+}
+
+/// The YAML pipeline uses `---` (and sometimes emptiness) as "no value".
+/// Rendering it verbatim produced lines like `---更新`.
+fn is_placeholder(s: &str) -> bool {
+    let t = s.trim();
+    t.is_empty() || t.chars().all(|c| c == '-')
+}
+
+/// Cap the summary for a card: at most 2 source lines AND a character budget,
+/// because a single long line wraps into arbitrarily many visual lines and
+/// `truncate_summary` only counts hard newlines — which is how a card's text
+/// ran past its own background.
+fn clamp_summary(s: &str) -> String {
+    let cut = truncate_summary(s, 2);
+    const BUDGET: usize = 90;
+    if cut.chars().count() > BUDGET {
+        let mut out: String = cut.chars().take(BUDGET).collect();
+        out.push('…');
+        out
+    } else {
+        cut
     }
 }
 
@@ -94,18 +117,16 @@ fn render_agent_card(card: &AgentCardData) -> impl IntoElement {
     let summary = if card.summary.is_empty() {
         String::new()
     } else {
-        truncate_summary(&card.summary, 2)
+        clamp_summary(&card.summary)
     };
 
     div()
-        .flex_1()
-        .min_w(px(200.))
-        .max_w(px(360.))
+        .w(px(320.))
         .m_1()
         .p_3()
-        .pb_4()
         .rounded(px(6.))
         .bg(rgb(CARD_BG))
+        .overflow_hidden()
         .flex()
         .flex_col()
         .gap_1()
@@ -116,23 +137,34 @@ fn render_agent_card(card: &AgentCardData) -> impl IntoElement {
                 .text_color(Colors::kinpaku())
                 .child(card.name.clone()),
         )
+        .when(!is_placeholder(&card.task_id), |el| {
+            el.child(
+                div()
+                    .text_xs()
+                    .font_family(MONO_FONT)
+                    .text_color(Colors::zouge())
+                    .child(card.task_id.clone()),
+            )
+        })
         .child(
+            // The indicator is DRAWN, not typed: `🟡` came out as a colour
+            // emoji while `⚪` fell back to a text glyph, so neighbouring
+            // cards showed two different kinds of dot. A painted circle
+            // cannot vary with font fallback, and the colour already carries
+            // the state.
             div()
-                .text_xs()
-                .font_family(MONO_FONT)
-                .text_color(Colors::zouge())
-                .child(card.task_id.clone()),
-        )
-        .child(
-            div()
-                .text_xs()
-                .font_family(MONO_FONT)
-                .text_color(status_col)
-                .child(format!(
-                    "{} {}",
-                    card.status,
-                    status_indicator(&card.status)
-                )),
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(status_col))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_family(MONO_FONT)
+                        .text_color(status_col)
+                        .child(card.status.clone()),
+                ),
         )
         .child(
             div()
@@ -141,13 +173,15 @@ fn render_agent_card(card: &AgentCardData) -> impl IntoElement {
                 .text_color(inbox_color)
                 .child(format!("inbox: {}", card.inbox_unread)),
         )
-        .child(
-            div()
-                .text_xs()
-                .font_family(MONO_FONT)
-                .text_color(Colors::muted())
-                .child(format!("{}更新", card.last_report_at)),
-        )
+        .when(!is_placeholder(&card.last_report_at), |el| {
+            el.child(
+                div()
+                    .text_xs()
+                    .font_family(MONO_FONT)
+                    .text_color(Colors::muted())
+                    .child(format!("{} 更新", card.last_report_at)),
+            )
+        })
         .when(!summary.is_empty(), |el| {
             el.child(
                 div()
@@ -155,6 +189,10 @@ fn render_agent_card(card: &AgentCardData) -> impl IntoElement {
                     .font_family(MONO_FONT)
                     .text_color(Colors::zouge())
                     .line_height(px(16.))
+                    // Hard visual bound (3 lines) even if the char budget
+                    // above misjudges how the text wraps.
+                    .max_h(px(48.))
+                    .overflow_hidden()
                     .child(summary),
             )
         })
@@ -169,26 +207,15 @@ fn render_card_grid(cards: &[AgentCardData]) -> impl IntoElement {
             .child("（エージェントカード未取得）");
     }
 
-    let rows: Vec<_> = cards.chunks(3).collect();
-    v_flex().gap_1().children(rows.into_iter().map(|row| {
-        let mut children: Vec<gpui::AnyElement> = row
-            .iter()
-            .map(|c| render_agent_card(c).into_any_element())
-            .collect();
-        for _ in row.len()..3 {
-            children.push(
-                div()
-                    .flex_1()
-                    .min_w(px(200.))
-                    .max_w(px(360.))
-                    .m_1()
-                    .into_any_element(),
-            );
-        }
-        let mut row = div().flex().flex_row().w_full();
-        row.style().align_items = Some(AlignItems::Stretch);
-        row.children(children)
-    }))
+    // Fixed-width cards in a wrapping row: the column count follows the
+    // window instead of being pinned at three, so a wide monitor holds a
+    // wide formation rather than three columns and a plain of empty space.
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .w_full()
+        .children(cards.iter().map(render_agent_card))
 }
 
 pub fn render_agents_tab(state: &AgentsState, cx: &mut Context<ShogunWindow>) -> impl IntoElement {
