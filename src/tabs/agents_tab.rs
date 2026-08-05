@@ -230,27 +230,25 @@ fn render_agent_card(card: &AgentCardData, cx: &mut Context<ShogunWindow>) -> gp
         // ContextMenu<E> re-exposes none of Div's builder methods.
         .context_menu(move |menu, _window, _cx| {
             let (entity, name) = menu_open.clone();
-            let menu = menu.item(
-                PopupMenuItem::label("全文を開く").on_click(move |_, _, cx| {
-                    entity.update(cx, |this, cx| {
-                        this.agents_state.selected = Some(name.clone());
-                        cx.notify();
-                    });
-                }),
-            );
+            let menu = menu.item(PopupMenuItem::new("全文を開く").on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| {
+                    this.agents_state.selected = Some(name.clone());
+                    cx.notify();
+                });
+            }));
             let summary = menu_copy_summary.clone();
             let menu = if summary.is_empty() {
                 menu
             } else {
                 menu.item(
-                    PopupMenuItem::label("報告をコピー").on_click(move |_, _, cx| {
+                    PopupMenuItem::new("報告をコピー").on_click(move |_, _, cx| {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(summary.clone()));
                     }),
                 )
             };
             let menu = if let Some(task) = menu_copy_task.clone() {
                 menu.item(
-                    PopupMenuItem::label("task_id をコピー").on_click(move |_, _, cx| {
+                    PopupMenuItem::new("task_id をコピー").on_click(move |_, _, cx| {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(task.clone()));
                     }),
                 )
@@ -259,7 +257,7 @@ fn render_agent_card(card: &AgentCardData, cx: &mut Context<ShogunWindow>) -> gp
             };
             let refresh = menu_refresh.clone();
             menu.separator()
-                .item(PopupMenuItem::label("更新").on_click(move |_, _, cx| {
+                .item(PopupMenuItem::new("更新").on_click(move |_, _, cx| {
                     refresh.update(cx, |this, cx| this.refresh_agents(cx));
                 }))
         })
@@ -434,7 +432,7 @@ fn render_detail_overlay(
                             let close = cx.entity();
                             move |menu, _window, _cx| {
                                 let menu = if let Some(text) = selection.clone() {
-                                    menu.item(PopupMenuItem::label("選択をコピー").on_click(
+                                    menu.item(PopupMenuItem::new("選択をコピー").on_click(
                                         move |_, _, cx| {
                                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                                                 text.clone(),
@@ -446,7 +444,7 @@ fn render_detail_overlay(
                                 };
                                 let full = full.clone();
                                 let close = close.clone();
-                                menu.item(PopupMenuItem::label("全文をコピー").on_click(
+                                menu.item(PopupMenuItem::new("全文をコピー").on_click(
                                     move |_, _, cx| {
                                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                                             full.clone(),
@@ -455,7 +453,7 @@ fn render_detail_overlay(
                                 ))
                                 .separator()
                                 .item(
-                                    PopupMenuItem::label("閉じる").on_click(move |_, _, cx| {
+                                    PopupMenuItem::new("閉じる").on_click(move |_, _, cx| {
                                         close.update(cx, |this, cx| {
                                             this.agents_state.selected = None;
                                             cx.notify();
