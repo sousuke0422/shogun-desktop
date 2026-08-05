@@ -1343,7 +1343,21 @@ impl ShogunWindow {
                         .px_3()
                         .text_color(Colors::zouge())
                         .text_size(px(12.))
+                        // Text left, 使用率 right — the same spot the other
+                        // tabs keep their 更新 button, so the hand knows
+                        // where to go on every tab.
+                        .justify_between()
                         .child(jinmaku_text)
+                        .child(
+                            Button::new(("jinmaku-usage", is_shogun as usize))
+                                .small()
+                                .label("使用率")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.agents_state.usage_visible = true;
+                                    this.refresh_usage(cx);
+                                    cx.notify();
+                                })),
+                        )
                         .children(session_opt.as_ref().and_then(terminal_progress).map(|p| {
                             render_progress_bar(("jinmaku-progress", is_shogun as usize), p)
                         })),
