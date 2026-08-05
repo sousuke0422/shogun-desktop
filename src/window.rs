@@ -1787,7 +1787,6 @@ impl Render for ShogunWindow {
                                 this.set_terminal_font_preset("Cica", window, cx);
                             })),
                     );
-                #[cfg(windows)]
                 let control_path_selector = {
                     let current = self.settings_tab.control_path.clone();
                     RadioGroup::horizontal("ctrl-path")
@@ -1796,9 +1795,10 @@ impl Render for ShogunWindow {
                             ControlPathType::NamedPipe => 1,
                             ControlPathType::None => 2,
                         }))
-                        .child(Radio::new("ctrl-path-socket").label("Socket（%TEMP% ファイル）"))
+                        .child(Radio::new("ctrl-path-socket").label("Socket（一時ファイル）"))
                         .child(
-                            Radio::new("ctrl-path-named-pipe").label("Named Pipe（\\\\.\\pipe\\）"),
+                            Radio::new("ctrl-path-named-pipe")
+                                .label("Named Pipe（将来用・ssh.exe 未対応）"),
                         )
                         .child(Radio::new("ctrl-path-none").label("無効（毎回新規接続）"))
                         .on_click(cx.listener(|this, index: &usize, _, cx| {
@@ -1824,10 +1824,7 @@ impl Render for ShogunWindow {
                     terminal_identity_selector,
                     term_name_selector,
                     term_name_warning,
-                    #[cfg(windows)]
                     Some(control_path_selector),
-                    #[cfg(not(windows))]
-                    None::<gpui::Empty>,
                 )
                 .into_any_element()
             }

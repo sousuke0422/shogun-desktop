@@ -209,17 +209,18 @@ pub fn render_settings_tab(
     .child(field_label("接続バックエンド"))
     .child(connection_backend_selector)
     .child(hint(
-        "Native (russh) 推奨。System は OpenSSH (ssh.exe) を使う互換モード",
+        "Native (russh) 推奨 — 1接続にチャネルを多重化し keepalive 15s 付き。System は OpenSSH (ssh.exe) を呼ぶ互換モード",
     ))
     .child(field_label("ホスト鍵"))
     .child(accept_all_host_keys_toggle);
 
     if let Some(selector) = control_path_selector {
         advanced = advanced
-            .child(field_label(
-                "ControlPath（Windows / System バックエンド用）",
-            ))
-            .child(selector);
+            .child(field_label("接続の多重化（ControlMaster・System 専用）"))
+            .child(selector)
+            .child(hint(
+                "System バックエンドだけが使う。Native は常時1接続に多重化するので設定不要。Windows の ssh.exe は ControlMaster 未実装のため、選んでも初回失敗を検知して自動で毎回新規接続に切り替わる",
+            ));
     }
 
     v_flex()
@@ -258,7 +259,10 @@ pub fn render_settings_tab(
                         Some("上から順に試す: 秘密鍵 → ssh-agent → パスワード。通常は鍵パスだけ埋めれば良い"),
                     )
                     .child(labeled_input("秘密鍵パス", &tab.key_path))
-                    .child(labeled_input("パスワード", &tab.password)),
+                    .child(labeled_input("パスワード", &tab.password))
+                    .child(hint(
+                        "パスワードは OS の資格情報ストアに保存される（Windows: 資格情報マネージャ / macOS: Keychain / Linux: Secret Service — Plasma では KWallet）。settings.toml に平文では残らない",
+                    )),
                 )
                 .child(
                     section_card("ターミナル", None)
