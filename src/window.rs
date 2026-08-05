@@ -887,6 +887,12 @@ impl ShogunWindow {
                     .relative()
                     .size_full()
                     .child(pane)
+                    // Subscription-usage overlay, reachable from this pane's
+                    // right-click menu. Same instance the agents tab shows —
+                    // only one tab renders at a time, so no double mount.
+                    .when(self.agents_state.usage_visible, |el| {
+                        el.child(crate::tabs::render_usage_overlay(&self.agents_state, cx))
+                    })
                     // Scrollback search bar (Ctrl+Shift+F), VSCode/wt-style
                     // top-right of the pane — the shared engine widget. The
                     // button listeners go through mem::take like the key

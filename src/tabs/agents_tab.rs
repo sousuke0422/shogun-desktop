@@ -591,7 +591,10 @@ fn usage_row(label: String, pct: Option<f32>, resets: Option<String>) -> gpui::A
 }
 
 /// Full-screen usage overlay: Claude and Codex subscription gauges.
-fn render_usage_overlay(state: &AgentsState, cx: &mut Context<ShogunWindow>) -> gpui::AnyElement {
+pub fn render_usage_overlay(
+    state: &AgentsState,
+    cx: &mut Context<ShogunWindow>,
+) -> gpui::AnyElement {
     let mut body: Vec<gpui::AnyElement> = Vec::new();
     if let Some(err) = &state.usage_error {
         body.push(

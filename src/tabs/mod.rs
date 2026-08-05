@@ -5,7 +5,8 @@ pub mod shogun_tab;
 pub mod terminal_tab;
 
 pub use agents_tab::{
-    AgentCardData, UsageData, fetch_agent_cards, render_agents_tab, run_fetch_agents,
+    AgentCardData, UsageData, fetch_agent_cards, render_agents_tab, render_usage_overlay,
+    run_fetch_agents,
 };
 pub use dashboard_tab::{render_dashboard_tab, run_fetch_dashboard};
 pub use settings_tab::{SettingsTab, render_settings_tab};

@@ -49,6 +49,9 @@ pub fn render_terminal_tab(
     let focus_handle = focus_handle.clone();
     let menu_focus = focus_handle.clone();
     let view = cx.entity();
+    // Dedicated handle for the usage menu item: `view` is moved into the
+    // grid closures further down.
+    let usage_entity = view.clone();
     let grid_rows = snap.rows;
     let grid_cols = snap.cols;
     v_flex()
@@ -233,9 +236,20 @@ pub fn render_terminal_tab(
         // overlay above), and any scroll pin then shoves the grid clean out of
         // view — the "right-click blanks the alt screen" field bug (2026-07-10).
         .context_menu(move |menu, _window, _cx| {
+            let usage_view = usage_entity.clone();
             menu.action_context(menu_focus.clone())
                 .menu("コピー", Box::new(TerminalCopy))
                 .menu("ペースト", Box::new(TerminalPaste))
+                .separator()
+                .item(gpui_component::menu::PopupMenuItem::new("使用率").on_click(
+                    move |_, _, cx| {
+                        usage_view.update(cx, |this, cx| {
+                            this.agents_state.usage_visible = true;
+                            this.refresh_usage(cx);
+                            cx.notify();
+                        });
+                    },
+                ))
         })
 }
 
