@@ -5,7 +5,14 @@ use crate::tabs::shogun_tab::MONO_FONT;
 use crate::theme::Colors;
 use crate::window::{AgentsState, ShogunWindow};
 use gpui::{Context, IntoElement, ParentElement, Styled, div, prelude::*, px, rgb};
-use gpui_component::{Sizable, button::Button, scroll::ScrollableElement, text::TextView, v_flex};
+use gpui_component::{
+    Sizable,
+    button::Button,
+    menu::{ContextMenuExt as _, PopupMenuItem},
+    scroll::ScrollableElement,
+    text::TextView,
+    v_flex,
+};
 use shogun_core::{
     StatusCategory, build_agent_card, build_karo_card, status_category, truncate_summary,
 };
@@ -121,6 +128,18 @@ fn render_agent_card(card: &AgentCardData, cx: &mut Context<ShogunWindow>) -> gp
     };
     let name = card.name.clone();
 
+    // The menu-item handlers get `&mut App`, not the view — reach the window
+    // through its entity handle instead of cx.listener.
+    let entity = cx.entity();
+    let menu_open = (entity.clone(), card.name.clone());
+    let menu_copy_summary = card.summary.clone();
+    let menu_copy_task = if is_placeholder(&card.task_id) {
+        None
+    } else {
+        Some(card.task_id.clone())
+    };
+    let menu_refresh = entity.clone();
+
     div()
         .id(gpui::SharedString::from(format!(
             "agent-card-{}",
@@ -206,6 +225,43 @@ fn render_agent_card(card: &AgentCardData, cx: &mut Context<ShogunWindow>) -> gp
                     .overflow_hidden()
                     .child(summary),
             )
+        })
+        // Wraps the element, so it must come after every styling call —
+        // ContextMenu<E> re-exposes none of Div's builder methods.
+        .context_menu(move |menu, _window, _cx| {
+            let (entity, name) = menu_open.clone();
+            let menu = menu.item(
+                PopupMenuItem::label("全文を開く").on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.agents_state.selected = Some(name.clone());
+                        cx.notify();
+                    });
+                }),
+            );
+            let summary = menu_copy_summary.clone();
+            let menu = if summary.is_empty() {
+                menu
+            } else {
+                menu.item(
+                    PopupMenuItem::label("報告をコピー").on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(summary.clone()));
+                    }),
+                )
+            };
+            let menu = if let Some(task) = menu_copy_task.clone() {
+                menu.item(
+                    PopupMenuItem::label("task_id をコピー").on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(task.clone()));
+                    }),
+                )
+            } else {
+                menu
+            };
+            let refresh = menu_refresh.clone();
+            menu.separator()
+                .item(PopupMenuItem::label("更新").on_click(move |_, _, cx| {
+                    refresh.update(cx, |this, cx| this.refresh_agents(cx));
+                }))
         })
         .into_any_element()
 }
