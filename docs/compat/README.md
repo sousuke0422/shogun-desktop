@@ -331,6 +331,29 @@ gets by default:
 
 ![Alacritty running the probe](probe-alacritty.png)
 
+### Rio (0.4.2 alpha, unmasked on our pair)
+
+![Rio running the probe on our ConPTY pair](probe-rio-modern-host.png)
+
+Rio's PTY layer does the same `LoadLibrary("conpty.dll")` dance as alacritty,
+ships no pair — and on this machine therefore comes up on **WezTerm's**
+2024-era host via the `PATH` walk described above. Dropped next to our
+1.24.2607 pair instead (child process verified), its engine comes out from
+behind the host: **eleven of twelve**, including the colon-form SGR rows
+(689 orange px across both truecolor lines, 312 px of exact `(255, 80, 80)`
+under `red-underline`).
+
+The one failure is DECSLRM, in the same "wrong" shape as upstream alacritty —
+which is no coincidence: rio's parser (`copa`) is a vte fork, and like
+upstream it keeps no margin state. The probe also shows two alpha rough
+edges that are rio's own: the `12 DECSLRM` header line lands somewhere else
+entirely (cursor-addressing disagreement about the grid height), and the
+window title renders its literal `{{ TITLE || PROGRAM }}` template.
+
+Capture notes: `-e` and every custom `[shell]` config exit instantly in this
+build, so the probe was typed into the default shell by hand; the capture is
+`PrintWindow` from behind, focus untouched.
+
 ### Konsole for Windows (system conhost)
 
 ![Konsole for Windows running the probe](probe-konsole-via-conpty.png)
