@@ -26,7 +26,8 @@ printf '%s\n' " 5 dim / inverse / both        ${esc}[2mdim${esc}[22m ${esc}[7min
 printf '%s\n' " 6 REP (CSI b)        expect ten X         X${esc}[9b"
 printf '%s\n' " 7 ECH (CSI X)        expect five A        AAAAAAAAAA${esc}[10D${esc}[5X"
 printf '%s\n' " 8 ICH / DCH          expect 3 blanks+CDEF ABCDEF${esc}[6D${esc}[3@${esc}[3C${esc}[2P"
-printf '%s\n' " 9 wide+combining+emoji  ﾊﾟ keeps its mark  |日本語|abcd|😀|ﾊﾟ|"
+printf '%s\n' " 9 wide+emoji+halfwidth  |日本語|abcd|😀| + spacing pair ﾊﾟ = TWO cells
+ 9b combining U+309A      パ = ONE wide cell with the ring attached"
 printf '%s\n' "10 box drawing / shades                     ╭─┬─╮ █▓▒░ ▁▂▃▄▅▆▇█"
 
 # ── DECSCNM (?5): the visual bell. Held long enough to photograph. ──────────

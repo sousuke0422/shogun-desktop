@@ -114,10 +114,25 @@ this machine.
 | 6 | REP (`CSI b`) | yes | yes | yes |
 | 7 | ECH (`CSI X`) | yes | yes | yes |
 | 8 | ICH / DCH | yes | yes | yes |
-| 9 | Wide chars, combining marks, emoji | mark dropped from `ﾊﾟ` | composed | composed |
+| 9 | Wide chars, half-width pair `ﾊ`+`ﾟ`, emoji | yes (ring small and high) | side by side | side by side |
+| 9b | Combining mark (`ハ`+U+309A → パ) | yes | *not re-run* | yes |
 | 10 | Box drawing and shade blocks | font glyphs | font glyphs | drawn as geometry |
 | 11 | DECSCNM (`?5`) screen reverse | yes | yes | yes |
 | 12 | DECSLRM left/right margins | yes | yes | yes |
+
+Row 9 has a correction to own up to. The probe's original line was titled
+"wide+combining+emoji" but sent `U+FF8A U+FF9F` — the HALF-WIDTH semi-voiced
+mark, which is a *spacing* character. Nothing combining was ever tested, and
+the verdicts written against it ("mark dropped" for Windows Terminal,
+"composed" for the rest) judged a test that did not exist. The probe now
+carries both cases explicitly: the spacing pair, whose correct rendering is
+two narrow cells side by side, and a true combining mark (`ハ` + U+309A),
+whose correct rendering is one wide cell with the ring attached. Re-run
+under the corrected probe, Windows Terminal and RikkaTerminal both render
+both correctly — including Windows Terminal's half-width ring, which is
+drawn small and high and had been misread as dropped. The wezterm, ghostty,
+alacritty and rio captures predate the split; their row-9 entries describe
+the spacing pair only.
 
 Rows 1, 2 and 4 are colour claims, so they were checked by sampling pixels
 rather than by eye. The SGR 58 underline is the clearest: the probe asks for
@@ -370,6 +385,10 @@ host always strips it, yet the margin block comes out **correct** — the 2024
 host applied DECSLRM itself and handed rio pre-fenced output. Same binary,
 opposite verdicts on rows 2/3/4 and row 12, purely from which host sat in
 between.
+
+One quirk is rio's own and host-independent: the half-width pair `ﾊ`+`ﾟ`
+(two spacing characters, two cells) comes out with the ring **stacked on top
+of the `ﾊ`** as though it were a combining mark, on both hosts alike.
 
 Capture notes: `-e` and every custom `[shell]` config exit instantly in this
 build, so both probes were typed into the default shell by hand; the
