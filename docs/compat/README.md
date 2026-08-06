@@ -154,8 +154,20 @@ Every terminal here drives the shell through ConPTY, so what reaches its
 engine is whatever the console host chose to forward. **Which host** matters
 as much as the engine. RikkaTerminal ships `conpty.dll` and `OpenConsole.exe`
 beside the exe and drives that pair directly; Windows Terminal bundles its
-own; wezterm bundles its own; everything else falls back to the copy in
-`C:\Windows\System32`.
+own; wezterm bundles its own.
+
+For the rest, "falls back to the in-box conhost" is only the end of the
+story. Terminals in this family (alacritty, rio) load the sideload DLL with
+a bare `LoadLibrary("conpty.dll")`, and when the exe's own directory has
+none, **that search walks `PATH`**. On this machine WezTerm's install dir is
+on `PATH`, so today a stock alacritty and a stock rio both come up hosted by
+`C:\Program Files\WezTerm\OpenConsole.exe` — spotted in Task Manager, then
+confirmed from the process tree. Installing one terminal silently changed
+which console host every other sideload-capable terminal runs on. Only when
+no `conpty.dll` is findable anywhere does the in-box conhost actually
+apply. (The alacritty capture below predates WezTerm's installation on this
+machine, so its in-box attribution held at the time it was taken; it would
+not reproduce today without scrubbing `PATH`.)
 
 That fallback is not equivalent. Below is the *same RikkaTerminal binary* —
 the engine that produced the correct picture above — with the sideloaded pair

@@ -21,6 +21,17 @@ conpty.dll が同じ場所の `OpenConsole.exe` を PTY ホストとして起動
 食い違うと PTY が無出力になる（wezterm 2024-02 の dll × 1.24 の exe で実証）。
 build.rs がビルドのたびにこの 2 ファイルをバイナリの隣へコピーする。
 
+**⚠ `LoadLibrary("conpty.dll")` は PATH も歩く**（2026-08-06 実測）。
+exe 隣に dll が無い端末（素の alacritty / rio）は、PATH 上に conpty.dll を
+持つディレクトリがあると**そこの dll を拾い、その dll が自分の隣の
+OpenConsole を起こす**。この環境では WezTerm の install dir が PATH に
+載った瞬間、素の alacritty と rio の両方が WezTerm の 2024 年世代ホストで
+動き出した（タスクマネージャで発覚・プロセス木で確定）。**別の端末を
+インストールしただけで他の端末のコンソールホストが黙って変わる**。
+含意は二つ: ①分離検証は CWD だけでなく **PATH も統制**しないと成立しない
+②「隣に無ければ内蔵 conhost」という仮定は PATH が綺麗な機械でしか正しくない。
+我々自身は常にペアを exe 隣へ置くので影響を受けない。
+
 ## 更新手順
 
 1. 新版確認: <https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY>
