@@ -196,19 +196,29 @@ terminfo**, however correct its engine is.
 
 **This is one host build, not a rule about old hosts.** It is tempting to
 read "in-box conhost is old, old hosts drop things" — but the measurements do
-not support the general claim. DECSLRM survives three different bundled
-generations:
+not support the general claim. Worse, "survives" turned out to be two
+different things wearing one word. Rio is the instrument that splits them:
+its engine has **no margin support at all** (proven on our pass-through host,
+where its margin block comes out wrong), so whatever correctness appears on
+another host was manufactured *by that host*. The same rio binary, three
+hosts:
 
-| Host | Origin | DECSLRM |
-|---|---|---|
-| ConPTY 2024-era (no version resource) | wezterm 20240203 | forwarded |
-| ConPTY 1.22.2502.04002 | wezterm nightly 20260716 | forwarded |
-| ConPTY 1.24.2607.10001 | RikkaTerminal / Windows Terminal | forwarded |
-| conhost 10.0.19041.4522 | in-box, Windows 10 19045 | **stripped** |
+| Host | Origin | DECSLRM strategy | rio's margin block |
+|---|---|---|---|
+| conhost 10.0.19041.4522 | in-box, Windows 10 19045 | **stripped** | wrong |
+| ConPTY 2024-era | wezterm 20240203 | **applied by the host** — margins are fenced in the host's own buffer and the re-emitted output is already correct | **correct**, engine notwithstanding |
+| ConPTY 1.24.2607.10001 | RikkaTerminal / Windows Terminal | **forwarded** — the sequence reaches the terminal, and the engine must implement it | wrong |
 
-The wezterm nightly forwards it through a host **older** than the one we
-ship. So this is the behaviour of that particular in-box build, not a
-property of age.
+Three generations, three strategies: strip, interpret, forward. The earlier
+version of this table said "forwarded" for all of them — wezterm could not
+expose the difference, because its engine implements margins either way; a
+terminal that cannot is what makes the host's own hand visible.
+
+Two consequences worth spelling out. On a modern, forwarding host,
+engine-side DECSLRM is *mandatory* — which is exactly why the karo-pane wipe
+needed an engine fix and not a host swap. And an old interpreting host can
+make a margin-less terminal LOOK margin-capable: a capability screenshot
+taken through it says nothing about the engine.
 
 It is still why the sideloaded pair is not a developer convenience. A host of
 this vintage is not an artefact of one stale desktop: Server releases, the
@@ -350,9 +360,20 @@ edges that are rio's own: the `12 DECSLRM` header line lands somewhere else
 entirely (cursor-addressing disagreement about the grid height), and the
 window title renders its literal `{{ TITLE || PROGRAM }}` template.
 
+The stock install, on WezTerm's host via the `PATH` walk, is the mirror
+image — and the measurement that split the generation table above:
+
+![Rio on WezTerm's 2024 host](probe-rio-wezterm-host.png)
+
+Colon-form SGR dies (orange in row 1 only, zero red pixels) exactly as that
+host always strips it, yet the margin block comes out **correct** — the 2024
+host applied DECSLRM itself and handed rio pre-fenced output. Same binary,
+opposite verdicts on rows 2/3/4 and row 12, purely from which host sat in
+between.
+
 Capture notes: `-e` and every custom `[shell]` config exit instantly in this
-build, so the probe was typed into the default shell by hand; the capture is
-`PrintWindow` from behind, focus untouched.
+build, so both probes were typed into the default shell by hand; the
+captures are `PrintWindow` from behind, focus untouched.
 
 ### Konsole for Windows (system conhost)
 
