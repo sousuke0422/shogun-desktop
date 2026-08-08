@@ -91,12 +91,15 @@ test (see the warning at the top of `e2e/rikka-sixel-local.ps1`).
 
 ![Windows Terminal running the probe](probe-windows-terminal.png)
 
-Captured maximized (`wt -M`), not at the default window size, and not by
-preference: the probe places its DECSLRM block at `tput lines - 12`, and in
-the default 30-row window that lands on top of rows 10-12 — an earlier
-capture here showed M01 directly after row 9d with the box-drawing row and
-both headers silently overwritten. A taller window separates them. (`wt
---size` was ignored on this build; `-M` was the lever that worked.)
+Captured at the default window size (30 rows). That took probe surgery: the
+DECSLRM block used to sit at the bottom-anchored absolute row
+`tput lines - 12`, which in a 30-row window lands on top of rows 10-12 —
+an earlier committed capture had them silently overwritten. The probe now
+asks the terminal where the cursor is (DSR `CSI 6n` — every host under test
+answers it) and lays the block right after the content, scrolling only on
+genuine shortfall. The host-attestation line moved to the very end of the
+output for the same reason: the bottom is the one place layout padding can
+never scroll it away.
 
 ## wezterm
 

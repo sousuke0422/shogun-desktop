@@ -15,23 +15,6 @@ esc=$'\033'
 clear
 printf '%s\n' "terminal capability probe — expected result is written on each line"
 
-# Which console hosts are alive RIGHT NOW, so the screenshot itself carries
-# the evidence of who sat between us and the terminal. LoadLibrary walks PATH
-# and silently re-hosts terminals (see README) — this line is how a capture
-# proves it wasn't re-hosted. Best-effort: silent off Windows/WSL-interop.
-# command -v is not enough: a terminal launched by app activation (wt.exe
-# alias) does not inherit the caller's environment, and the interop PATH the
-# session ends up with may lack the PowerShell dir. Fall back to the fixed path.
-ps_exe=$(command -v powershell.exe || true)
-[ -n "$ps_exe" ] || ps_exe=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
-if [ -x "$ps_exe" ]; then
-    hosts=$("$ps_exe" -NoProfile -Command \
-        'Get-Process OpenConsole -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }' \
-        2>/dev/null | tr -d '\r' | sort -u | paste -sd' ' -)
-    printf 'live OpenConsole hosts: %s\n' "${hosts:-none (in-box conhost or non-Windows)}"
-fi
-printf '\n'
-
 printf '%s\n' " 1 SGR truecolor, semicolons   ${esc}[38;2;255;120;0mORANGE${esc}[39m ${esc}[48;2;0;90;180m BLUE-BG ${esc}[49m   (both should be coloured)"
 printf '%s\n' " 2 SGR truecolor, colons       ${esc}[38:2:255:120:0mORANGE${esc}[39m ${esc}[48:2:0:90:180m BLUE-BG ${esc}[49m   (terminfo setrgbf uses THIS form)"
 printf '%s\n' " 3 styled underlines           ${esc}[4:3mcurly${esc}[4:0m ${esc}[4:4mdotted${esc}[4:0m ${esc}[4:5mdashed${esc}[4:0m        (three DIFFERENT underlines)"
@@ -53,15 +36,41 @@ printf '%s\n' " 9d emoji ZWJ/VS16/flag       👨‍👩‍👧< ❤️< 🇯�
 printf '%s\n' "10 box drawing / shades                     ╭─┬─╮ █▓▒░ ▁▂▃▄▅▆▇█"
 
 # ── DECSCNM (?5): the visual bell. Held long enough to photograph. ──────────
-printf '\n%s' "11 DECSCNM (?5) screen reverse — inverting for 2s"
+printf '%s' "11 DECSCNM (?5) screen reverse — inverting for 2s"
 printf '%s' "${esc}[?5h"
 sleep 2
 printf '%s' "${esc}[?5l"
 printf '%s\n' "  … restored"
 
 # ── DECSLRM: scroll ONLY a column band. ─────────────────────────────────────
-printf '\n%s\n\n' "12 DECSLRM left/right margins — rows below scroll up by 2 INSIDE [] ONLY"
-base=$(( $(tput lines) - 12 ))
+printf '%s\n' "12 DECSLRM left/right margins — rows below scroll up by 2 INSIDE [] ONLY"
+
+# Place the block right after the content, NOT at a bottom-anchored absolute
+# row: `lines - 12` lands on top of rows 10-12 in a 30-row window (Windows
+# Terminal's default), which silently overwrote them in an earlier committed
+# capture. Ask the terminal where the cursor is (DSR — every host under test
+# answers it), and scroll only the shortfall if the block wouldn't fit.
+lines=$(tput lines)
+row=''
+# The query goes out via printf, NOT via read -p: -p writes its prompt to
+# stderr, so any stderr redirect on the read silently swallows the query and
+# every host looks mute (cost one wrong "WT doesn't answer DSR" conclusion).
+printf '%s[6n' "$esc"
+IFS='[;' read -rsd R -t 2 _ row _ 2>/dev/null || true
+if ! [ "$row" -ge 1 ] 2>/dev/null; then
+    row=$(( lines - 12 ))          # DSR unanswered — old bottom-anchored layout
+fi
+need=12                            # blank + 6 M rows + blank + 2 captions + hosts (wraps to 2)
+if [ $(( row + need )) -gt "$lines" ]; then
+    # Newlines only scroll once the cursor reaches the bottom row, so the
+    # ride down (lines - row) must be paid IN ADDITION to the scroll amount
+    # (row + need - lines) — together that is always exactly `need` newlines.
+    # Padding only the shortfall moved the cursor without scrolling anything,
+    # and the block overwrote the row-12 header it was meant to protect.
+    for _ in $(seq 1 "$need"); do printf '\n'; done
+    row=$(( lines - need ))
+fi
+base=$(( row + 1 ))
 for i in 1 2 3 4 5 6; do
     printf '%s%s\n' "${esc}[$((base + i - 1));1H${esc}[K" "M0$i AAAAAAAAAA[BBBBBBBBBB]CCCCCCCCCC"
 done
@@ -69,5 +78,22 @@ done
 printf '%s' "${esc}[?69h${esc}[${base};$((base + 5))r${esc}[16;26s${esc}[2S${esc}[r${esc}[?69l"
 printf '%s\n' "${esc}[$((base + 7));1H   correct: M05/M06 lose only the B's; every A and C stays put."
 printf '%s\n' "   wrong  : whole lines moved, so M01-M02 are gone and A/C shifted too."
+
+# Which console hosts are alive now that every test has run, stamped into the
+# screenshot itself: LoadLibrary walks PATH and silently re-hosts terminals
+# (see README), and this line is how a capture proves it wasn't re-hosted.
+# Printed LAST because the layout padding scrolls the top of the screen away
+# in short windows — the bottom is the one place nothing can evict it from.
+# command -v is not enough for the interop lookup: a terminal launched by app
+# activation (wt.exe alias) does not inherit the caller's environment, and
+# the session's PATH may lack the PowerShell dir — hence the fixed fallback.
+ps_exe=$(command -v powershell.exe || true)
+[ -n "$ps_exe" ] || ps_exe=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+if [ -x "$ps_exe" ]; then
+    hosts=$("$ps_exe" -NoProfile -Command \
+        'Get-Process OpenConsole -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }' \
+        2>/dev/null | tr -d '\r' | sort -u | paste -sd' ' -)
+    printf 'live OpenConsole hosts: %s\n' "${hosts:-none (in-box conhost or non-Windows)}"
+fi
 
 sleep 3600
