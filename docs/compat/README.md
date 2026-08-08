@@ -115,7 +115,11 @@ this machine.
 | 7 | ECH (`CSI X`) | yes | yes | yes |
 | 8 | ICH / DCH | yes | yes | yes |
 | 9 | Wide chars, half-width pair `ﾊ`+`ﾟ`, emoji | yes (ring small and high) | side by side | side by side |
-| 9b | Combining mark (`ハ`+U+309A → パ) | yes | *not re-run* | yes |
+| 9b | Combining marks (`ハ`+U+309A → パ, `e`+U+0301 → é) | yes | *not re-run* | yes |
+| 9c | Ambiguous width (`○×■│┐`) | narrow | *not re-run* | narrow |
+| 9d | Emoji ZWJ family | yes (one glyph, 2 cells) | *not re-run* | **three faces** (fragments) |
+| 9d | Emoji VS16 (`❤`+FE0F) | yes | *not re-run* | yes |
+| 9d | Emoji flag (RI pair 🇯🇵) | **letter fallback**, 4 cells | *not re-run* | yes (flag drawn) |
 | 10 | Box drawing and shade blocks | font glyphs | font glyphs | drawn as geometry |
 | 11 | DECSCNM (`?5`) screen reverse | yes | yes | yes |
 | 12 | DECSLRM left/right margins | yes | yes | yes |
@@ -139,6 +143,34 @@ as if they combined is a real failure mode — rio does exactly that, stacking
 the ring over the `ﾊ` on both hosts — so the pair stays in the probe as
 row 9 under an honest name, as a discriminator in its own right rather than
 a stand-in for the combining test it never was.
+
+Rows 9c and 9d judge **advance width**, not glyph shape: each run of glyphs
+is chased by a `<` marker, and the marker lands wherever the cursor ended
+up — read its column against the ruler line, which shares the same 30-column
+ASCII prefix. On 9c both Windows Terminal and RikkaTerminal advance the five
+East Asian Ambiguous characters narrow, one cell each, `<` at column 5 —
+agreeing with each other and with their hosts, which is the actual pass
+condition (a terminal drawing them wide while the host counts narrow is how
+cursor positions drift). 9d is where the two split, in opposite directions:
+Windows Terminal composes the ZWJ family into one glyph and honours VS16 but
+renders the regional-indicator flag as letter fallback across four cells,
+while RikkaTerminal draws the flag and honours VS16 but breaks the ZWJ
+family into three separate faces. Neither passes 9d whole — which is the
+point of carrying the hard cases: 😀 alone, the previous emoji test, passes
+everywhere and distinguishes nothing.
+
+The probe also prints a `live OpenConsole hosts:` line — every OpenConsole
+process alive at probe time, stamped into the screenshot itself. That line
+earned its place on its very first run: it listed
+`C:\Program Files\WezTerm\OpenConsole.exe` under a RikkaTerminal capture,
+because the test copy of the exe had `OpenConsole.exe` beside it but not
+`conpty.dll` — so `LoadLibrary` walked PATH, found WezTerm's dll, and that
+dll started WezTerm's 2024-era host, which stripped every colon-form SGR:
+the SGR 58 pixel count collapsed from 143 to **zero**. Completing the pair
+beside the exe and launching with a minimal PATH (`launch-clean.ps1`, in
+this directory) restored 143 exactly. PATH hygiene cannot live inside the
+probe script — the host is chosen at terminal launch, before bash ever runs
+— so the launcher sanitizes and the probe attests.
 
 Rows 1, 2 and 4 are colour claims, so they were checked by sampling pixels
 rather than by eye. The SGR 58 underline is the clearest: the probe asks for

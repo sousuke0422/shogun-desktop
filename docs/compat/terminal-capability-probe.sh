@@ -13,7 +13,24 @@ set -u
 esc=$'\033'
 
 clear
-printf '%s\n\n' "terminal capability probe — expected result is written on each line"
+printf '%s\n' "terminal capability probe — expected result is written on each line"
+
+# Which console hosts are alive RIGHT NOW, so the screenshot itself carries
+# the evidence of who sat between us and the terminal. LoadLibrary walks PATH
+# and silently re-hosts terminals (see README) — this line is how a capture
+# proves it wasn't re-hosted. Best-effort: silent off Windows/WSL-interop.
+# command -v is not enough: a terminal launched by app activation (wt.exe
+# alias) does not inherit the caller's environment, and the interop PATH the
+# session ends up with may lack the PowerShell dir. Fall back to the fixed path.
+ps_exe=$(command -v powershell.exe || true)
+[ -n "$ps_exe" ] || ps_exe=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+if [ -x "$ps_exe" ]; then
+    hosts=$("$ps_exe" -NoProfile -Command \
+        'Get-Process OpenConsole -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }' \
+        2>/dev/null | tr -d '\r' | sort -u | paste -sd' ' -)
+    printf 'live OpenConsole hosts: %s\n' "${hosts:-none (in-box conhost or non-Windows)}"
+fi
+printf '\n'
 
 printf '%s\n' " 1 SGR truecolor, semicolons   ${esc}[38;2;255;120;0mORANGE${esc}[39m ${esc}[48;2;0;90;180m BLUE-BG ${esc}[49m   (both should be coloured)"
 printf '%s\n' " 2 SGR truecolor, colons       ${esc}[38:2:255:120:0mORANGE${esc}[39m ${esc}[48:2:0:90:180m BLUE-BG ${esc}[49m   (terminfo setrgbf uses THIS form)"
@@ -27,7 +44,12 @@ printf '%s\n' " 6 REP (CSI b)        expect ten X         X${esc}[9b"
 printf '%s\n' " 7 ECH (CSI X)        expect five A        AAAAAAAAAA${esc}[10D${esc}[5X"
 printf '%s\n' " 8 ICH / DCH          expect 3 blanks+CDEF ABCDEF${esc}[6D${esc}[3@${esc}[3C${esc}[2P"
 printf '%s\n' " 9 wide+emoji+halfwidth  |日本語|abcd|😀| + spacing pair ﾊﾟ = TWO cells
- 9b combining U+309A      パ = ONE wide cell with the ring attached"
+ 9b combining marks       パ (ハ+U+309A) and é (e+U+0301) = ONE cell each"
+# 9c/9d judge ADVANCE WIDTH, not glyph shape: the < marker lands wherever the
+# cursor ended up, and the ruler shares the same 30-column ASCII prefix.
+printf '%s\n' " 9c ambiguous width           0123456789          <- ruler (col 0 under the 0)"
+printf '%s\n' "                              ○×■│┐<              narrow: < at col 5 / wide: < at col 10"
+printf '%s\n' " 9d emoji ZWJ/VS16/flag       👨‍👩‍👧< ❤️< 🇯🇵<           each ONE glyph, < snug after 2 cells"
 printf '%s\n' "10 box drawing / shades                     ╭─┬─╮ █▓▒░ ▁▂▃▄▅▆▇█"
 
 # ── DECSCNM (?5): the visual bell. Held long enough to photograph. ──────────
