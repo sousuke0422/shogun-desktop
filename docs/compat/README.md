@@ -91,6 +91,13 @@ test (see the warning at the top of `e2e/rikka-sixel-local.ps1`).
 
 ![Windows Terminal running the probe](probe-windows-terminal.png)
 
+Captured maximized (`wt -M`), not at the default window size, and not by
+preference: the probe places its DECSLRM block at `tput lines - 12`, and in
+the default 30-row window that lands on top of rows 10-12 — an earlier
+capture here showed M01 directly after row 9d with the box-drawing row and
+both headers silently overwritten. A taller window separates them. (`wt
+--size` was ignored on this build; `-M` was the lever that worked.)
+
 ## wezterm
 
 ![wezterm running the probe](probe-wezterm.png)
