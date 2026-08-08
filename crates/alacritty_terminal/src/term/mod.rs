@@ -1194,6 +1194,35 @@ impl<T> Term<T> {
         cursor_cell.extra = extra;
     }
 
+    /// Cell whose grapheme cluster `c` continues, if any (see the stacking
+    /// rules in [`Handler::input`]). Follows the same previous-cell walk as
+    /// the zero-width path: step back one column unless a wrap is pending,
+    /// then hop a wide-char spacer onto its base.
+    fn grapheme_continuation_target(&self, c: char) -> Option<Point> {
+        let mut column = self.grid.cursor.point.column;
+        if !self.grid.cursor.input_needs_wrap {
+            column = Column(column.0.checked_sub(1)?);
+        }
+        let line = self.grid.cursor.point.line;
+        if self.grid[line][column].flags.contains(Flags::WIDE_CHAR_SPACER) {
+            column = Column(column.0.checked_sub(1)?);
+        }
+        let cell = &self.grid[line][column];
+
+        // ZWJ promised a continuation — but only a pictograph may honour it;
+        // ZWJ between letters is a joining control, not a cluster merge.
+        let pictographic =
+            matches!(c as u32, 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1FAFF);
+        let continues_zwj = pictographic
+            && cell.zerowidth().is_some_and(|z| z.last() == Some(&'\u{200D}'));
+
+        // Skin-tone modifier directly after an emoji base (no ZWJ involved).
+        let skin_tone = ('\u{1F3FB}'..='\u{1F3FF}').contains(&c)
+            && matches!(cell.c as u32, 0x1F000..=0x1FAFF | 0x2600..=0x27BF);
+
+        (continues_zwj || skin_tone).then_some(Point::new(line, column))
+    }
+
     #[inline]
     fn damage_cursor(&mut self) {
         // The normal cursor coordinates are always in viewport.
@@ -1269,6 +1298,28 @@ impl<T: EventListener> Handler for Term<T> {
 
             self.grid[line][column].push_zerowidth(c);
             return;
+        }
+
+        // A char that CONTINUES the previous cell's grapheme cluster stacks
+        // onto that cell as a zero-width trailer, regardless of its own
+        // width, and the cursor stays put. Two spellings are recognised:
+        //   - the previous cell's trailers end with ZWJ: the joiner promised
+        //     a continuation and this char is it (👨\u{200D}👩\u{200D}👧, 👮\u{200D}♀️) —
+        //     accepted only for pictographic ranges, because ZWJ between
+        //     letters (Arabic/Indic joining control) must NOT merge cells;
+        //   - c is an emoji skin-tone modifier and the previous cell holds
+        //     an emoji base (👍🏽 — modifier sequences carry no ZWJ).
+        // The sideloaded ConPTY host segments output by grapheme and
+        // advances its cursor by the BASE width only, so stacking is what
+        // keeps this grid in agreement with the sender; upstream's
+        // fragmenting (one wide cell per emoji) is what disagreed, painting
+        // 👨\u{200D}👩\u{200D}👧 as three faces over six cells. The renderer already
+        // shapes base+trailers as one cluster (`Run::is_cluster`).
+        if (c as u32) >= 0x2000 {
+            if let Some(point) = self.grapheme_continuation_target(c) {
+                self.grid[point.line][point.column].push_zerowidth(c);
+                return;
+            }
         }
 
         // Move cursor to next line.
@@ -2764,6 +2815,81 @@ mod tests {
     use crate::term::cell::{Cell, Flags};
     use crate::term::test::TermSize;
     use crate::vte::ansi::{self, CharsetIndex, Handler, StandardCharset};
+
+    #[test]
+    fn zwj_family_stacks_into_one_cell() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        for c in "👨\u{200D}👩\u{200D}👧".chars() {
+            term.input(c);
+        }
+
+        // Base cell carries the whole cluster; cursor advanced by the base
+        // width only — the sender's (grapheme-segmenting host's) model.
+        let cell = &term.grid[Line(0)][Column(0)];
+        assert_eq!(cell.c, '👨');
+        assert_eq!(
+            cell.zerowidth().unwrap(),
+            &['\u{200D}', '👩', '\u{200D}', '👧'][..]
+        );
+        assert_eq!(term.grid.cursor.point.column, Column(2));
+
+        // The next char lands right after the wide base, not at column 6.
+        term.input('X');
+        assert_eq!(term.grid[Line(0)][Column(2)].c, 'X');
+    }
+
+    #[test]
+    fn zwj_narrow_continuation_stacks() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        // 👮‍♀️ — the continuation (♀, width 1) and trailing VS16 both stack.
+        for c in "👮\u{200D}\u{2640}\u{FE0F}".chars() {
+            term.input(c);
+        }
+
+        let cell = &term.grid[Line(0)][Column(0)];
+        assert_eq!(cell.c, '👮');
+        assert_eq!(
+            cell.zerowidth().unwrap(),
+            &['\u{200D}', '\u{2640}', '\u{FE0F}'][..]
+        );
+        assert_eq!(term.grid.cursor.point.column, Column(2));
+    }
+
+    #[test]
+    fn skin_tone_modifier_stacks_without_zwj() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        for c in "👍\u{1F3FD}".chars() {
+            term.input(c);
+        }
+
+        let cell = &term.grid[Line(0)][Column(0)];
+        assert_eq!(cell.c, '👍');
+        assert_eq!(cell.zerowidth().unwrap(), &['\u{1F3FD}'][..]);
+        assert_eq!(term.grid.cursor.point.column, Column(2));
+    }
+
+    #[test]
+    fn zwj_between_letters_does_not_merge_cells() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        // ZWJ as a joining control between letters (Arabic/Indic usage):
+        // the ZWJ itself stacks (zero width), but the following letter must
+        // open its own cell.
+        for c in "a\u{200D}b".chars() {
+            term.input(c);
+        }
+
+        assert_eq!(term.grid[Line(0)][Column(0)].c, 'a');
+        assert_eq!(term.grid[Line(0)][Column(1)].c, 'b');
+        assert_eq!(term.grid.cursor.point.column, Column(2));
+    }
 
     #[test]
     fn scroll_display_page_up() {

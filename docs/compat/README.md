@@ -117,7 +117,7 @@ this machine.
 | 9 | Wide chars, half-width pair `ﾊ`+`ﾟ`, emoji | yes (ring small and high) | side by side | side by side |
 | 9b | Combining marks (`ハ`+U+309A → パ, `e`+U+0301 → é) | yes | *not re-run* | yes |
 | 9c | Ambiguous width (`○×■│┐`) | narrow | *not re-run* | narrow |
-| 9d | Emoji ZWJ family | yes (one glyph, 2 cells) | *not re-run* | **three faces** (fragments) |
+| 9d | Emoji ZWJ family | yes (one glyph, 2 cells) | *not re-run* | yes (fixed same day — see below) |
 | 9d | Emoji VS16 (`❤`+FE0F) | yes | *not re-run* | yes |
 | 9d | Emoji flag (RI pair 🇯🇵) | **letter fallback**, 4 cells | *not re-run* | yes (flag drawn) |
 | 10 | Box drawing and shade blocks | font glyphs | font glyphs | drawn as geometry |
@@ -154,10 +154,21 @@ condition (a terminal drawing them wide while the host counts narrow is how
 cursor positions drift). 9d is where the two split, in opposite directions:
 Windows Terminal composes the ZWJ family into one glyph and honours VS16 but
 renders the regional-indicator flag as letter fallback across four cells,
-while RikkaTerminal draws the flag and honours VS16 but breaks the ZWJ
-family into three separate faces. Neither passes 9d whole — which is the
-point of carrying the hard cases: 😀 alone, the previous emoji test, passes
-everywhere and distinguishes nothing.
+while RikkaTerminal drew the flag and honoured VS16 but broke the ZWJ
+family into three separate faces. That fragmentation was fixed the same day
+the row caught it, in the vendored engine's `Handler::input`: a char that
+continues the previous cell's cluster — a pictograph after a ZWJ trailer, or
+a skin-tone modifier after an emoji base — now stacks onto that cell as a
+zero-width trailer instead of opening new cells, and the cursor advances by
+the base width only. That is the model the sideloaded grapheme-segmenting
+ConPTY host already uses, so stacking is also what keeps the grid agreeing
+with the sender. ZWJ between letters (Arabic/Indic joining control) is
+excluded and still opens a fresh cell. The renderer needed no change — it
+already shaped base+trailer cells as single clusters. The committed capture
+is the post-fix run; SGR 58 stayed at 143 px, confirming nothing else moved.
+Windows Terminal's flag fallback stands, which is the point of carrying the
+hard cases: 😀 alone, the previous emoji test, passes everywhere and
+distinguishes nothing.
 
 The probe also prints a `live OpenConsole hosts:` line — every OpenConsole
 process alive at probe time, stamped into the screenshot itself. That line
