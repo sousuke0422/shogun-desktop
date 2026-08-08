@@ -163,7 +163,11 @@ zero-width trailer instead of opening new cells, and the cursor advances by
 the base width only. That is the model the sideloaded grapheme-segmenting
 ConPTY host already uses, so stacking is also what keeps the grid agreeing
 with the sender. ZWJ between letters (Arabic/Indic joining control) is
-excluded and still opens a fresh cell. The renderer needed no change — it
+excluded and still opens a fresh cell. A second same-day fix rides on the
+same mechanism: VS16 now promotes a narrow pictograph cell to wide — ❤ is
+width 1 by wcwidth, so ❤️ was drawn as a 2-cell-class glyph over a 1-cell
+advance and dug into its neighbour (殿 caught it overlapping the < marker
+in the committed capture). The renderer needed no change — it
 already shaped base+trailer cells as single clusters. The committed capture
 is the post-fix run; SGR 58 stayed at 143 px, confirming nothing else moved.
 Windows Terminal's flag fallback stands, which is the point of carrying the

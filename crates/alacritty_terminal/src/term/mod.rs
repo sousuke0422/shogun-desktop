@@ -1223,6 +1223,39 @@ impl<T> Term<T> {
         (continues_zwj || skin_tone).then_some(Point::new(line, column))
     }
 
+    /// Widen a narrow pictograph cell that just received VS16 (see
+    /// [`Handler::input`]): mark it wide, lay a spacer where the cursor
+    /// sits, and advance — exactly what the wide-char write path does.
+    /// Letters and digits keep their width (a stray VS16 after text must
+    /// not shift the line), and a base on the last column stays narrow
+    /// because the spacer has nowhere to go.
+    fn promote_vs16_wide(&mut self, line: Line, column: Column) {
+        let cell = &self.grid[line][column];
+        if cell.flags.contains(Flags::WIDE_CHAR)
+            || !matches!(cell.c as u32, 0x2100..=0x2BFF | 0x1F000..=0x1FAFF)
+        {
+            return;
+        }
+        // Only in sequential flow: the cursor must be sitting right after
+        // the base, with room for the spacer.
+        if self.grid.cursor.input_needs_wrap
+            || self.grid.cursor.point.line != line
+            || self.grid.cursor.point.column != column + 1
+        {
+            return;
+        }
+
+        self.grid[line][column].flags.insert(Flags::WIDE_CHAR);
+        self.grid.cursor.template.flags.insert(Flags::WIDE_CHAR_SPACER);
+        self.write_at_cursor(' ');
+        self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR_SPACER);
+        if self.grid.cursor.point.column + 1 < self.columns() {
+            self.grid.cursor.point.column += 1;
+        } else {
+            self.grid.cursor.input_needs_wrap = true;
+        }
+    }
+
     #[inline]
     fn damage_cursor(&mut self) {
         // The normal cursor coordinates are always in viewport.
@@ -1297,6 +1330,16 @@ impl<T: EventListener> Handler for Term<T> {
             }
 
             self.grid[line][column].push_zerowidth(c);
+
+            // VS16 asks for emoji presentation, and emoji presentation is
+            // TWO cells: a narrow pictograph base (❤ is width 1 by wcwidth)
+            // must be promoted to a wide cell, or the renderer's 2-cell-class
+            // glyph overlaps the neighbour (❤️ dug into the probe's < marker).
+            // The grapheme-segmenting host advances 2 for VS16 sequences, so
+            // promotion is also what keeps the grid agreeing with the sender.
+            if c == '\u{FE0F}' {
+                self.promote_vs16_wide(line, column);
+            }
             return;
         }
 
@@ -2872,6 +2915,76 @@ mod tests {
         assert_eq!(cell.c, '👍');
         assert_eq!(cell.zerowidth().unwrap(), &['\u{1F3FD}'][..]);
         assert_eq!(term.grid.cursor.point.column, Column(2));
+    }
+
+    #[test]
+    fn vs16_promotes_narrow_emoji_to_wide() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        // ❤ is width 1 by wcwidth; VS16 promotes the cell to wide.
+        for c in "\u{2764}\u{FE0F}X".chars() {
+            term.input(c);
+        }
+
+        let cell = &term.grid[Line(0)][Column(0)];
+        assert_eq!(cell.c, '\u{2764}');
+        assert!(cell.flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(cell.zerowidth().unwrap(), &['\u{FE0F}'][..]);
+        assert!(term.grid[Line(0)][Column(1)].flags.contains(Flags::WIDE_CHAR_SPACER));
+        assert_eq!(term.grid[Line(0)][Column(2)].c, 'X');
+    }
+
+    #[test]
+    fn vs16_after_letter_does_not_promote() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        for c in "a\u{FE0F}b".chars() {
+            term.input(c);
+        }
+
+        let cell = &term.grid[Line(0)][Column(0)];
+        assert_eq!(cell.c, 'a');
+        assert!(!cell.flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(term.grid[Line(0)][Column(1)].c, 'b');
+    }
+
+    #[test]
+    fn vs16_on_last_column_stays_narrow() {
+        let size = TermSize::new(4, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        // Base lands on the last column; the spacer has nowhere to go, so
+        // the cell must stay narrow instead of corrupting the next line.
+        for c in "abc\u{2764}\u{FE0F}".chars() {
+            term.input(c);
+        }
+
+        let cell = &term.grid[Line(0)][Column(3)];
+        assert_eq!(cell.c, '\u{2764}');
+        assert!(!cell.flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(cell.zerowidth().unwrap(), &['\u{FE0F}'][..]);
+    }
+
+    #[test]
+    fn vs16_then_zwj_chain_stays_one_cluster() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        // ❤️‍🔥 — promotion first, then the ZWJ continuation stacks onto the
+        // now-wide cell.
+        for c in "\u{2764}\u{FE0F}\u{200D}\u{1F525}X".chars() {
+            term.input(c);
+        }
+
+        let cell = &term.grid[Line(0)][Column(0)];
+        assert!(cell.flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(
+            cell.zerowidth().unwrap(),
+            &['\u{FE0F}', '\u{200D}', '\u{1F525}'][..]
+        );
+        assert_eq!(term.grid[Line(0)][Column(2)].c, 'X');
     }
 
     #[test]
