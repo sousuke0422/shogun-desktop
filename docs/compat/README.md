@@ -134,6 +134,12 @@ drawn small and high and had been misread as dropped. The wezterm, ghostty,
 alacritty and rio captures predate the split; their row-9 entries describe
 the spacing pair only.
 
+The mislabeled test earned its keep anyway. Treating two spacing characters
+as if they combined is a real failure mode — rio does exactly that, stacking
+the ring over the `ﾊ` on both hosts — so the pair stays in the probe as
+row 9 under an honest name, as a discriminator in its own right rather than
+a stand-in for the combining test it never was.
+
 Rows 1, 2 and 4 are colour claims, so they were checked by sampling pixels
 rather than by eye. The SGR 58 underline is the clearest: the probe asks for
 `58:2::255:80:80`, and a row of exactly `(255, 80, 80)` runs the width of the
