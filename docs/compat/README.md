@@ -144,9 +144,8 @@ two narrow cells side by side, and a true combining mark (`ハ` + U+309A),
 whose correct rendering is one wide cell with the ring attached. Re-run
 under the corrected probe, Windows Terminal and RikkaTerminal both render
 both correctly — including Windows Terminal's half-width ring, which is
-drawn small and high and had been misread as dropped. The wezterm, ghostty
-and alacritty captures predate the split; their row-9 entries describe the
-spacing pair only.
+drawn small and high and had been misread as dropped. The wezterm captures
+predate the split; their row-9 entries describe the spacing pair only.
 
 The mislabeled test earned its keep anyway. Treating two spacing characters
 as if they combined is a real failure mode — rio 0.4.2 did exactly that,
@@ -314,16 +313,24 @@ is ghostty itself, answering the same probe:
 
 ![ghostty running the probe](probe-ghostty.png)
 
-**Twelve of twelve**, with the SGR 58 underline measuring 117 px of exactly
-`(255, 80, 80)` — the same reading RikkaTerminal gives. So the entry we claim
-is one the reference implementation honours in full, and claiming it does not
-overstate what we do.
+**Twelve of twelve**, with the SGR 58 underline in exact `(255, 80, 80)` —
+the same reading RikkaTerminal gives. So the entry we claim is one the
+reference implementation honours in full, and claiming it does not overstate
+what we do.
 
-Row 9 is the one worth looking at closely. ghostty **keeps the mark on
-`ﾟ`**: the half-width katakana and its combining semi-voiced mark come out
-composed, the same as RikkaTerminal and unlike Windows Terminal, which drops
-the mark. That is the row where the three-way comparison actually has
-something to say, so it is worth having real glyphs rather than tofu here.
+Re-shot 2026-08-10 as ghostty 1.3.1 (`1.3.1~ppa2-resolute1`, the very
+version RikkaTerminal's XTVERSION self-report names) under the current
+probe, through WSLg — a real Linux pty, no console host anywhere in the
+path, which the attestation line corroborates by listing no OpenConsole of
+its own. The glyph rows all pass: the spacing pair sits side by side with
+the ring drawn small and high, パ and é compose into single cells,
+ambiguous advances narrow, and row 9d is a clean sweep — ZWJ family as one
+glyph, VS16 heart in emoji presentation, the flag actually drawn. Ghostty
+and RikkaTerminal are the only two terminals on this page that pass 9d
+whole, which is the right shape for a terminal and the terminfo entry it
+answers to. (An earlier revision of this paragraph praised ghostty for
+"keeping the mark" on the row-9 pair — that was the mislabeled combining
+test; see the row 9 correction above.)
 
 Details worth knowing before re-running it:
 
