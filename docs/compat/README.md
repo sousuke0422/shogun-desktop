@@ -595,9 +595,14 @@ kitty detection is what **enables** sixel — its `;4;` is the host
 advertising sixel on the terminal's behalf. One host behaviour, one
 protocol saved, one protocol unreachable — and nothing at the terminal's
 layer can fix it, because the losing reply is already as fast as it can
-be. The way out is not a faster answer but a shorter path: a WSL-side
-relay that gives sessions a real pty with no console host in between —
-the same route that resolves the other ConPTY ceilings on this page.
+be. The fix has to happen in the host itself, and the host is MIT-licensed
+code we already ship and binary-patch: the planned direction is a fork of
+OpenConsole that forwards DA1 to the attached terminal and relays the real
+answer, falling back to the local reply on timeout. Upstream already
+contains every part of that machinery — at startup the host sends the
+terminal a DA1 of its own and waits on the answer (`WaitUntilDA1`); the
+fork inverts that plumbing so the client's fence round-trips too, and
+ordering fixes itself.
 
 ## Notes
 
