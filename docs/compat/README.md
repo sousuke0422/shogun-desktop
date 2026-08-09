@@ -461,9 +461,21 @@ captures are `PrintWindow` from behind, focus untouched.
 
 ![Konsole for Windows running the probe](probe-konsole-via-conpty.png)
 
-Konsole's own engine is not on trial here, for the same reason: taken on this
-machine's system conhost, the screenshot cannot tell you what the engine
-supports.
+Re-shot 2026-08-09 under the current probe, launched with a minimal PATH.
+The attestation line at the bottom settles what the old caption could only
+assume: no Konsole-owned OpenConsole is alive — this build brings no pair of
+its own, and with the PATH walk blocked it runs on the **in-box conhost**,
+the strip-generation host. Every sequence-level failure on screen belongs to
+that host, not to Konsole's engine: colon-form SGR dies (zero SGR 58 red
+pixels), styled underlines flatten, and DECSLRM is ignored — M01/M02 vanish
+whole and the B bands survive, the exact full-width scroll that wipes tmux
+panes.
+
+The glyph rows ARE Konsole's own, though — rendering happens in the
+terminal regardless of which host relays the bytes. Its engine composes the
+ZWJ family into one glyph, combines パ and é correctly, and advances the
+ambiguous set narrow; the VS16 heart stays in text presentation (a narrow
+monochrome outline), and the flag falls back to `JP` letters.
 
 ## Notes
 
