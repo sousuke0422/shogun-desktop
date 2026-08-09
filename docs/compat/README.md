@@ -416,6 +416,18 @@ parameters. Both are local additions here — which makes this screenshot the
 honest measure of what the fork contributes, rather than the assertion that
 used to stand in this section.
 
+Re-shot 2026-08-10 as Alacritty 0.17.0 under the current probe (capture
+above; attestation line shows our Temp pair alive, minimal-PATH launch).
+The sequence verdicts are unchanged — 312 px of exact `(255, 80, 80)`
+again, DECSLRM still the whole-line failure — and the new glyph rows turn
+the control comparison pointed, because upstream exhibits precisely the two
+defects just fixed in our vendored fork: the ZWJ family fragments into
+three faces, and combining marks take a **spacing cell of their own** — パ
+renders as `ﾊ ﾟ` with a gap before the next character, é eats the space
+that followed it. The rest: ambiguous advances narrow, the VS16 heart stays
+a monochrome outline, the flag falls back to `JP` letters, and emoji render
+greyscale throughout (no colour-emoji fallback on Windows).
+
 For contrast, the same binary on the in-box conhost, which is what a user
 gets by default:
 
