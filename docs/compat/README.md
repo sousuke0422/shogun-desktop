@@ -43,6 +43,16 @@ them forces the repaint that shows them. So a capability read from one of
 these windows is still valid once it has been painted; what is at risk is
 reading "missing" off a screenshot.
 
+Update, 2026-08-10 re-run: the escape hatch above no longer opens. On this
+machine the same build now sticks harder — real mouse selection by a human,
+focus-free resize/reflow (even one that changed the row count), z-order
+fronting, and background PostMessage selection all failed to revive the
+region, on Windows and on the Linux AppImage alike; the Linux run froze
+mid-DECSCNM and never painted the restore at all. The committed captures
+below therefore show the deficit rather than hide it, and the glyph
+verdicts were read from the mid-invert Linux frame, where every row is
+painted (in reverse video) because nothing after `?5l` had happened yet.
+
 How long it stays unpainted tracks the ConPTY generation, and not in the
 direction one would guess:
 
@@ -106,7 +116,14 @@ never scroll it away.
 ![wezterm running the probe](probe-wezterm.png)
 
 `wezterm-gui.exe 20240203-110809-5046fc22` — the current stable install on
-this machine.
+this machine. Re-shot 2026-08-10 under the current probe: what is painted is
+everything printed after the `?5l` restore — the DECSLRM block coming out
+correct (its own 2024 host interprets margins) and the attestation line
+naming that host — while rows 1-10 keep only their backgrounds and emoji,
+the deficit described above in its no-longer-recoverable form. The emoji
+that survive are themselves evidence: the ZWJ family is one glyph, the VS16
+heart is emoji-presentation, the flag is drawn. The full glyph verdicts
+(9b-9d columns in the table) were read from the Linux frame below.
 
 ## RikkaTerminal
 
@@ -125,11 +142,11 @@ this machine.
 | 7 | ECH (`CSI X`) | yes | yes | yes |
 | 8 | ICH / DCH | yes | yes | yes |
 | 9 | Wide chars, half-width pair `ﾊ`+`ﾟ`, emoji | yes (ring small and high) | side by side | side by side |
-| 9b | Combining marks (`ハ`+U+309A → パ, `e`+U+0301 → é) | yes | *not re-run* | yes |
-| 9c | Ambiguous width (`○×■│┐`) | narrow | *not re-run* | narrow |
-| 9d | Emoji ZWJ family | yes (one glyph, 2 cells) | *not re-run* | yes (fixed same day — see below) |
-| 9d | Emoji VS16 (`❤`+FE0F) | yes | *not re-run* | yes |
-| 9d | Emoji flag (RI pair 🇯🇵) | **letter fallback**, 4 cells | *not re-run* | yes (flag drawn) |
+| 9b | Combining marks (`ハ`+U+309A → パ, `e`+U+0301 → é) | yes | yes | yes |
+| 9c | Ambiguous width (`○×■│┐`) | narrow | narrow | narrow |
+| 9d | Emoji ZWJ family | yes (one glyph, 2 cells) | yes | yes (fixed same day — see below) |
+| 9d | Emoji VS16 (`❤`+FE0F) | yes | yes | yes |
+| 9d | Emoji flag (RI pair 🇯🇵) | **letter fallback**, 4 cells | yes (flag drawn) | yes (flag drawn) |
 | 10 | Box drawing and shade blocks | font glyphs | font glyphs | drawn as geometry |
 | 11 | DECSCNM (`?5`) screen reverse | yes | yes | yes |
 | 12 | DECSLRM left/right margins | yes | yes | yes |
@@ -144,8 +161,7 @@ two narrow cells side by side, and a true combining mark (`ハ` + U+309A),
 whose correct rendering is one wide cell with the ring attached. Re-run
 under the corrected probe, Windows Terminal and RikkaTerminal both render
 both correctly — including Windows Terminal's half-width ring, which is
-drawn small and high and had been misread as dropped. The wezterm captures
-predate the split; their row-9 entries describe the spacing pair only.
+drawn small and high and had been misread as dropped.
 
 The mislabeled test earned its keep anyway. Treating two spacing characters
 as if they combined is a real failure mode — rio 0.4.2 did exactly that,
@@ -388,13 +404,18 @@ console host is involved. Rows 2, 3 and 4 pass here and fail on Windows,
 which is what pins those failures on the bundled ConPTY rather than on
 wezterm.
 
-**Do not read the other rows off this image.** The AppImage sandbox has no
-CJK fonts, so row 9's `日本語` and `ﾊﾟ` come out as replacement boxes; that
-is the font situation in a stripped container, not the terminal dropping
-anything. wezterm says as much on startup ("You may wish to install
-additional fonts"). The window is also smaller and in a different font than
-the shots above. This picture exists to answer one question, and it is not
-comparable on the rest.
+The committed frame is **mid-DECSCNM**, deliberately: the 2026-08-10 run
+froze at the `?5` invert and never painted the restore (the escalated form
+of the repaint deficit described at the top of this page), so the one
+moment every row is on screen is during the invert — reverse video, cursor
+parked on row 11. An earlier revision of this section warned that the
+AppImage container had no CJK fonts; that is no longer the case, and the
+glyph rows are all readable and real. This frame is where the wezterm
+column's 9b-9d verdicts come from, and they are a clean sweep: パ and é
+compose, ambiguous advances narrow, the ZWJ family is one glyph, the VS16
+heart is emoji-presentation, the flag is drawn. A 2024 engine passes every
+glyph row on a real pty — width handling was never wezterm's problem
+either; on Windows the deficit and the host sit in front of it.
 
 ### Alacritty upstream — and what our fork actually adds
 
