@@ -566,6 +566,39 @@ ZWJ family into one glyph, combines パ and é correctly, and advances the
 ambiguous set narrow; the VS16 heart stays in text presentation (a narrow
 monochrome outline), and the flag falls back to `JP` letters.
 
+## Graphics protocols behind ConPTY: why sixel lives and kitty graphics cannot
+
+RikkaTerminal implements both sixel and the kitty graphics protocol, and
+behind ConPTY only sixel is reachable. The reason is none of the usual
+suspects, which took three measurements (2026-08-10, sideloaded 1.24 pair,
+`RIKKA_PTY_DUMP`) to establish:
+
+- **Transport is innocent.** A kitty `a=q` query round-trips: the APC
+  arrives at the terminal verbatim, the terminal's `i=31;OK` travels back
+  into the client's input stream. One megabyte of chunked APC payload
+  (256 × 4096 B) arrives byte-perfect, every chunk intact.
+- **The terminal is innocent.** `a=q,t=d,f=24` — yazi's exact probe — is
+  answered `OK`.
+- **The detection race is the killer.** Watching yazi under the dump: it
+  sends one `a=q` probe and then never transmits a single byte of image
+  data. The kitty protocol's canonical detection sends the query followed
+  by DA1 and uses the DA1 reply as the fence. Behind ConPTY the fence
+  always wins: the host answers DA1 **locally and instantly**
+  (`CSI ?62;4;22c`, without consulting the terminal), while the APC reply
+  has to round-trip through the host to the terminal and back. Measured
+  arrival order at the application: DA1 reply at byte 0, our `OK` at
+  byte 11 — reliably too late. The app concludes "no kitty graphics" and
+  sends nothing.
+
+The symmetry is worth savouring: the same locally-answered DA1 that kills
+kitty detection is what **enables** sixel — its `;4;` is the host
+advertising sixel on the terminal's behalf. One host behaviour, one
+protocol saved, one protocol unreachable — and nothing at the terminal's
+layer can fix it, because the losing reply is already as fast as it can
+be. The way out is not a faster answer but a shorter path: a WSL-side
+relay that gives sessions a real pty with no console host in between —
+the same route that resolves the other ConPTY ceilings on this page.
+
 ## Notes
 
 Line 12 is the one that was missing until DECSLRM was implemented. tmux
