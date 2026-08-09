@@ -144,13 +144,15 @@ two narrow cells side by side, and a true combining mark (`ハ` + U+309A),
 whose correct rendering is one wide cell with the ring attached. Re-run
 under the corrected probe, Windows Terminal and RikkaTerminal both render
 both correctly — including Windows Terminal's half-width ring, which is
-drawn small and high and had been misread as dropped. The wezterm, ghostty,
-alacritty and rio captures predate the split; their row-9 entries describe
-the spacing pair only.
+drawn small and high and had been misread as dropped. The wezterm, ghostty
+and alacritty captures predate the split; their row-9 entries describe the
+spacing pair only.
 
 The mislabeled test earned its keep anyway. Treating two spacing characters
-as if they combined is a real failure mode — rio does exactly that, stacking
-the ring over the `ﾊ` on both hosts — so the pair stays in the probe as
+as if they combined is a real failure mode — rio 0.4.2 did exactly that,
+stacking the ring over the `ﾊ` on both hosts (0.5.19 stopped stacking and
+now drops true combining marks instead; see the rio aside) — so the pair
+stays in the probe as
 row 9 under an honest name, as a discriminator in its own right rather than
 a stand-in for the combining test it never was.
 
@@ -419,7 +421,7 @@ gets by default:
 
 ![Alacritty running the probe](probe-alacritty.png)
 
-### Rio (0.4.2 alpha, unmasked on our pair)
+### Rio (0.4.2 alpha, unmasked on our pair — superseded by 0.5.19 below)
 
 ![Rio running the probe on our ConPTY pair](probe-rio-modern-host.png)
 
@@ -453,9 +455,42 @@ One quirk is rio's own and host-independent: the half-width pair `ﾊ`+`ﾟ`
 (two spacing characters, two cells) comes out with the ring **stacked on top
 of the `ﾊ`** as though it were a combining mark, on both hosts alike.
 
-Capture notes: `-e` and every custom `[shell]` config exit instantly in this
-build, so both probes were typed into the default shell by hand; the
+Capture notes: `-e` and every custom `[shell]` config exit instantly in the
+0.4.2 build, so both probes were typed into the default shell by hand; the
 captures are `PrintWindow` from behind, focus untouched.
+
+### Rio 0.5.19, re-measured under the current probe
+
+![Rio 0.5.19 running the probe on our ConPTY pair](probe-rio-0519.png)
+
+Re-shot 2026-08-10 after the installed rio moved to 0.5.19. `-e` works now,
+so this capture is automated like the rest: minimal-PATH launch, our pair
+beside the exe, and the attestation line at the bottom showing the Temp
+`OpenConsole.exe` alive — the PATH-walk unmasking of 0.4.2 can no longer
+happen silently.
+
+What moved, in both directions:
+
+- **The spacing-pair stacking is gone.** `ﾊ`+`ﾟ` now comes out side by
+  side, ring small and high, like Windows Terminal — the quirk that
+  justified keeping row 9 as a discriminator no longer fires on rio.
+- **True combining marks are now dropped entirely.** Row 9b renders パ as a
+  bare ハ and é as a bare e — the ring and the acute simply vanish. 0.4.2
+  stacked things that shouldn't combine; 0.5.19 discards things that
+  should. Opposite failure, same row.
+- **SGR 58 shifted colour.** 0.4.2 put 312 px of exact `(255, 80, 80)`
+  under `red-underline`; 0.5.19 draws the same 312 px at `(236, 94, 87)`.
+  The capability is still honoured — the red underline is there — but a
+  colour pipeline change moved the value, and an exact-match pixel gate now
+  reads **zero**. Judge rio's row 4 by eye, not by the exact-value count.
+- **The misplaced `12 DECSLRM` header is fixed**; the header sits where it
+  should. The window title still renders its literal
+  `{{ TITLE || PROGRAM }}` template.
+- **DECSLRM still fails** in the same whole-line shape — M01/M02 gone, B
+  bands intact — as expected from a margin-less vte-fork parser.
+- Rows 9c/9d, first run on rio: ambiguous advances narrow (agreeing with
+  the host); the VS16 heart is emoji-presentation and snug; the ZWJ family
+  fragments into three faces; the flag falls back to `JP` letters.
 
 ### Konsole for Windows (system conhost)
 
