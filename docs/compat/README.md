@@ -341,17 +341,31 @@ path, which the attestation line corroborates by listing no OpenConsole of
 its own. The glyph rows all pass: the spacing pair sits side by side with
 the ring drawn small and high, パ and é compose into single cells,
 ambiguous advances narrow, and row 9d is a clean sweep — ZWJ family as one
-glyph, VS16 heart in emoji presentation, the flag actually drawn. Ghostty
-and RikkaTerminal are the only two terminals on this page that pass 9d
-whole, which is the right shape for a terminal and the terminfo entry it
-answers to. (An earlier revision of this paragraph praised ghostty for
+glyph, VS16 heart in emoji presentation, the flag actually drawn. Three terminals
+on this page pass 9d whole — ghostty, RikkaTerminal, and wezterm on a
+Linux pty — which is the right shape for a terminal and the terminfo entry
+it answers to. (An earlier revision of this paragraph praised ghostty for
 "keeping the mark" on the row-9 pair — that was the mislabeled combining
 test; see the row 9 correction above.)
 
+Which leaves a conclusion the 2026-08 re-measurement tour earned rather
+than asserted: **within what this probe measures, RikkaTerminal is the
+only Windows-native terminal that passes everything** — all twelve
+sequence rows and every glyph row. The other two full glyph sweeps happen
+on a Linux pty; on Windows, Windows Terminal strips colon-form SGR and
+falls back on flags, Konsole inherits the in-box conhost's failures,
+wezterm's host kills rows 2-4 behind an unrecoverable repaint deficit, and
+rio and alacritty fail margins and width handling in their engines. Two
+scope caveats keep the sentence honest: the probe measures these seventeen
+items and nothing else, and the DECSLRM and DCS rows are earned with the
+sideloaded pair in place — a controlled host is part of the design, not a
+neutral condition.
+
 Details worth knowing before re-running it:
 
-- This is `Ghostty 1.3.0-dev` from the `mkasberg/ghostty-ubuntu` PPA, run
-  under WSLg. We report ourselves as `ghostty 1.3.1`.
+- This is ghostty `1.3.1~ppa2-resolute1` from the `mkasberg/ghostty-ubuntu`
+  PPA (its `--version` banner says `1.3.0-dev` — trust dpkg, not the
+  banner), run under WSLg. We report ourselves as `ghostty 1.3.1`.
 - The **AppImage build will not start here**: ghostty requires OpenGL 4.3,
   WSLg's d3d12 path offers 3.3, and forcing `GALLIUM_DRIVER=llvmpipe` fails
   earlier still with "Could not initialize EGL display". The PPA build runs.
