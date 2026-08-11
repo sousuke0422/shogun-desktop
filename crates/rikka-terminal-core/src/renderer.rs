@@ -1445,7 +1445,7 @@ pub fn render_grid(
                             // the platform shaper kills the ZWJ in VS16-led
                             // chains before GSUB (see emoji_shape.rs).
                             // Fit-contain into the cell budget and done.
-                            if crate::emoji_shape::is_zwj_emoji_cluster(&run.text)
+                            if crate::emoji_shape::is_emoji_ligature_cluster(&run.text)
                                 && let Some((img, iw, ih)) =
                                     crate::emoji_shape::cluster_image(&run.text, ch)
                             {

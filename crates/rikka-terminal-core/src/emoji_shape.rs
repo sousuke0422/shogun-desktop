@@ -26,14 +26,18 @@ static FONT_BYTES: &[u8] = include_bytes!(concat!(
     "/../rikka-terminal/assets/fonts/Twemoji.Mozilla.ttf"
 ));
 
-/// A ZWJ sequence with at least one pictograph — the only cluster shape the
-/// image path handles. Letters joined by ZWJ (Arabic/Indic joining control)
-/// must not come here.
-pub(crate) fn is_zwj_emoji_cluster(text: &str) -> bool {
-    text.contains('\u{200D}')
-        && text
-            .chars()
-            .any(|c| matches!(c as u32, 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1FAFF))
+/// A cluster spelling the ligature path handles: a ZWJ sequence with a
+/// pictograph, an emoji-presentation keycap (VS16 + U+20E3), or a tag
+/// sequence (subdivision flags). Letters joined by ZWJ (Arabic/Indic
+/// joining control) must not come here.
+pub(crate) fn is_emoji_ligature_cluster(text: &str) -> bool {
+    let pictographic = text
+        .chars()
+        .any(|c| matches!(c as u32, 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1FAFF));
+    let zwj = text.contains('\u{200D}') && pictographic;
+    let keycap = text.contains('\u{FE0F}') && text.contains('\u{20E3}');
+    let tag_flag = pictographic && text.chars().any(|c| matches!(c as u32, 0xE0020..=0xE007F));
+    zwj || keycap || tag_flag
 }
 
 /// Shape `text` with rustybuzz against the bundled font. `Some(gids)` iff
@@ -126,8 +130,30 @@ mod tests {
 
     #[test]
     fn letters_with_zwj_are_not_emoji_clusters() {
-        assert!(!is_zwj_emoji_cluster("a\u{200D}b"));
-        assert!(is_zwj_emoji_cluster("\u{2764}\u{FE0F}\u{200D}\u{1F525}"));
+        assert!(!is_emoji_ligature_cluster("a\u{200D}b"));
+        assert!(is_emoji_ligature_cluster(
+            "\u{2764}\u{FE0F}\u{200D}\u{1F525}"
+        ));
+        assert!(is_emoji_ligature_cluster("1\u{FE0F}\u{20E3}"));
+        assert!(is_emoji_ligature_cluster(
+            "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}"
+        ));
+    }
+
+    #[test]
+    fn keycap_ligates_to_one_glyph() {
+        let gids = shape_cluster_gids("1\u{FE0F}\u{20E3}").unwrap();
+        assert_eq!(gids.len(), 1, "keycap should collapse: {gids:?}");
+        assert_ne!(gids[0], 0);
+    }
+
+    #[test]
+    fn tag_flag_ligates_to_one_glyph() {
+        let gids =
+            shape_cluster_gids("\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}")
+                .unwrap();
+        assert_eq!(gids.len(), 1, "tag flag should collapse: {gids:?}");
+        assert_ne!(gids[0], 0);
     }
 
     #[test]

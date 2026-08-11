@@ -150,6 +150,8 @@ heart is emoji-presentation, the flag is drawn. The full glyph verdicts
 | 9d | Emoji flag (RI pair 🇯🇵) | **letter fallback**, 4 cells | yes (flag drawn) | yes (flag drawn) |
 | 9d | Emoji skin tone (`👍`+U+1F3FD) | yes | *not re-run* | yes |
 | 9d | Emoji ZWJ+VS16 chain (❤️‍🔥) | yes (one glyph) | *not re-run* | yes (one glyph — rustybuzz path) |
+| 9d | Keycap (`1`+VS16+U+20E3) | **empty box** | *not re-run* | yes (rustybuzz path) |
+| 9d | Tag flag (🏴󠁧󠁢󠁳󠁣󠁴󠁿) | **plain-flag fallback** | *not re-run* | yes (saltire drawn — rustybuzz path) |
 | 10 | Box drawing and shade blocks | font glyphs | font glyphs | drawn as geometry |
 | 11 | DECSCNM (`?5`) screen reverse | yes | yes | yes |
 | 12 | DECSLRM left/right margins | yes | yes | yes |
@@ -254,6 +256,14 @@ heart in two cells. Everything else — single emoji, combining marks, IVS,
 plain text — stays on the DirectWrite path. Clusters the font has no
 ligature for still fall back to DirectWrite fragments under the budget
 clip, which remains the honest rendering for them.
+
+The same path picked up the other two ligature spellings the same day:
+emoji-presentation **keycaps** (`1`+VS16+U+20E3 — the engine promotes the
+cell to wide when the enclosing keycap lands on a VS16-carrying base) and
+**tag sequences** (🏴󠁧󠁢󠁳󠁣󠁴󠁿 — tag characters stack as zero-width trailers).
+Both collapse to single Twemoji glyphs under rustybuzz, and both turned
+out to be discriminators in their own right: Windows Terminal renders the
+keycap as an empty box and the tag flag as a plain black flag.
 
 The title row carries a **DECRQM report card** (`paste2004= sync2026=
 grapheme2027=`): the probe queries each mode and prints the reply's Ps

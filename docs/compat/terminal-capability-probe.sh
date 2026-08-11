@@ -45,7 +45,7 @@ printf '%s\n' " 9 wide+emoji+halfwidth  |日本語|abcd|😀| + spacing pair ﾊ
 # cursor ended up, and the ruler shares the same 30-column ASCII prefix.
 printf '%s\n' " 9c ambiguous width           0123456789          <- ruler (col 0 under the 0)"
 printf '%s\n' "                              ○×■│┐<              narrow: < at col 5 / wide: < at col 10"
-printf '%s\n' " 9d emoji ZWJ/VS16/flag+mod   👨‍👩‍👧< ❤️< 🇯🇵< 👍🏽< ❤️‍🔥<   each ONE glyph, < snug at 2 cells"
+printf '%s\n' " 9d emoji hard cases   👨‍👩‍👧< ❤️< 🇯🇵< 👍🏽< ❤️‍🔥< 1️⃣< 🏴󠁧󠁢󠁳󠁣󠁴󠁿<  each ONE glyph, < snug"
 printf '%s\n' "10 box drawing / shades                     ╭─┬─╮ █▓▒░ ▁▂▃▄▅▆▇█"
 
 # ── DECSCNM (?5): the visual bell. Held long enough to photograph. ──────────

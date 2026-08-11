@@ -1231,9 +1231,28 @@ impl<T> Term<T> {
     /// because the spacer has nowhere to go.
     fn promote_vs16_wide(&mut self, line: Line, column: Column) {
         let cell = &self.grid[line][column];
-        if cell.flags.contains(Flags::WIDE_CHAR)
-            || !matches!(cell.c as u32, 0x2100..=0x2BFF | 0x1F000..=0x1FAFF)
+        if !matches!(cell.c as u32, 0x2100..=0x2BFF | 0x1F000..=0x1FAFF) {
+            return;
+        }
+        self.promote_cell_wide(line, column);
+    }
+
+    /// Keycap gate for [`Self::promote_cell_wide`]: base must be a keycap
+    /// base char whose trailers already carry VS16.
+    fn promote_keycap_wide(&mut self, line: Line, column: Column) {
+        let cell = &self.grid[line][column];
+        if !matches!(cell.c, '0'..='9' | '#' | '*')
+            || !cell.zerowidth().is_some_and(|z| z.contains(&'\u{FE0F}'))
         {
+            return;
+        }
+        self.promote_cell_wide(line, column);
+    }
+
+    /// Widen a narrow cell in place: mark it wide, lay the spacer where the
+    /// cursor sits, and advance — the wide-char write path's mechanics.
+    fn promote_cell_wide(&mut self, line: Line, column: Column) {
+        if self.grid[line][column].flags.contains(Flags::WIDE_CHAR) {
             return;
         }
         // Only in sequential flow: the cursor must be sitting right after
@@ -1339,6 +1358,13 @@ impl<T: EventListener> Handler for Term<T> {
             // promotion is also what keeps the grid agreeing with the sender.
             if c == '\u{FE0F}' {
                 self.promote_vs16_wide(line, column);
+            }
+            // U+20E3 COMBINING ENCLOSING KEYCAP after a VS16-carrying keycap
+            // base (0-9, #, *): the emoji-presentation keycap is TWO cells,
+            // same promotion mechanics as VS16 on a pictograph. Without the
+            // VS16 the sequence is text presentation and stays narrow.
+            if c == '\u{20E3}' {
+                self.promote_keycap_wide(line, column);
             }
             return;
         }
@@ -3011,6 +3037,59 @@ mod tests {
         assert_eq!(cell.c, '\u{845B}');
         assert!(cell.flags.contains(Flags::WIDE_CHAR));
         assert_eq!(cell.zerowidth().unwrap(), &['\u{E0100}'][..]);
+        assert_eq!(term.grid[Line(0)][Column(2)].c, 'X');
+    }
+
+    #[test]
+    fn keycap_promotes_on_enclosing_keycap() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        // 1️⃣ — digit + VS16 + U+20E3: emoji presentation, two cells.
+        for c in "1\u{FE0F}\u{20E3}X".chars() {
+            term.input(c);
+        }
+
+        let cell = &term.grid[Line(0)][Column(0)];
+        assert_eq!(cell.c, '1');
+        assert!(cell.flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(cell.zerowidth().unwrap(), &['\u{FE0F}', '\u{20E3}'][..]);
+        assert_eq!(term.grid[Line(0)][Column(2)].c, 'X');
+    }
+
+    #[test]
+    fn keycap_without_vs16_stays_narrow() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        // Text presentation (no VS16): the keycap mark stacks but the digit
+        // keeps its single cell.
+        for c in "1\u{20E3}b".chars() {
+            term.input(c);
+        }
+
+        let cell = &term.grid[Line(0)][Column(0)];
+        assert_eq!(cell.c, '1');
+        assert!(!cell.flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(cell.zerowidth().unwrap(), &['\u{20E3}'][..]);
+        assert_eq!(term.grid[Line(0)][Column(1)].c, 'b');
+    }
+
+    #[test]
+    fn tag_flag_stacks_into_one_wide_cell() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        // 🏴󠁧󠁢󠁳󠁣󠁴󠁿 — black flag + tag chars + cancel tag: tags are zero-width
+        // trailers on the wide base.
+        for c in "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}X".chars() {
+            term.input(c);
+        }
+
+        let cell = &term.grid[Line(0)][Column(0)];
+        assert_eq!(cell.c, '\u{1F3F4}');
+        assert!(cell.flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(cell.zerowidth().map(|z| z.len()), Some(6));
         assert_eq!(term.grid[Line(0)][Column(2)].c, 'X');
     }
 
