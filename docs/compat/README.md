@@ -233,14 +233,20 @@ Since 2026-08-12, row 9d also carries a skin-tone modifier (`👍`+U+1F3FD)
 and the ZWJ+VS16 chain ❤️‍🔥. The modifier passes on both terminals — the
 engine's modifier-stacking fix is visible on screen as one brown thumb in
 two cells. The chain splits them: Windows Terminal forms the single
-heart-on-fire glyph; RikkaTerminal's font fallback resolves the heart and
-the fire into separate font runs, so the ligature never forms and the
-cluster renders as fragments. What the fragments can no longer do is
-damage anything: the first run of this row caught the fire painting itself
-over the caption text five cells away, and the renderer now clips a
-cluster's paint to its cell budget. Forming the ligature itself —
-fallback-aware font resolution across a whole cluster — is future work,
-and the row will show when it lands.
+heart-on-fire glyph; RikkaTerminal renders fragments. The forensics went
+three layers deep before stopping at the guilty one. The bundled Twemoji
+Mozilla is innocent — parsing its GSUB shows the ligature present (glyph
+13669, ccmp, script DFLT, components `[VS16, ZWJ, fire]`). The grid and
+the cluster plumbing are innocent — a `RIKKA_DEBUG_CLUSTER` dump shows the
+whole sequence reaching the shaper as ONE run in ONE font, and 👨‍👩‍👧 and
+👍🏽 coming back as single ligature glyphs on the very same path. What
+comes back for the VS16-led chain is `[heart, .notdef, fire]`: the ZWJ is
+dead before GSUB runs, so no ligature can ever match. The repair belongs
+in the vendored gpui DirectWrite layer and is future work; meanwhile the
+renderer clips a cluster's paint to its cell budget — the first run of
+this row caught the detached fire painting itself over caption text five
+cells away — and ZWJ clusters are handed to the emoji font directly, which
+keeps the shaping single-font by construction.
 
 The title row carries a **DECRQM report card** (`paste2004= sync2026=
 grapheme2027=`): the probe queries each mode and prints the reply's Ps

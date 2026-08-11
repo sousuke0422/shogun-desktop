@@ -1174,6 +1174,7 @@ pub fn render_grid(
     // the current match, pale for every other visible one (VSCode-style).
     search: Option<crate::SearchRender>,
 ) -> impl IntoElement {
+
     // Frame-time harness (SHOGUN_FRAMETIME): times this element build and
     // marks the frame boundary on drop. No-op when the env var is unset.
     let _ft_build = crate::frametime::build_guard(snap.cells.len());
@@ -1444,9 +1445,25 @@ pub fn render_grid(
                             // the marks compose onto the base — even with
                             // ligatures off, a combining sequence is one
                             // grapheme, not chars to isolate.
+                            // A ZWJ emoji cluster must be shaped INSIDE one
+                            // font, or the per-codepoint fallback walk splits
+                            // it into runs and the ligature never forms
+                            // (❤️‍🔥 rendered as heart + detached fire). Hand
+                            // those straight to the bundled emoji font; if
+                            // it lacks the sequence, the result is the same
+                            // fragments we had anyway, still budget-clipped.
+                            let mut cluster_font = run_font.clone();
+                            if run.text.contains('\u{200D}')
+                                && run.text.chars().any(|c| {
+                                    matches!(c as u32,
+                                        0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1FAFF)
+                                })
+                            {
+                                cluster_font.family = EMOJI_FONT.into();
+                            }
                             let text_run = gpui::TextRun {
                                 len: run.text.len(),
-                                font: run_font.clone(),
+                                font: cluster_font,
                                 color: fg_hsla,
                                 background_color: None,
                                 underline: underline_style,
@@ -1459,6 +1476,44 @@ pub fn render_grid(
                                 &[text_run],
                                 Some(px(cw * cells_w)),
                             );
+                            // RIKKA_DEBUG_CLUSTER=<path>: log every shaped
+                            // cluster (fonts + glyph ids) for ligature
+                            // forensics. This is the instrument that showed
+                            // ❤️‍🔥 leaving the platform shaper as
+                            // [heart, .notdef, fire] — the ZWJ dies before
+                            // GSUB, so the font's ccmp ligature (present:
+                            // glyph 13669, components [FE0F, ZWJ, fire])
+                            // can never match — while 👨‍👩‍👧 forms its
+                            // ligature on the very same path. The repair
+                            // lives in gpui's DirectWrite layer, not here.
+                            // GUI process — file output, not stdout.
+                            if let Some(path) = std::env::var_os("RIKKA_DEBUG_CLUSTER") {
+                                use std::io::Write as _;
+                                let info: Vec<String> = line
+                                    .runs
+                                    .iter()
+                                    .map(|r| {
+                                        format!(
+                                            "{:?}:{:?}",
+                                            r.font_id,
+                                            r.glyphs.iter().map(|g| g.id).collect::<Vec<_>>()
+                                        )
+                                    })
+                                    .collect();
+                                if let Ok(mut f) = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(&path)
+                                {
+                                    let _ = writeln!(
+                                        f,
+                                        "cluster {:?} -> {} runs: {}",
+                                        line.text,
+                                        line.runs.len(),
+                                        info.join(" | ")
+                                    );
+                                }
+                            }
                             // Clip to the cluster's cell budget: when font
                             // fallback cannot form a ZWJ ligature (❤️‍🔥 came
                             // out as heart + detached fire), the shaped run
