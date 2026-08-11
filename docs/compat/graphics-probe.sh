@@ -13,7 +13,7 @@ set -u
 esc=$'\033'
 
 clear
-printf '%s\n\n' "graphics probe (sixel) — expect three solid bars: RED, GREEN, BLUE"
+printf '%s\n' "graphics probe (sixel) — expect three solid bars: RED, GREEN, BLUE"
 
 # Three 120x18px bars, one per sixel band row ('-' starts the next band).
 printf '%sPq' "$esc"
@@ -23,7 +23,17 @@ printf '#1!120~-#1!120~-#1!120~-'
 printf '#2!120~-#2!120~-#2!120~'
 printf '%s\\' "$esc"
 
-printf '\n\n%s\n' "no bars, or bars drawn as ~ characters = sixel not honoured"
+printf '\n%s\n' "no bars, or bars drawn as ~ characters = sixel not honoured"
+
+# Real-world content after the synthetic bars: a 600x338 photograph
+# (255-colour quantised). The bars prove the protocol; the photo shows what
+# palette handling and banding look like on real pixels.
+img="$(dirname "$0")/graphics-probe-image.sixel"
+if [ -f "$img" ]; then
+    printf '\n%s\n' "real-world image (600x338, 255 colours):"
+    cat "$img"
+    printf '\n'
+fi
 
 # Host attestation, same as the text probe: the screenshot itself carries
 # who sat between the shell and the terminal (see README "PATH-walk hazard").

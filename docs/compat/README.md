@@ -622,16 +622,22 @@ monochrome outline), and the flag falls back to `JP` letters.
 Sixel lives in its own script, `graphics-probe.sh`, deliberately apart
 from the text probe: the text probe's layout is budgeted to fit a 30-row
 window exactly, and a raster block needs vertical room those rows cannot
-give up. The probe draws three solid 120px bars — red, green, blue — and
-stamps the same host-attestation line at the bottom.
+give up. The probe draws three solid 120px bars — red, green, blue — then a
+real-world image: a 600x338 photograph quantised to 255 colours
+(`graphics-probe-image.sixel`, generated from a 1920x1080 original with
+ImageMagick). The bars prove the protocol; the photograph shows what
+palette handling, dithering and banding look like on real pixels. The same
+host-attestation line closes the output.
 
 ![RikkaTerminal running the graphics probe](probe-graphics-rikka-terminal.png)
 
 ![Windows Terminal running the graphics probe](probe-graphics-windows-terminal.png)
 
-Both render the bars solid through the sideloaded 1.24 pair (RikkaTerminal
-on the Temp copy, attested in-image; Windows Terminal on its own packaged
-host). Kitty graphics is deliberately absent from this probe — the next
+Both render the bars solid and the photograph faithfully through the
+sideloaded 1.24 pair (RikkaTerminal on the Temp copy, attested in-image;
+Windows Terminal on its own packaged host) — a ~450 KB DCS payload of real
+image data arriving intact is the practical counterpart to the probe's
+synthetic bars. Kitty graphics is deliberately absent from this probe — the next
 section is the reason.
 
 ## Graphics protocols behind ConPTY: why sixel lives and kitty graphics cannot
