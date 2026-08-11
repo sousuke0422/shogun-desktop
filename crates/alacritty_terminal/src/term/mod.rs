@@ -2398,6 +2398,13 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::SyncUpdate => ModeState::Reset,
                 NamedPrivateMode::ColumnMode => ModeState::NotSupported,
             },
+            // Mode 2027 (grapheme cluster processing): this engine segments
+            // by grapheme unconditionally (ZWJ/VS16/skin-tone stacking in
+            // `Handler::input`), so report "permanently set" — the same
+            // answer Windows Terminal gives — rather than falling through
+            // to NotSupported, which told width-aware apps to keep legacy
+            // wcwidth spacing (caught by the probe's DECRQM report card).
+            PrivateMode::Unknown(2027) => ModeState::PermanentlySet,
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 
@@ -2618,6 +2625,8 @@ enum ModeState {
     Set = 1,
     /// The mode is currently not set.
     Reset = 2,
+    /// The mode is always on and cannot be changed.
+    PermanentlySet = 3,
 }
 
 impl From<bool> for ModeState {

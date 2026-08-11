@@ -1459,7 +1459,21 @@ pub fn render_grid(
                                 &[text_run],
                                 Some(px(cw * cells_w)),
                             );
-                            let _ = line.paint(point(px(x), px(oy)), line_height, window, cx);
+                            // Clip to the cluster's cell budget: when font
+                            // fallback cannot form a ZWJ ligature (❤️‍🔥 came
+                            // out as heart + detached fire), the shaped run
+                            // is wider than its cells and would paint over
+                            // whatever text sits to the right.
+                            let mask = gpui::ContentMask {
+                                bounds: Bounds {
+                                    origin: point(px(x), px(oy)),
+                                    size: size(px(cw * cells_w), px(ch)),
+                                },
+                            };
+                            window.with_content_mask(Some(mask), |window| {
+                                let _ =
+                                    line.paint(point(px(x), px(oy)), line_height, window, cx);
+                            });
                         } else if all_narrow && ligatures_disabled() {
                             // Ligatures OFF: shape cell by cell so no
                             // ligature (or any contextual form) can span

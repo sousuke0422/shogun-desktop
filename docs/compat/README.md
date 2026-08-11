@@ -148,9 +148,12 @@ heart is emoji-presentation, the flag is drawn. The full glyph verdicts
 | 9d | Emoji ZWJ family | yes (one glyph, 2 cells) | yes | yes (fixed same day — see below) |
 | 9d | Emoji VS16 (`❤`+FE0F) | yes | yes | yes |
 | 9d | Emoji flag (RI pair 🇯🇵) | **letter fallback**, 4 cells | yes (flag drawn) | yes (flag drawn) |
+| 9d | Emoji skin tone (`👍`+U+1F3FD) | yes | *not re-run* | yes |
+| 9d | Emoji ZWJ+VS16 chain (❤️‍🔥) | yes (one glyph) | *not re-run* | **fragments**, clipped to budget |
 | 10 | Box drawing and shade blocks | font glyphs | font glyphs | drawn as geometry |
 | 11 | DECSCNM (`?5`) screen reverse | yes | yes | yes |
 | 12 | DECSLRM left/right margins | yes | yes | yes |
+| 13 | DECRQM report card (2004 / 2026 / 2027) | 2 / 2 / 3 | *not re-run* | 2 / 2 / 3 |
 
 Row 9 has a correction to own up to. The probe's original line was titled
 "wide+combining+emoji" but sent `U+FF8A U+FF9F` — the HALF-WIDTH semi-voiced
@@ -225,6 +228,36 @@ beside the exe and launching with a minimal PATH (`launch-clean.ps1`, in
 this directory) restored 143 exactly. PATH hygiene cannot live inside the
 probe script — the host is chosen at terminal launch, before bash ever runs
 — so the launcher sanitizes and the probe attests.
+
+Since 2026-08-12, row 9d also carries a skin-tone modifier (`👍`+U+1F3FD)
+and the ZWJ+VS16 chain ❤️‍🔥. The modifier passes on both terminals — the
+engine's modifier-stacking fix is visible on screen as one brown thumb in
+two cells. The chain splits them: Windows Terminal forms the single
+heart-on-fire glyph; RikkaTerminal's font fallback resolves the heart and
+the fire into separate font runs, so the ligature never forms and the
+cluster renders as fragments. What the fragments can no longer do is
+damage anything: the first run of this row caught the fire painting itself
+over the caption text five cells away, and the renderer now clips a
+cluster's paint to its cell budget. Forming the ligature itself —
+fallback-aware font resolution across a whole cluster — is future work,
+and the row will show when it lands.
+
+The title row carries a **DECRQM report card** (`paste2004= sync2026=
+grapheme2027=`): the probe queries each mode and prints the reply's Ps
+digit — 1/2 = recognised (set/reset), 3 = permanently set, 0 = not
+recognised, `?` = no answer. Two findings came with it. First, the
+implementation lesson of this page in a third costume: the query function
+runs inside `$(…)`, so its stdout is captured — the query must go to
+`/dev/tty` explicitly, or the escape ends up embedded in the title string
+and every terminal looks mute while its answers echo as stray text over
+the rows. Second, a host observation worth keeping: the three answers
+differ between terminals behind the SAME ConPTY build, so DECRQM
+round-trips to the terminal — unlike DA1, which the host answers locally.
+The probe's first run showed RikkaTerminal answering `2027=0` while
+Windows Terminal answered `3`: the engine had grapheme clustering
+unconditionally on but never told anyone. Fixed the same day — mode 2027
+now reports permanently set, and width-aware applications that gate on it
+get the truth.
 
 Rows 1, 2 and 4 are colour claims, so they were checked by sampling pixels
 rather than by eye. The SGR 58 underline is the clearest: the probe asks for
@@ -577,6 +610,23 @@ terminal regardless of which host relays the bytes. Its engine composes the
 ZWJ family into one glyph, combines パ and é correctly, and advances the
 ambiguous set narrow; the VS16 heart stays in text presentation (a narrow
 monochrome outline), and the flag falls back to `JP` letters.
+
+## Graphics probe (sixel)
+
+Sixel lives in its own script, `graphics-probe.sh`, deliberately apart
+from the text probe: the text probe's layout is budgeted to fit a 30-row
+window exactly, and a raster block needs vertical room those rows cannot
+give up. The probe draws three solid 120px bars — red, green, blue — and
+stamps the same host-attestation line at the bottom.
+
+![RikkaTerminal running the graphics probe](probe-graphics-rikka-terminal.png)
+
+![Windows Terminal running the graphics probe](probe-graphics-windows-terminal.png)
+
+Both render the bars solid through the sideloaded 1.24 pair (RikkaTerminal
+on the Temp copy, attested in-image; Windows Terminal on its own packaged
+host). Kitty graphics is deliberately absent from this probe — the next
+section is the reason.
 
 ## Graphics protocols behind ConPTY: why sixel lives and kitty graphics cannot
 

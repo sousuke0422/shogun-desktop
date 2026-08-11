@@ -13,7 +13,20 @@ set -u
 esc=$'\033'
 
 clear
-printf '%s\n' "terminal capability probe — expected result is written on each line"
+# DECRQM report card, printed on the title row (the 30-row budget is full).
+# Reply: CSI ? Pm ; Ps $ y — Ps 1/2=set/reset (recognised), 0=not recognised.
+# Query goes out via printf, NOT read -p (see the DSR lesson below).
+# rqm runs inside $(...): its stdout is CAPTURED, so the query must go to
+# /dev/tty explicitly — a bare printf here embeds the escape into the title
+# string instead of asking the terminal, and every answer arrives too late,
+# echoing as stray "^[[?2004;2$y" text over the rows (measured, once).
+rqm() {
+    printf '%s[?%s$p' "$esc" "$1" > /dev/tty
+    local m ps
+    IFS='[;$' read -rsd y -t 1 _ m ps < /dev/tty 2>/dev/null || true
+    printf '%s' "${ps:-?}"
+}
+printf '%s\n' "terminal capability probe — every line states its expected result | DECRQM paste2004=$(rqm 2004) sync2026=$(rqm 2026) grapheme2027=$(rqm 2027)"
 
 printf '%s\n' " 1 SGR truecolor, semicolons   ${esc}[38;2;255;120;0mORANGE${esc}[39m ${esc}[48;2;0;90;180m BLUE-BG ${esc}[49m   (both should be coloured)"
 printf '%s\n' " 2 SGR truecolor, colons       ${esc}[38:2:255:120:0mORANGE${esc}[39m ${esc}[48:2:0:90:180m BLUE-BG ${esc}[49m   (terminfo setrgbf uses THIS form)"
@@ -32,7 +45,7 @@ printf '%s\n' " 9 wide+emoji+halfwidth  |日本語|abcd|😀| + spacing pair ﾊ
 # cursor ended up, and the ruler shares the same 30-column ASCII prefix.
 printf '%s\n' " 9c ambiguous width           0123456789          <- ruler (col 0 under the 0)"
 printf '%s\n' "                              ○×■│┐<              narrow: < at col 5 / wide: < at col 10"
-printf '%s\n' " 9d emoji ZWJ/VS16/flag       👨‍👩‍👧< ❤️< 🇯🇵<           each ONE glyph, < snug after 2 cells"
+printf '%s\n' " 9d emoji ZWJ/VS16/flag+mod   👨‍👩‍👧< ❤️< 🇯🇵< 👍🏽< ❤️‍🔥<   each ONE glyph, < snug at 2 cells"
 printf '%s\n' "10 box drawing / shades                     ╭─┬─╮ █▓▒░ ▁▂▃▄▅▆▇█"
 
 # ── DECSCNM (?5): the visual bell. Held long enough to photograph. ──────────
@@ -52,6 +65,9 @@ printf '%s\n' "12 DECSLRM left/right margins — rows below scroll up by 2 INSID
 # answers it), and scroll only the shortfall if the block wouldn't fit.
 lines=$(tput lines)
 row=''
+# Drain stragglers first: a DECRQM reply that arrived after its 1s window
+# would otherwise sit in the input buffer and corrupt the DSR parse below.
+while IFS= read -rs -t 0.05 -N 64 _; do :; done
 # The query goes out via printf, NOT via read -p: -p writes its prompt to
 # stderr, so any stderr redirect on the read silently swallows the query and
 # every host looks mute (cost one wrong "WT doesn't answer DSR" conclusion).
