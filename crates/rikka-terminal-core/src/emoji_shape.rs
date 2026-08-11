@@ -1,0 +1,138 @@
+//! HarfBuzz-semantics shaping + COLR rasterisation for ZWJ emoji clusters.
+//!
+//! The platform shaper (DirectWrite, via gpui) kills the ZWJ in VS16-led
+//! sequences before GSUB runs — ❤️‍🔥 comes back as `[heart, .notdef, fire]`
+//! (measured with `RIKKA_DEBUG_CLUSTER`), so the bundled font's ccmp
+//! ligature can never match, even though the font demonstrably has it
+//! (glyph 13669, components `[VS16, ZWJ, fire]`). rustybuzz keeps variation
+//! selectors alive as glyphs through GSUB, exactly like HarfBuzz, so the
+//! same font ligates the same sequence correctly here.
+//!
+//! Scope is deliberately narrow: ONLY ZWJ emoji clusters take this path,
+//! and only when shaping collapses the whole cluster into a single ligature
+//! glyph. Everything else — single emoji, combining marks, IVS, text —
+//! stays on the DirectWrite path, which handles them correctly and shares
+//! its glyph atlas with the rest of the grid.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use gpui::RenderImage;
+use image::{Frame, RgbaImage};
+
+/// The bundled colour emoji font (same file the DirectWrite fallback uses).
+static FONT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../rikka-terminal/assets/fonts/Twemoji.Mozilla.ttf"
+));
+
+/// A ZWJ sequence with at least one pictograph — the only cluster shape the
+/// image path handles. Letters joined by ZWJ (Arabic/Indic joining control)
+/// must not come here.
+pub(crate) fn is_zwj_emoji_cluster(text: &str) -> bool {
+    text.contains('\u{200D}')
+        && text.chars().any(|c| {
+            matches!(c as u32, 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1FAFF)
+        })
+}
+
+/// Shape `text` with rustybuzz against the bundled font. `Some(gids)` iff
+/// every glyph resolved (no .notdef anywhere).
+pub(crate) fn shape_cluster_gids(text: &str) -> Option<Vec<u32>> {
+    let face = rustybuzz::Face::from_slice(FONT_BYTES, 0)?;
+    let mut buf = rustybuzz::UnicodeBuffer::new();
+    buf.push_str(text);
+    let shaped = rustybuzz::shape(&face, &[], buf);
+    let gids: Vec<u32> = shaped.glyph_infos().iter().map(|i| i.glyph_id).collect();
+    if gids.is_empty() || gids.contains(&0) {
+        return None;
+    }
+    Some(gids)
+}
+
+/// Rasterised single-ligature cluster: the image plus its pixel size, cached
+/// by (cluster text, pixel size). `None` (also cached) means "no single
+/// ligature for this cluster at all" — the caller falls back to the
+/// DirectWrite path and its budget clip.
+pub(crate) fn cluster_image(text: &str, cell_h_px: f32) -> Option<(Arc<RenderImage>, u32, u32)> {
+    let px = cell_h_px.round().max(4.0) as u32;
+    type CacheMap = HashMap<(String, u32), Option<(Arc<RenderImage>, u32, u32)>>;
+    static CACHE: OnceLock<Mutex<CacheMap>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (text.to_string(), px);
+    if let Some(hit) = cache.lock().unwrap().get(&key) {
+        return hit.clone();
+    }
+    let computed = render_ligature(text, px as f32);
+    cache.lock().unwrap().insert(key, computed.clone());
+    computed
+}
+
+fn render_ligature(text: &str, px: f32) -> Option<(Arc<RenderImage>, u32, u32)> {
+    // Only a full collapse into ONE glyph is worth leaving the text path
+    // for; multi-glyph results mean the font has no ligature and the
+    // DirectWrite fragments are the honest rendering.
+    let gids = shape_cluster_gids(text)?;
+    let &[gid] = gids.as_slice() else {
+        return None;
+    };
+
+    let font = swash::FontRef::from_index(FONT_BYTES, 0)?;
+    let mut ctx = swash::scale::ScaleContext::new();
+    let mut scaler = ctx.builder(font).size(px).hint(false).build();
+    use swash::scale::{Render, Source, StrikeWith};
+    let img = Render::new(&[
+        Source::ColorOutline(0),
+        Source::ColorBitmap(StrikeWith::BestFit),
+        Source::Outline,
+    ])
+    .render(&mut scaler, gid as u16)?;
+    if !matches!(img.content, swash::scale::image::Content::Color) {
+        return None; // monochrome mask — let the text path colour it instead
+    }
+    let (w, h) = (img.placement.width, img.placement.height);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut data = img.data;
+    // RGBA → BGRA, matching gpui's atlas (same swizzle as kitty graphics).
+    for p in data.chunks_exact_mut(4) {
+        p.swap(0, 2);
+    }
+    let rgba = RgbaImage::from_raw(w, h, data)?;
+    let image = Arc::new(RenderImage::new(vec![Frame::new(rgba)]));
+    Some((image, w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Glyph ids are pinned to the bundled Twemoji Mozilla 0.7.0 — update
+    // them (from a RIKKA_DEBUG_CLUSTER dump or a GSUB parse) if the font
+    // asset is ever swapped.
+
+    #[test]
+    fn heart_on_fire_ligates_to_one_glyph() {
+        let gids = shape_cluster_gids("\u{2764}\u{FE0F}\u{200D}\u{1F525}").unwrap();
+        assert_eq!(gids, vec![13669]);
+    }
+
+    #[test]
+    fn zwj_family_ligates_to_one_glyph() {
+        let gids = shape_cluster_gids("👨\u{200D}👩\u{200D}👧").unwrap();
+        assert_eq!(gids, vec![5999]);
+    }
+
+    #[test]
+    fn letters_with_zwj_are_not_emoji_clusters() {
+        assert!(!is_zwj_emoji_cluster("a\u{200D}b"));
+        assert!(is_zwj_emoji_cluster("\u{2764}\u{FE0F}\u{200D}\u{1F525}"));
+    }
+
+    #[test]
+    fn ligature_rasterises_in_colour() {
+        let (_img, w, h) = cluster_image("\u{2764}\u{FE0F}\u{200D}\u{1F525}", 28.0).unwrap();
+        assert!(w > 0 && h > 0);
+    }
+}

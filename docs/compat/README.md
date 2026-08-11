@@ -149,7 +149,7 @@ heart is emoji-presentation, the flag is drawn. The full glyph verdicts
 | 9d | Emoji VS16 (`❤`+FE0F) | yes | yes | yes |
 | 9d | Emoji flag (RI pair 🇯🇵) | **letter fallback**, 4 cells | yes (flag drawn) | yes (flag drawn) |
 | 9d | Emoji skin tone (`👍`+U+1F3FD) | yes | *not re-run* | yes |
-| 9d | Emoji ZWJ+VS16 chain (❤️‍🔥) | yes (one glyph) | *not re-run* | **fragments**, clipped to budget |
+| 9d | Emoji ZWJ+VS16 chain (❤️‍🔥) | yes (one glyph) | *not re-run* | yes (one glyph — rustybuzz path) |
 | 10 | Box drawing and shade blocks | font glyphs | font glyphs | drawn as geometry |
 | 11 | DECSCNM (`?5`) screen reverse | yes | yes | yes |
 | 12 | DECSLRM left/right margins | yes | yes | yes |
@@ -240,13 +240,20 @@ Mozilla is innocent — parsing its GSUB shows the ligature present (glyph
 the cluster plumbing are innocent — a `RIKKA_DEBUG_CLUSTER` dump shows the
 whole sequence reaching the shaper as ONE run in ONE font, and 👨‍👩‍👧 and
 👍🏽 coming back as single ligature glyphs on the very same path. What
-comes back for the VS16-led chain is `[heart, .notdef, fire]`: the ZWJ is
-dead before GSUB runs, so no ligature can ever match. The repair belongs
-in the vendored gpui DirectWrite layer and is future work; meanwhile the
-renderer clips a cluster's paint to its cell budget — the first run of
-this row caught the detached fire painting itself over caption text five
-cells away — and ZWJ clusters are handed to the emoji font directly, which
-keeps the shaping single-font by construction.
+came back for the VS16-led chain was `[heart, .notdef, fire]`: the ZWJ was
+dead before GSUB ran, so no ligature could ever match.
+
+Resolved 2026-08-12, by changing shaper rather than surgery on the
+platform one: ZWJ emoji clusters now shape through **rustybuzz**
+(HarfBuzz semantics — variation selectors stay alive as glyphs through
+GSUB), and when the cluster collapses to a single ligature glyph it is
+rasterised from the bundled COLR font via **swash** and painted as an
+image, fit-contained into the cell budget. The same font, the same
+sequence, one shaper swap: `❤️‍🔥` → glyph 13669, on screen as one burning
+heart in two cells. Everything else — single emoji, combining marks, IVS,
+plain text — stays on the DirectWrite path. Clusters the font has no
+ligature for still fall back to DirectWrite fragments under the budget
+clip, which remains the honest rendering for them.
 
 The title row carries a **DECRQM report card** (`paste2004= sync2026=
 grapheme2027=`): the probe queries each mode and prints the reply's Ps

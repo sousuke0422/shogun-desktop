@@ -1439,6 +1439,43 @@ pub fn render_grid(
 
                         let all_narrow = run.char_widths.iter().all(|&w| w == 1);
                         if run.is_cluster() {
+                            // ZWJ emoji cluster that collapses to a single
+                            // ligature glyph: shaped with rustybuzz and
+                            // rasterised from the bundled COLR font, because
+                            // the platform shaper kills the ZWJ in VS16-led
+                            // chains before GSUB (see emoji_shape.rs).
+                            // Fit-contain into the cell budget and done.
+                            if crate::emoji_shape::is_zwj_emoji_cluster(&run.text)
+                                && let Some((img, iw, ih)) =
+                                    crate::emoji_shape::cluster_image(&run.text, ch)
+                            {
+                                let bw = cw * run.char_widths[0] as f32;
+                                let scale = (bw / iw as f32).min(ch / ih as f32);
+                                let (dw, dh) = (iw as f32 * scale, ih as f32 * scale);
+                                let bounds = Bounds {
+                                    origin: point(
+                                        px(x + (bw - dw) / 2.0),
+                                        px(oy + (ch - dh) / 2.0),
+                                    ),
+                                    size: size(px(dw), px(dh)),
+                                };
+                                let mask = gpui::ContentMask {
+                                    bounds: Bounds {
+                                        origin: point(px(x), px(oy)),
+                                        size: size(px(bw), px(ch)),
+                                    },
+                                };
+                                window.with_content_mask(Some(mask), |window| {
+                                    let _ = window.paint_image(
+                                        bounds,
+                                        gpui::Corners::default(),
+                                        img,
+                                        0,
+                                        false,
+                                    );
+                                });
+                                continue;
+                            }
                             // Single-cell combining cluster (base + zero-width
                             // trailers): shape the WHOLE text as one cluster so
                             // the marks compose onto the base — even with

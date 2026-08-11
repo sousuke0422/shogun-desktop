@@ -1,3 +1,4 @@
+pub mod emoji_shape;
 pub mod frametime;
 pub mod ime;
 pub mod keys;
