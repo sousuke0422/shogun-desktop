@@ -1174,7 +1174,6 @@ pub fn render_grid(
     // the current match, pale for every other visible one (VSCode-style).
     search: Option<crate::SearchRender>,
 ) -> impl IntoElement {
-
     // Frame-time harness (SHOGUN_FRAMETIME): times this element build and
     // marks the frame boundary on drop. No-op when the env var is unset.
     let _ft_build = crate::frametime::build_guard(snap.cells.len());
@@ -1526,8 +1525,7 @@ pub fn render_grid(
                                 },
                             };
                             window.with_content_mask(Some(mask), |window| {
-                                let _ =
-                                    line.paint(point(px(x), px(oy)), line_height, window, cx);
+                                let _ = line.paint(point(px(x), px(oy)), line_height, window, cx);
                             });
                         } else if all_narrow && ligatures_disabled() {
                             // Ligatures OFF: shape cell by cell so no
