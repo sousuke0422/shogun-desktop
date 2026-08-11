@@ -31,9 +31,9 @@ static FONT_BYTES: &[u8] = include_bytes!(concat!(
 /// must not come here.
 pub(crate) fn is_zwj_emoji_cluster(text: &str) -> bool {
     text.contains('\u{200D}')
-        && text.chars().any(|c| {
-            matches!(c as u32, 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1FAFF)
-        })
+        && text
+            .chars()
+            .any(|c| matches!(c as u32, 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1FAFF))
 }
 
 /// Shape `text` with rustybuzz against the bundled font. `Some(gids)` iff
