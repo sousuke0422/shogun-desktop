@@ -27,7 +27,7 @@ printf '%s\n' " 6 REP (CSI b)        expect ten X         X${esc}[9b"
 printf '%s\n' " 7 ECH (CSI X)        expect five A        AAAAAAAAAA${esc}[10D${esc}[5X"
 printf '%s\n' " 8 ICH / DCH          expect 3 blanks+CDEF ABCDEF${esc}[6D${esc}[3@${esc}[3C${esc}[2P"
 printf '%s\n' " 9 wide+emoji+halfwidth  |日本語|abcd|😀| + spacing pair ﾊﾟ = TWO cells
- 9b combining marks       パ (ハ+U+309A) and é (e+U+0301) = ONE cell each"
+ 9b marks + IVS    パ(ハ+309A) é(e+301) 葛󠄀≠葛󠄁(845B+E0100/1) = ONE cell each"
 # 9c/9d judge ADVANCE WIDTH, not glyph shape: the < marker lands wherever the
 # cursor ended up, and the ruler shares the same 30-column ASCII prefix.
 printf '%s\n' " 9c ambiguous width           0123456789          <- ruler (col 0 under the 0)"

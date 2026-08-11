@@ -2988,6 +2988,24 @@ mod tests {
     }
 
     #[test]
+    fn ivs_selector_stacks_on_wide_base() {
+        let size = TermSize::new(20, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+
+        // 葛 + U+E0100 (ideographic variation selector) — the selector is
+        // zero-width and stacks; the base is already wide, so no promotion.
+        for c in "\u{845B}\u{E0100}X".chars() {
+            term.input(c);
+        }
+
+        let cell = &term.grid[Line(0)][Column(0)];
+        assert_eq!(cell.c, '\u{845B}');
+        assert!(cell.flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(cell.zerowidth().unwrap(), &['\u{E0100}'][..]);
+        assert_eq!(term.grid[Line(0)][Column(2)].c, 'X');
+    }
+
+    #[test]
     fn zwj_between_letters_does_not_merge_cells() {
         let size = TermSize::new(20, 2);
         let mut term = Term::new(Config::default(), &size, VoidListener);

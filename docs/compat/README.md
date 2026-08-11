@@ -143,6 +143,7 @@ heart is emoji-presentation, the flag is drawn. The full glyph verdicts
 | 8 | ICH / DCH | yes | yes | yes |
 | 9 | Wide chars, half-width pair `ﾊ`+`ﾟ`, emoji | yes (ring small and high) | side by side | side by side |
 | 9b | Combining marks (`ハ`+U+309A → パ, `e`+U+0301 → é) | yes | yes | yes |
+| 9b | IVS (`葛`+U+E0100 / U+E0101) | width ok, variants not differentiated | *not re-run* | width ok, variants not differentiated |
 | 9c | Ambiguous width (`○×■│┐`) | narrow | narrow | narrow |
 | 9d | Emoji ZWJ family | yes (one glyph, 2 cells) | yes | yes (fixed same day — see below) |
 | 9d | Emoji VS16 (`❤`+FE0F) | yes | yes | yes |
@@ -170,6 +171,17 @@ now drops true combining marks instead; see the rio aside) — so the pair
 stays in the probe as
 row 9 under an honest name, as a discriminator in its own right rather than
 a stand-in for the combining test it never was.
+
+Row 9b also carries an ideographic variation sequence pair since
+2026-08-12: `葛` + U+E0100 against `葛` + U+E0101, printed adjacent with a
+`≠` between them. IVS selectors are zero-width trailers exactly like the
+other marks, and the failure that matters in a terminal is a selector
+leaking into a cell of its own and shifting the rest of the line — the
+vendored engine pins that with a unit test, and both Windows Terminal and
+RikkaTerminal keep each 葛 to one wide cell on screen. Neither renders
+*distinct* variant glyphs with the default font stack: Format-14 cmap
+support is a property of the font, not the terminal, so the row's pass
+condition is the width, and any visible glyph difference is font bonus.
 
 Rows 9c and 9d judge **advance width**, not glyph shape: each run of glyphs
 is chased by a `<` marker, and the marker lands wherever the cursor ended
