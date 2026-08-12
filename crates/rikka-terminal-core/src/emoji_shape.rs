@@ -188,9 +188,9 @@ mod tests {
     /// catches a font swap losing coverage — the keycap miss that needed
     /// the VS16 retry would have been caught here on day one.
     ///
-    /// The fixture is Emoji 16.0 (17.0's file was not yet published at the
-    /// pinned URL); the bundled font is an Emoji 17 build, so this asserts
-    /// a lower bound. Refresh testdata/emoji-test.txt when Unicode ships it.
+    /// The fixture is Emoji 17.0 (from unicode.org/Public/emoji/latest/),
+    /// matching the bundled font's generation — full parity, not a lower
+    /// bound. Refresh testdata/emoji-test.txt alongside font upgrades.
     #[test]
     fn rgi_coverage_is_total() {
         let data = include_str!("../testdata/emoji-test.txt");
