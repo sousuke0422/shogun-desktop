@@ -421,47 +421,49 @@ keyboard protocol・Tera Term 風セッションログ・検索の regex/全マ�
       一度でも書いたら負けの類。pagefile/休止ファイル経由の漏れは OS の
       領分（BitLocker・pagefile 暗号化）としてドキュメントで誘導する。
 
-> **マイルストーン（殿見立て 2026-07-28）**: このペースなら遅くとも **2026年9月**
-> に「ConPTY ボトルネック解消」へ着手する。下の 2 案は排他ではない。**忠実度が
-> 要るのは WSL 側（tmux・エージェント群）だけ**なので、まず経路を二分して
-> WSL 側だけ迂回し、Windows native は ConPTY のまま置くのが現実解。
+> **マイルストーン（殿決定 2026-08-10）**: 本体は **OpenConsole fork**。
+> 2026年9月着手見込み。旧構想（WSL 中継・経路二分）は下に記録として保持。
+> 前提事実も 2026-08-10〜12 の実測で更新済み — 旧記述の「conhost が APC を
+> 落とす」は**再現せず**（1MB のチャンク APC が byte-perfect で往復・
+> docs/compat 参照）。kitty graphics を殺しているのは輸送でなく
+> **ホストの DA1 ローカル即答が検出フェンスに必ず先着する**レース。
 
-- [ ] **ConPTY を通らない WSL 経路（本命）** — 2026-07-28 の実測で下地が揃った。
-      WSL 内の中継エージェントへ socket で繋げば **Linux の本物の pty** に届く
-      ので、conhost 起因の損失（APC 剥がし・kitty keyboard 不通・teardown 丸呑み・
-      DECSLRM 剥がし）が **一括で消える**。sd の家老陣タブが ssh 経由で同じ
-      忠実度を出している＝**達成可能性は実証済み**。常駐プロセスなので
-      rikka daemon manager の最初の実用ユニットにもなる（命名・実装は保留中）。
-      - **ssh → Windows sshd は逆効果**（同日調査）。`sshd.exe` 内に
+- [ ] **OpenConsole fork（本命・殿決定 2026-08-10）** — 修正の芯は
+      `AdaptDispatch::DeviceAttributes` の DA1 ローカル応答を「端末へ転送→
+      実応答を中継→timeout でローカルへフォールバック」に組み替えること。
+      **部品は upstream に既存**（`VtIo::StartIfNeeded` が起動時に端末へ
+      DA1 を打ち `WaitUntilDA1(3000)` で待つ・入力側は端末の DA1 応答を
+      保存して握り潰している→条件付き転送に変える）。
+      - **運用形態は「patchdev を git で」**（殿相談 2026-08-10）: GitHub に
+        microsoft/terminal の fork・`rikka/1.24.x` ブランチ＝upstream tag の
+        真上に少数の直列コミット（1コミット=1目的）・更新は次 tag へ
+        `rebase --onto`・`git format-patch` で `assets/conpty/patches/` に
+        台帳を輸出。tag+パッチN本の provenance を README に記録。
+      - **同梱で拾う果実**: CLSID 再ブランドのソース定数化（バイナリパッチと
+        「原本と sha256 が一致してはならない」罠仕様を台帳ごと廃止）・
+        `PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE` 採用検討・kitty keyboard の
+        teardown burst 調査（ホストを握ればデバッグが楽になる）。
+      - **代償の明記義務**: compat README の「WT 同梱物とバイト同一」という
+        provenance の物語が変わる（既に CLSID パッチで配布物は非同一）。
+      - 検出合格後の未検証リスク: ホスト差分再描画が画像セルを塗り潰す
+        可能性 — fork 後に実測。
+      - upstream への issue 起票（gh RO のため殿の手）: 下書きと証跡は
+        `UPSTREAM-BUGS.md` に保全済み。
+
+- [ ] **ConPTY を通らない WSL 経路（旧本命・記録として保持）** — WSL 内の
+      中継エージェントへ socket で繋げば Linux の本物の pty に届き、
+      ConPTY 起因の損失クラスが一括で消える。sd の家老陣タブが ssh 経由で
+      同じ忠実度を出している＝達成可能性は実証済み。fork が DA1 レースを
+      解けば緊急性は下がるが、忠実度100%の一般解としては生きている。
+      - **ssh → Windows sshd は逆効果**（2026-07-28 調査）。`sshd.exe` 内に
         `CreatePseudoConsole` / `is_conpty_supported` があり、対話セッションでは
-        sshd 自身が疑似コンソールを張る。しかも張るのが sshd 側なので**同梱
-        OpenConsole を使わせられず、システム conhost に固定**される。加えて
+        sshd 自身が疑似コンソールを張る。しかも張るのが sshd 側なので同梱
+        OpenConsole を使わせられず、システム conhost に固定される。加えて
         LogonUser トークン由来の権限差（ネットワークドライブ・DPAPI・
         プロファイル初期化）。常用経路にする理由なし。
       - fallback 実装 `ssh-shellhost.exe` も `ReadConsoleOutputW` /
-        `WriteConsoleInputW` で**画面バッファを読んで再構成する**方式＝
+        `WriteConsoleInputW` で画面バッファを読んで再構成する方式＝
         どちらの道もコンソールを経由する。
-
-- [ ] **own OpenConsole（fork 保有）** — 殿意向 2026-07-16。conhost 起因の実害が
-      累積しており（①APC 剥がし=ローカル kitty 画像不可・sixel 迂回中
-      ②OSC 0 タブタイトル不達疑い ③kitty keyboard pop で終了 burst 丸呑み
-      =今回の yazi 事件）、全て「端末側での回避」しかできていない。
-      microsoft/terminal は MIT でフォーク可能・vendored ABI（HPCON 手挙げ）を
-      自前ビルドで釘付けにできる利点もある。
-      - **やるなら patch-set 方式**: upstream 素のソース＋小さなパッチ列＋CI
-        ビルド（C++/MSVC toolchain が増えるのが最大コスト。upstream は高churn
-        なので直 fork は追従地獄）。
-      - **先にやる軽い手**: 今回の teardown 丸呑みは upstream へ issue 報告
-        （gh トークン RO のため起票は殿。**英語下書き＋証跡は
-        `UPSTREAM-BUGS.md` に保全済み**・APC 剥がしの stub も同居）。
-        修正が取り込まれれば vendored 更新だけで済む。
-      - **着手トリガー**: 端末側回避が不可能な要求が出た時。筆頭candidate=
-        ローカル kitty graphics passthrough（conhost が APC を落とす限り
-        こちら側では原理的に直せない）。
-      - **上の WSL 経路が入ると射程が狭まる**: kitty graphics も含め、WSL 側の
-        要求は迂回で片付く。fork の残る正当性は **Windows native シェル
-        （pwsh/cmd）でも同じ忠実度が要る場合**に限られる。C++/MSVC toolchain
-        と upstream 追従のコストを踏まえ、**WSL 経路を先に打つ**のが安い。
 
 ## 保守メモ
 
