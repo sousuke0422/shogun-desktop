@@ -31,7 +31,6 @@ mod settings_window;
 mod tab_icon;
 #[cfg(windows)]
 mod tab_move;
-mod taskbar_progress;
 mod tsf;
 mod wt_profiles;
 mod wt_schemes;
@@ -3109,7 +3108,7 @@ impl Render for TabsWindow {
             .iter()
             .map(|t| tab_progress(&t.primary().0.session))
             .fold(None, taskbar_aggregate);
-        taskbar_progress::update(
+        rikka_terminal_core::taskbar::update(
             self.applied_title.as_deref().unwrap_or("RikkaTerminal"),
             agg,
         );

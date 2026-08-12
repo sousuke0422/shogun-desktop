@@ -12,6 +12,7 @@ pub mod renderer;
 pub mod search_bar;
 pub mod selection;
 pub mod sixel;
+pub mod taskbar;
 pub mod theme;
 pub mod winops;
 pub mod xtversion;

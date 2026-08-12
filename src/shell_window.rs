@@ -360,7 +360,7 @@ impl Render for ShellWindow {
                 .session
                 .as_ref()
                 .and_then(crate::window::terminal_progress);
-            crate::taskbar_progress::update(effective, p);
+            crate::terminal::taskbar::update(effective, p);
         }
 
         // Resize: full viewport (no chrome except tiny status bar of 24px)

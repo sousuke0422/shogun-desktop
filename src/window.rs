@@ -1605,7 +1605,7 @@ impl Render for ShogunWindow {
         {
             let a = self.shogun_session.as_ref().and_then(terminal_progress);
             let b = self.multiagent_session.as_ref().and_then(terminal_progress);
-            crate::taskbar_progress::update("将軍デスクトップ", taskbar_aggregate(a, b));
+            crate::terminal::taskbar::update("将軍デスクトップ", taskbar_aggregate(a, b));
         }
 
         // ── PTY resize on viewport change ─────────────────────────────────────

@@ -29,3 +29,16 @@ parking_lot = "0.12"
 arboard = "3"
 rustybuzz = "0.20.1"
 swash = "0.2.10"
+
+# Windows-only: the OS half of OSC 9;4 (see src/taskbar.rs) — the taskbar
+# button overlay. Same footing as the OSC 52 clipboard half, which reaches
+# the OS through `arboard` above.
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]

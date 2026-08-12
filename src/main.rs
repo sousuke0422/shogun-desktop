@@ -15,7 +15,6 @@ mod shell_integration;
 mod shell_window;
 mod ssh;
 mod tabs;
-mod taskbar_progress;
 mod tsf;
 // Terminal engine extracted to the rikka-terminal-core workspace crate; keep
 // the old `crate::terminal::` paths alive via a root re-export.
