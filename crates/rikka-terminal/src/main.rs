@@ -100,16 +100,45 @@ const TEXT_PRIMARY: u32 = 0xFFFFFF;
 const TEXT_SECONDARY: u32 = 0xFFFFFFC5;
 /// DividerStrokeColorDefault — the 1px separators between unselected tabs.
 const DIVIDER: u32 = 0xFFFFFF15;
-/// PTY-burst coalescing window, in ms (default 8 — the shogun-desktop
-/// value, ≈100fps cadence with ~2ms of render work behind it). Configurable
-/// via `[appearance] max_fps`: the window is what pins the frame cadence —
-/// render cost measured p95 ≈ 3ms even under 4K SGR churn — so shortening
-/// it is the whole 120/200fps lever. Floor 1ms, ceiling 15ms.
-pub(crate) static FRAME_COALESCE_MS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(8);
+/// Explicit `[appearance] max_fps`; 0 = auto (follow the display).
+pub(crate) static EXPLICIT_FPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// PTY-burst coalescing window. The window is what pins the frame cadence
+/// (render cost measured p95 ≈ 3ms even under 4K SGR churn; DXGI presents
+/// unsynced), so it is derived from the cadence target: explicit
+/// `max_fps`, else the primary display's refresh rate. The auto path
+/// re-queries VREFRESH on a 2s TTL — displays come and go (a DP panel
+/// powering off hands primary to a 60Hz one), and a one-shot query would
+/// keep painting 200fps into a 60Hz panel, or stay capped at 60 after a
+/// high-refresh panel returns. GetDeviceCaps costs microseconds, so the
+/// TTL is effectively free. Cadence ≈ window + ~2ms of work → aim 2ms
+/// short; floor 1ms, ceiling 15ms.
 pub(crate) fn frame_coalesce() -> Duration {
-    Duration::from_millis(FRAME_COALESCE_MS.load(std::sync::atomic::Ordering::Relaxed))
+    use std::sync::atomic::Ordering;
+    let fps = match EXPLICIT_FPS.load(Ordering::Relaxed) {
+        0 => {
+            static CACHED_HZ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            static LAST_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            let now = EPOCH
+                .get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_millis() as u64;
+            let last = LAST_MS.load(Ordering::Relaxed);
+            let cached = CACHED_HZ.load(Ordering::Relaxed);
+            if cached == 0 || now.saturating_sub(last) > 2000 {
+                LAST_MS.store(now, Ordering::Relaxed);
+                let hz = display_refresh_hz();
+                CACHED_HZ.store(hz, Ordering::Relaxed);
+                hz
+            } else {
+                cached
+            }
+        }
+        explicit => explicit,
+    };
+    let ms = (1000 / fps.clamp(30, 1000)).saturating_sub(2).clamp(1, 15);
+    Duration::from_millis(u64::from(ms))
 }
 
 /// Primary-display refresh rate, best-effort. Fallback 120 when the query
@@ -164,18 +193,12 @@ fn apply_appearance(cfg: &config::Config) {
     if let Some(features) = &cfg.appearance.font_features {
         rikka_terminal_core::renderer::set_font_features(config::parse_font_features(features));
     }
-    {
-        // Cadence target: explicit max_fps, else the display's own refresh
-        // rate — a fixed default quietly capped a 120Hz panel at ~100fps.
-        // Cadence ≈ window + ~2ms of work, so aim the window 2ms short.
-        let fps = cfg
-            .appearance
-            .max_fps
-            .unwrap_or_else(display_refresh_hz)
-            .clamp(30, 1000);
-        let ms = (1000 / fps).saturating_sub(2).clamp(1, 15);
-        FRAME_COALESCE_MS.store(u64::from(ms), std::sync::atomic::Ordering::Relaxed);
-    }
+    // Cadence target: explicit max_fps pins it; absent, frame_coalesce()
+    // follows the display's refresh rate live (2s TTL — see its doc).
+    EXPLICIT_FPS.store(
+        cfg.appearance.max_fps.unwrap_or(0),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     match cfg.appearance.search_style.as_deref() {
         Some("vscode") => rikka_terminal_core::search_bar::set_sheet(
             rikka_terminal_core::search_bar::SearchColors::vscode(),
