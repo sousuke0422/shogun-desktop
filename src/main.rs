@@ -28,11 +28,12 @@ use gpui::Application;
 use std::borrow::Cow;
 
 static MORALERSPACE_NEON: &[u8] = include_bytes!("../assets/fonts/MoralerspaceHWNeon-Regular.ttf");
-// Bundled color emoji (Twemoji Mozilla, COLRv0/CPAL — the one color-glyph
-// format both DirectWrite and CoreText rasterize). Every text run points at
-// it via font fallbacks, so emoji look identical on every OS instead of
-// falling through to Segoe UI Emoji / Apple Color Emoji. See CREDITS.
-static TWEMOJI_MOZILLA: &[u8] = include_bytes!("../assets/fonts/Twemoji.Mozilla.ttf");
+// Bundled color emoji (Twemoji, COLRv0/CPAL — the one color-glyph format
+// both DirectWrite and CoreText rasterize). Built with nanoemoji from
+// jdecked/twemoji v17.0.3 (Emoji 17) — see assets/fonts/README.md. Every
+// text run points at it via font fallbacks, so emoji look identical on
+// every OS instead of falling through to Segoe UI Emoji / Apple Color Emoji.
+static TWEMOJI: &[u8] = include_bytes!("../assets/fonts/Twemoji.ttf");
 
 #[cfg(target_os = "windows")]
 const SYSTEM_FONT_DIRS: &[&str] = &[
@@ -94,10 +95,8 @@ fn main() {
         .skip(1)
         .any(|a| a == "--shell-window" || a == "--shell");
     Application::new().run(move |cx| {
-        let mut fonts: Vec<Cow<'static, [u8]>> = vec![
-            Cow::Borrowed(MORALERSPACE_NEON),
-            Cow::Borrowed(TWEMOJI_MOZILLA),
-        ];
+        let mut fonts: Vec<Cow<'static, [u8]>> =
+            vec![Cow::Borrowed(MORALERSPACE_NEON), Cow::Borrowed(TWEMOJI)];
 
         // システムフォントを動的ロード:
         //   Cica → ユーザーが設定タブで選択した場合の CJK カバレッジ補完用

@@ -5347,7 +5347,7 @@ fn main() {
         gpui_component::init(cx);
         gpui_component::theme::Theme::change(gpui_component::theme::ThemeMode::Dark, None, cx);
         // Bundled fonts (see assets/fonts/ and CREDITS). font-logos: distro
-        // logos for tab icons. Twemoji Mozilla: the engine's terminal_font()
+        // logos for tab icons. Twemoji (jdecked v17 build): the engine's terminal_font()
         // already names it as the emoji fallback for every grid run —
         // registering it here makes emoji resolve to the same embedded glyphs
         // on every OS instead of the platform emoji font (same setup as
@@ -5355,9 +5355,7 @@ fn main() {
         // a crash).
         let _ = cx.text_system().add_fonts(vec![
             std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/font-logos.ttf").as_slice()),
-            std::borrow::Cow::Borrowed(
-                include_bytes!("../assets/fonts/Twemoji.Mozilla.ttf").as_slice(),
-            ),
+            std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/Twemoji.ttf").as_slice()),
         ]);
         // New-tab profiles: wt's list filtered by rikka's config (read once
         // at startup; a broken/absent config or wt just yields an empty menu

@@ -39,8 +39,9 @@ pub fn cell_width_for_font(font: &str) -> f32 {
     }
 }
 
-/// Family name of the bundled color emoji font (see `main.rs` / CREDITS).
-pub const EMOJI_FONT: &str = "Twemoji Mozilla";
+/// Family name of the bundled color emoji font (built with nanoemoji from
+/// jdecked/twemoji v17.0.3 — see `assets/fonts/README.md`).
+pub const EMOJI_FONT: &str = "Twemoji";
 
 /// Build the terminal font with the bundled emoji fallback attached, so emoji
 /// resolve to the same (embedded) glyphs on every OS instead of the platform

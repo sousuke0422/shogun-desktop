@@ -152,6 +152,7 @@ heart is emoji-presentation, the flag is drawn. The full glyph verdicts
 | 9d | Emoji ZWJ+VS16 chain (❤️‍🔥) | yes (one glyph) | *not re-run* | yes (one glyph — rustybuzz path) |
 | 9d | Keycap (`1`+VS16+U+20E3) | **empty box** | *not re-run* | yes (rustybuzz path) |
 | 9d | Tag flag (🏴󠁧󠁢󠁳󠁣󠁴󠁿) | **plain-flag fallback** | *not re-run* | yes (saltire drawn — rustybuzz path) |
+| 9d | Emoji 15+ coverage (🩷 U+1FA77) | **tofu** | *not re-run* | yes |
 | 10 | Box drawing and shade blocks | font glyphs | font glyphs | drawn as geometry |
 | 11 | DECSCNM (`?5`) screen reverse | yes | yes | yes |
 | 12 | DECSLRM left/right margins | yes | yes | yes |
@@ -256,6 +257,20 @@ heart in two cells. Everything else — single emoji, combining marks, IVS,
 plain text — stays on the DirectWrite path. Clusters the font has no
 ligature for still fall back to DirectWrite fragments under the budget
 clip, which remains the honest rendering for them.
+
+The bundled font itself moved a generation on 2026-08-12: the archived
+Twemoji Mozilla 0.7.0 (Emoji 13.1, 2021) is replaced by a build from
+**jdecked/twemoji v17.0.3** — the maintained Twemoji continuation — made
+with nanoemoji (`glyf_colr_0`), following the Arch `twemoji-fonts` recipe;
+`assets/fonts/README.md` records the regeneration steps. Same art style,
+Emoji 17 coverage: 🩷 (Emoji 15) renders on RikkaTerminal and is tofu on
+Windows Terminal, whose Windows 10 Segoe UI Emoji predates it. One quirk
+of nanoemoji builds became a shaper feature: ligatures are derived from
+asset file names, and Twemoji names keycaps without the VS16, so the
+shaper retries VS16-stripped when the canonical stream fails to collapse —
+which also makes the VS16-less keycap spelling some emitters produce work.
+(Glyph ids quoted in the forensics above are the old build's; the pinned
+tests carry the new ones.)
 
 The same path picked up the other two ligature spellings the same day:
 emoji-presentation **keycaps** (`1`+VS16+U+20E3 — the engine promotes the

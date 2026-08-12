@@ -15,7 +15,7 @@ use gpui::{
 };
 use std::borrow::Cow;
 
-static TWEMOJI_MOZILLA: &[u8] = include_bytes!("../../assets/fonts/Twemoji.Mozilla.ttf");
+static TWEMOJI: &[u8] = include_bytes!("../../assets/fonts/Twemoji.ttf");
 static MORALERSPACE_NEON: &[u8] =
     include_bytes!("../../assets/fonts/MoralerspaceHWNeon-Regular.ttf");
 
@@ -30,15 +30,15 @@ fn register_session_emoji_font() {
         .unwrap()
         .join("shogun-desktop")
         .join("fonts");
-    let path = dir.join("Twemoji.Mozilla.ttf");
+    let path = dir.join("Twemoji.ttf");
     std::fs::create_dir_all(&dir).unwrap();
     // The file may be locked by the session font table (registered by an
     // earlier process); the bytes are identical, so just reuse it.
     let same = std::fs::metadata(&path)
-        .map(|m| m.len() == TWEMOJI_MOZILLA.len() as u64)
+        .map(|m| m.len() == TWEMOJI.len() as u64)
         .unwrap_or(false);
     if !same {
-        std::fs::write(&path, TWEMOJI_MOZILLA).unwrap();
+        std::fs::write(&path, TWEMOJI).unwrap();
     }
     let wide: Vec<u16> = path
         .as_os_str()
@@ -54,8 +54,7 @@ fn font(family: &str, with_fallback: bool) -> Font {
     Font {
         family: family.to_string().into(),
         features: FontFeatures::default(),
-        fallbacks: with_fallback
-            .then(|| FontFallbacks::from_fonts(vec!["Twemoji Mozilla".to_string()])),
+        fallbacks: with_fallback.then(|| FontFallbacks::from_fonts(vec!["Twemoji".to_string()])),
         weight: FontWeight::NORMAL,
         style: FontStyle::Normal,
     }
@@ -69,9 +68,7 @@ impl Render for Probe {
         // Resolve the candidate emoji fonts up front so their FontIds are
         // known; a fallback-resolved run reusing the same face gets the same
         // id via font_id_by_identifier.
-        let id_twemoji = cx
-            .text_system()
-            .resolve_font(&font("Twemoji Mozilla", false));
+        let id_twemoji = cx.text_system().resolve_font(&font("Twemoji", false));
         let id_segoe_emoji = cx
             .text_system()
             .resolve_font(&font("Segoe UI Emoji", false));
@@ -121,7 +118,7 @@ fn main() {
         cx.text_system()
             .add_fonts(vec![
                 Cow::Borrowed(MORALERSPACE_NEON),
-                Cow::Borrowed(TWEMOJI_MOZILLA),
+                Cow::Borrowed(TWEMOJI),
             ])
             .unwrap();
         cx.open_window(

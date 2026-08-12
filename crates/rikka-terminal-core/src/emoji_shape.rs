@@ -23,7 +23,7 @@ use image::{Frame, RgbaImage};
 /// The bundled colour emoji font (same file the DirectWrite fallback uses).
 static FONT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../rikka-terminal/assets/fonts/Twemoji.Mozilla.ttf"
+    "/../rikka-terminal/assets/fonts/Twemoji.ttf"
 ));
 
 /// A cluster spelling the ligature path handles: a ZWJ sequence with a
@@ -44,14 +44,28 @@ pub(crate) fn is_emoji_ligature_cluster(text: &str) -> bool {
 /// every glyph resolved (no .notdef anywhere).
 pub(crate) fn shape_cluster_gids(text: &str) -> Option<Vec<u32>> {
     let face = rustybuzz::Face::from_slice(FONT_BYTES, 0)?;
-    let mut buf = rustybuzz::UnicodeBuffer::new();
-    buf.push_str(text);
-    let shaped = rustybuzz::shape(&face, &[], buf);
-    let gids: Vec<u32> = shaped.glyph_infos().iter().map(|i| i.glyph_id).collect();
-    if gids.is_empty() || gids.contains(&0) {
-        return None;
+    let shape = |t: &str| -> Option<Vec<u32>> {
+        let mut buf = rustybuzz::UnicodeBuffer::new();
+        buf.push_str(t);
+        let shaped = rustybuzz::shape(&face, &[], buf);
+        let gids: Vec<u32> = shaped.glyph_infos().iter().map(|i| i.glyph_id).collect();
+        (!gids.is_empty() && !gids.contains(&0)).then_some(gids)
+    };
+    let first = shape(text);
+    // nanoemoji derives ligatures from asset file names, and Twemoji names
+    // keycaps (and some others) WITHOUT the VS16 — `31-20e3.svg` — so the
+    // canonical `1 FE0F 20E3` stream misses the ligature. If the plain
+    // shape didn't collapse, retry with every VS16 stripped and keep the
+    // shorter result.
+    if first.as_ref().is_none_or(|g| g.len() > 1) && text.contains('\u{FE0F}') {
+        let stripped: String = text.chars().filter(|&c| c != '\u{FE0F}').collect();
+        if let Some(g2) = shape(&stripped)
+            && first.as_ref().is_none_or(|g1| g2.len() < g1.len())
+        {
+            return Some(g2);
+        }
     }
-    Some(gids)
+    first
 }
 
 /// Rasterised single-ligature cluster: the image plus its pixel size, cached
@@ -112,20 +126,20 @@ fn render_ligature(text: &str, px: f32) -> Option<(Arc<RenderImage>, u32, u32)> 
 mod tests {
     use super::*;
 
-    // Glyph ids are pinned to the bundled Twemoji Mozilla 0.7.0 — update
-    // them (from a RIKKA_DEBUG_CLUSTER dump or a GSUB parse) if the font
-    // asset is ever swapped.
+    // Glyph ids are pinned to the bundled Twemoji build (jdecked v17.0.3,
+    // nanoemoji glyf_colr_0) — update them (from a RIKKA_DEBUG_CLUSTER dump
+    // or a GSUB parse) if the font asset is ever swapped.
 
     #[test]
     fn heart_on_fire_ligates_to_one_glyph() {
         let gids = shape_cluster_gids("\u{2764}\u{FE0F}\u{200D}\u{1F525}").unwrap();
-        assert_eq!(gids, vec![13669]);
+        assert_eq!(gids, vec![4014]);
     }
 
     #[test]
     fn zwj_family_ligates_to_one_glyph() {
         let gids = shape_cluster_gids("👨\u{200D}👩\u{200D}👧").unwrap();
-        assert_eq!(gids, vec![5999]);
+        assert_eq!(gids, vec![1192]);
     }
 
     #[test]
@@ -145,6 +159,8 @@ mod tests {
         let gids = shape_cluster_gids("1\u{FE0F}\u{20E3}").unwrap();
         assert_eq!(gids.len(), 1, "keycap should collapse: {gids:?}");
         assert_ne!(gids[0], 0);
+        // Same result for the VS16-less spelling some emitters use.
+        assert_eq!(shape_cluster_gids("1\u{20E3}").unwrap().len(), 1);
     }
 
     #[test]
