@@ -77,21 +77,73 @@ pub(crate) fn shape_cluster_gids(text: &str) -> Option<Vec<u32>> {
     first
 }
 
+/// Cache capacity (entries, positive and negative alike). A screenful of
+/// distinct clusters is a few dozen; a bitmap entry at terminal cell sizes
+/// is a handful of KB, so the worst case sits around a few MB. The cap
+/// exists for the pathological stream (a flood of never-repeating ZWJ
+/// sequences) that would otherwise grow the map without bound.
+const CACHE_CAP: usize = 1024;
+
 /// Rasterised single-ligature cluster: the image plus its pixel size, cached
-/// by (cluster text, pixel size). `None` (also cached) means "no single
-/// ligature for this cluster at all" — the caller falls back to the
-/// DirectWrite path and its budget clip.
+/// by (cluster text, pixel size) with LRU eviction. `None` (also cached)
+/// means "no single ligature for this cluster at all" — the caller falls
+/// back to the DirectWrite path and its budget clip.
+///
+/// Eviction is VISUALLY SAFE by construction: a miss regenerates
+/// synchronously right here in the paint path, so scrolling back to a
+/// cluster whose entry was evicted re-shapes and re-rasterises it on the
+/// next frame — an evicted entry can cost a few hundred microseconds, never
+/// a hole. The regeneration test below pins that invariant.
 pub(crate) fn cluster_image(text: &str, cell_h_px: f32) -> Option<(Arc<RenderImage>, u32, u32)> {
-    let px = cell_h_px.round().max(4.0) as u32;
-    type CacheMap = HashMap<(String, u32), Option<(Arc<RenderImage>, u32, u32)>>;
-    static CACHE: OnceLock<Mutex<CacheMap>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (text.to_string(), px);
-    if let Some(hit) = cache.lock().unwrap().get(&key) {
-        return hit.clone();
+    type Value = Option<(Arc<RenderImage>, u32, u32)>;
+    struct Entry {
+        val: Value,
+        tick: u64,
     }
+    struct Cache {
+        map: HashMap<(String, u32), Entry>,
+        tick: u64,
+    }
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+
+    let px = cell_h_px.round().max(4.0) as u32;
+    let cache = CACHE.get_or_init(|| {
+        Mutex::new(Cache {
+            map: HashMap::new(),
+            tick: 0,
+        })
+    });
+
+    {
+        let mut c = cache.lock().unwrap();
+        c.tick += 1;
+        let tick = c.tick;
+        if let Some(e) = c.map.get_mut(&(text.to_string(), px)) {
+            e.tick = tick;
+            return e.val.clone();
+        }
+    }
+
     let computed = render_ligature(text, px as f32);
-    cache.lock().unwrap().insert(key, computed.clone());
+
+    let mut c = cache.lock().unwrap();
+    if c.map.len() >= CACHE_CAP {
+        // Drop the least-recently-used quarter in one sweep, so eviction
+        // stays rare instead of running on every insert at the boundary.
+        let mut ticks: Vec<u64> = c.map.values().map(|e| e.tick).collect();
+        ticks.sort_unstable();
+        let cutoff = ticks[ticks.len() / 4];
+        c.map.retain(|_, e| e.tick > cutoff);
+    }
+    c.tick += 1;
+    let tick = c.tick;
+    c.map.insert(
+        (text.to_string(), px),
+        Entry {
+            val: computed.clone(),
+            tick,
+        },
+    );
     computed
 }
 
@@ -223,6 +275,24 @@ mod tests {
             "{} of {total} RGI sequences unresolved:\n{}",
             failures.len(),
             failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn eviction_regenerates_instead_of_leaving_holes() {
+        // Prime a real cluster, flood the cache far past its cap with junk
+        // (letters + ZWJ shape fast and cache as None), then ask for the
+        // real cluster again: it must come back as Some — a scroll back to
+        // an evicted cluster regenerates, never goes missing.
+        let heart = "\u{2764}\u{FE0F}\u{200D}\u{1F525}";
+        assert!(cluster_image(heart, 28.0).is_some());
+        for i in 0..(CACHE_CAP * 2) {
+            let junk = format!("x{i}\u{200D}y");
+            let _ = cluster_image(&junk, 28.0);
+        }
+        assert!(
+            cluster_image(heart, 28.0).is_some(),
+            "evicted cluster must regenerate on demand"
         );
     }
 
