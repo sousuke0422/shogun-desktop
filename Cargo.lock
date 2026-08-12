@@ -5827,6 +5827,7 @@ dependencies = [
  "rustybuzz 0.20.1",
  "swash",
  "tokio",
+ "windows 0.61.3",
 ]
 
 [[package]]
