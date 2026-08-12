@@ -3,12 +3,14 @@
 ## Twemoji.ttf — colour emoji (COLRv0)
 
 Built with **nanoemoji** (`glyf_colr_0`, `clipbox_quantization = 32`) from
-the SVG assets of **jdecked/twemoji v17.0.3** (Emoji 17), following the Arch
-`twemoji-fonts` AUR recipe: rename `assets/svg/*.svg` to the
-`emoji_uXXXX[_YYYY…].svg` convention (hex parts zero-padded to 4 digits,
-`-` → `_`, `emoji_u` prefix), list every file as a `srcs` entry, family
-`"Twemoji"`. nanoemoji derives the cmap and the ZWJ/VS16/keycap/tag GSUB
-ligatures from the file names.
+the SVG assets of **jdecked/twemoji v17.0.3** (Emoji 17). The exact build
+is scripted: **`build-twemoji.sh`** in this directory — run it, then copy
+the output over both bundled copies and re-pin the glyph-id tests. The
+recipe is that of the Arch AUR **`twemoji-fonts`** package (maintainer:
+Coelacanthus <uwu@coelacanthus.name>), reduced to the one target we bundle
+and made self-contained (pip venv only; resvg/pngquant are needed only for
+the CBDT targets we don't build). nanoemoji derives the cmap and the
+ZWJ/VS16/keycap/tag GSUB ligatures from the renamed asset file names.
 
 - Graphics: CC-BY 4.0 (jdecked/twemoji, the Twemoji continuation)
 - sha256 of the bundled build: `159b826079554b99…` (see git history for
