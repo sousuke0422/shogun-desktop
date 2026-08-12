@@ -45,6 +45,10 @@ pub struct Config {
 /// line_height = 1.3        # cell height = font_size × this (default: 1.2)
 /// acrylic = true           # blurred window background (default: off;
 ///                          # the RIKKA_ACRYLIC env var still works)
+/// max_fps = 200            # redraw-cadence target under sustained output
+///                          # (default: 100). Raising it shortens the PTY
+///                          # burst-coalescing window, trading CPU/GPU for
+///                          # latency — worthwhile on high-refresh displays.
 /// ```
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct AppearanceSection {
@@ -62,6 +66,9 @@ pub struct AppearanceSection {
     /// things OFF or to pick stylistic sets.
     #[serde(default)]
     pub font_features: Option<Vec<String>>,
+    /// Redraw-cadence target under sustained PTY output; see the doc block.
+    #[serde(default)]
+    pub max_fps: Option<u32>,
     /// Search-bar design: "winui" (default) or "vscode".
     #[serde(default)]
     pub search_style: Option<String>,

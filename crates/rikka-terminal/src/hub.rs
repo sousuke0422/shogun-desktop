@@ -26,7 +26,7 @@ use gpui::{AnyWindowHandle, App, AsyncApp, Entity, Global, WeakEntity};
 use parking_lot::Mutex;
 use rikka_terminal_core::TerminalSession;
 
-use crate::{FRAME_COALESCE, TabsWindow};
+use crate::{TabsWindow, frame_coalesce};
 
 /// Redraw hook: scheduled by the driver task (on the foreground executor,
 /// which hands it an `AsyncApp`), installed by whichever window hosts the
@@ -136,7 +136,7 @@ pub fn new_tab(cx: &mut App, session: TerminalSession) -> TabEntry {
             if closed.load(Ordering::Relaxed) {
                 break;
             }
-            cx.background_executor().timer(FRAME_COALESCE).await;
+            cx.background_executor().timer(frame_coalesce()).await;
             let cur = generation.load(Ordering::Relaxed);
             if cur == last && !blink {
                 continue;

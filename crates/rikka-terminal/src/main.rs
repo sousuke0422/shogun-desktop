@@ -100,8 +100,17 @@ const TEXT_PRIMARY: u32 = 0xFFFFFF;
 const TEXT_SECONDARY: u32 = 0xFFFFFFC5;
 /// DividerStrokeColorDefault — the 1px separators between unselected tabs.
 const DIVIDER: u32 = 0xFFFFFF15;
-/// PTY-burst coalescing window (same rationale/value as shogun-desktop).
-pub(crate) const FRAME_COALESCE: Duration = Duration::from_millis(8);
+/// PTY-burst coalescing window, in ms (default 8 — the shogun-desktop
+/// value, ≈100fps cadence with ~2ms of render work behind it). Configurable
+/// via `[appearance] max_fps`: the window is what pins the frame cadence —
+/// render cost measured p95 ≈ 3ms even under 4K SGR churn — so shortening
+/// it is the whole 120/200fps lever. Floor 1ms, ceiling 15ms.
+pub(crate) static FRAME_COALESCE_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(8);
+
+pub(crate) fn frame_coalesce() -> Duration {
+    Duration::from_millis(FRAME_COALESCE_MS.load(std::sync::atomic::Ordering::Relaxed))
+}
 
 gpui::actions!(
     rikka_terminal,
@@ -136,6 +145,11 @@ fn apply_appearance(cfg: &config::Config) {
     }
     if let Some(features) = &cfg.appearance.font_features {
         rikka_terminal_core::renderer::set_font_features(config::parse_font_features(features));
+    }
+    if let Some(fps) = cfg.appearance.max_fps {
+        // Cadence ≈ window + ~2ms of work, so aim the window 2ms short.
+        let ms = (1000 / fps.clamp(30, 1000)).saturating_sub(2).clamp(1, 15);
+        FRAME_COALESCE_MS.store(u64::from(ms), std::sync::atomic::Ordering::Relaxed);
     }
     match cfg.appearance.search_style.as_deref() {
         Some("vscode") => rikka_terminal_core::search_bar::set_sheet(
