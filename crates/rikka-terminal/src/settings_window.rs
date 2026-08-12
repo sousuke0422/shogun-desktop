@@ -79,6 +79,8 @@ struct Values {
     font: String,
     font_size: f32,
     line_height: f32,
+    /// Redraw-cadence target; 0 = auto (follow the display's refresh rate).
+    max_fps: u32,
     search_vscode: bool,
     acrylic: bool,
     scrollback: u32,
@@ -118,6 +120,7 @@ impl SettingsWindow {
             font: cfg.appearance.font.clone().unwrap_or_default(),
             font_size: cfg.appearance.font_size.unwrap_or(13.0),
             line_height: cfg.appearance.line_height.unwrap_or(1.2),
+            max_fps: cfg.appearance.max_fps.unwrap_or(0),
             search_vscode: cfg.appearance.search_style.as_deref() == Some("vscode"),
             acrylic: cfg.appearance.acrylic.unwrap_or(false),
             scrollback: cfg.terminal.scrollback.unwrap_or(10_000),
@@ -261,6 +264,12 @@ impl SettingsWindow {
                 "line_height",
                 Some(Value::from(f64::from(v.line_height))),
             ));
+        }
+        if v.max_fps != i.max_fps {
+            // 0 = auto: REMOVE the key so frame_coalesce() follows the
+            // display's refresh rate live.
+            let value = (v.max_fps != 0).then(|| Value::from(i64::from(v.max_fps)));
+            out.push(("appearance", "max_fps", value));
         }
         if v.search_vscode != i.search_vscode {
             let s = if v.search_vscode { "vscode" } else { "winui" };
@@ -736,6 +745,21 @@ impl SettingsWindow {
                     format!("{:.2}", self.v.line_height),
                     |t, _| t.v.line_height = ((t.v.line_height - 0.05) * 100.).round() / 100.,
                     |t, _| t.v.line_height = ((t.v.line_height + 0.05) * 100.).round() / 100.,
+                    cx,
+                ),
+                c,
+            ))
+            .child(Self::row(
+                "描画レート上限",
+                self.stepper(
+                    2,
+                    if self.v.max_fps == 0 {
+                        "自動（ディスプレイ追従）".to_string()
+                    } else {
+                        format!("{} fps", self.v.max_fps)
+                    },
+                    |t, _| t.v.max_fps = fps_step(t.v.max_fps, false),
+                    |t, _| t.v.max_fps = fps_step(t.v.max_fps, true),
                     cx,
                 ),
                 c,
@@ -1247,6 +1271,29 @@ fn parse_hex(s: &str) -> Option<u32> {
         .flatten()
 }
 
+/// Cadence choices the settings stepper walks through: 0 = auto (follow the
+/// display), then the common panel rates.
+const FPS_STEPS: [u32; 9] = [0, 60, 75, 90, 120, 144, 165, 200, 240];
+
+fn fps_step(current: u32, up: bool) -> u32 {
+    let idx = FPS_STEPS
+        .iter()
+        .position(|&f| f == current)
+        .unwrap_or_else(|| {
+            // A hand-edited value between steps snaps to the nearest one.
+            FPS_STEPS
+                .iter()
+                .position(|&f| f >= current)
+                .unwrap_or(FPS_STEPS.len() - 1)
+        });
+    let next = if up {
+        (idx + 1).min(FPS_STEPS.len() - 1)
+    } else {
+        idx.saturating_sub(1)
+    };
+    FPS_STEPS[next]
+}
+
 /// Apply `(section, key, value)` writes to a config.toml source, keeping the
 /// user's comments and layout (toml_edit). `None` removes the key. Fails
 /// when the existing file is unparseable — the caller must NOT clobber a
@@ -1287,7 +1334,7 @@ fn apply_edits(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_edits, parse_hex};
+    use super::{apply_edits, fps_step, parse_hex};
 
     #[test]
     fn edits_preserve_comments_and_layout() {
@@ -1314,6 +1361,35 @@ mod tests {
         assert!(out.contains("font_size = 18.0"), "{out}");
         assert!(out.contains("[terminal]"), "{out}");
         assert!(out.contains("scrollback = 50000"), "{out}");
+    }
+
+    #[test]
+    fn max_fps_auto_removes_the_key() {
+        let raw = "[appearance]\nmax_fps = 200\n";
+        let out = apply_edits(raw, &[("appearance", "max_fps", None)]).unwrap();
+        assert!(!out.contains("max_fps"), "{out}");
+        let out = apply_edits(
+            raw,
+            &[(
+                "appearance",
+                "max_fps",
+                Some(toml_edit::Value::from(120_i64)),
+            )],
+        )
+        .unwrap();
+        assert!(out.contains("max_fps = 120"), "{out}");
+    }
+
+    #[test]
+    fn fps_stepper_walks_the_ladder() {
+        assert_eq!(fps_step(0, true), 60);
+        assert_eq!(fps_step(60, false), 0);
+        assert_eq!(fps_step(200, true), 240);
+        assert_eq!(fps_step(240, true), 240);
+        assert_eq!(fps_step(0, false), 0);
+        // hand-edited off-ladder value snaps sanely
+        assert_eq!(fps_step(100, true), 144);
+        assert_eq!(fps_step(100, false), 90);
     }
 
     #[test]
