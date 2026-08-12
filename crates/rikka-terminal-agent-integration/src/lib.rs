@@ -24,11 +24,8 @@ pub enum AgentProgress {
 
 /// Classify an OSC 0/2 window-title string as agent activity.
 ///
-/// Claude Code animates a Braille spinner (`⠋⠙⠹…`) at the head of the title
-/// while working. Every mainstream CLI spinner set (cli-spinners' `dots*`,
-/// `ora`, and Claude's own) draws its frames from the Braille Patterns block,
-/// so a single Braille glyph in the title is a strong "an agent is busy"
-/// signal. Returns `None` for a static / idle title.
+/// The signal is the animated glyph a CLI puts at the head of its title while
+/// working. Returns `None` for a static / idle title.
 pub fn progress_from_title(title: &str) -> Option<AgentProgress> {
     title
         .chars()
@@ -36,10 +33,25 @@ pub fn progress_from_title(title: &str) -> Option<AgentProgress> {
         .then_some(AgentProgress::Working)
 }
 
-/// Braille Patterns block (`U+2800..=U+28FF`) — the home of essentially every
-/// terminal spinner frame.
+/// A glyph that only appears in an animating spinner.
+///
+/// Two families, and the second is a lesson: for a long time this was the
+/// Braille Patterns block alone (`U+2800..=U+28FF`), the home of cli-spinners'
+/// `dots*`, `ora`, and Claude Code's own frames at the time. A Claude Code
+/// update then moved its spinner to a two-frame half-circle alternation, and
+/// because the check only knew Braille, agent progress **silently stopped
+/// being detected at all** — no error, no test failure, just a feature that
+/// quietly did nothing until someone noticed the taskbar had gone dark.
+///
+/// The half-circle pair is exactly what live sampling showed (0.3 s × 20 over
+/// the running formation): `◑ → ◐ → ◑ → ◐`, alternating left/right, never a
+/// four-phase rotation — so `U+25D2`/`U+25D3` are deliberately NOT here;
+/// guessing at frames nobody has observed is how the previous entry aged into
+/// a lie. Equally deliberate: Claude Code's IDLE mark `✳` (`U+2733`) must not
+/// match, or a finished agent would report Working forever. The tests below
+/// pin both halves against real captured titles.
 fn is_spinner_glyph(c: char) -> bool {
-    ('\u{2800}'..='\u{28FF}').contains(&c)
+    matches!(c, '\u{2800}'..='\u{28FF}' | '\u{25D0}' | '\u{25D1}')
 }
 
 /// Tracks the last moment an agent looked busy so a host can hold the bar for a
@@ -95,6 +107,22 @@ mod tests {
         );
     }
 
+    /// Captured live from the running formation on 2026-08-13 (0.3 s × 20):
+    /// the busy pane alternated `◑ → ◐ → ◑ → ◐`, seven changes in six
+    /// seconds. This is the positive control for the half-circle family — if
+    /// it ever fails, detection has gone dark again.
+    #[test]
+    fn half_circle_spinner_title_reads_as_working() {
+        assert_eq!(
+            progress_from_title("◑ Claude Code"),
+            Some(AgentProgress::Working)
+        );
+        assert_eq!(
+            progress_from_title("◐ Claude Code"),
+            Some(AgentProgress::Working)
+        );
+    }
+
     #[test]
     fn plain_title_reads_as_idle() {
         assert_eq!(progress_from_title("~/work/project"), None);
@@ -102,6 +130,22 @@ mod tests {
         assert_eq!(progress_from_title(""), None);
         // A title with an em dash / other punctuation is not a spinner.
         assert_eq!(progress_from_title("shogun:0:main — done"), None);
+    }
+
+    /// The other half of the same capture: idle panes sat on `✳ Claude Code`
+    /// and finished work left `✳ <result>`. Matching `✳` would light the
+    /// taskbar forever — the negative control that keeps the fix from
+    /// becoming the older bug.
+    #[test]
+    fn claude_idle_mark_reads_as_idle() {
+        assert_eq!(progress_from_title("✳ Claude Code"), None);
+        assert_eq!(progress_from_title("✳ PR #388 マージ完了"), None);
+        // Sibling half-circle frames were never observed in the animation;
+        // they stay unmatched until something real shows them.
+        assert_eq!(progress_from_title("◒ Claude Code"), None);
+        assert_eq!(progress_from_title("◓ Claude Code"), None);
+        // Other agents on this machine keep static titles.
+        assert_eq!(progress_from_title("Cursor Agent"), None);
     }
 
     #[test]
