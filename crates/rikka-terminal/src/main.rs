@@ -112,6 +112,24 @@ pub(crate) fn frame_coalesce() -> Duration {
     Duration::from_millis(FRAME_COALESCE_MS.load(std::sync::atomic::Ordering::Relaxed))
 }
 
+/// Primary-display refresh rate, best-effort. Fallback 120 when the query
+/// fails or reports the "hardware default" 0/1. Multi-monitor nuance:
+/// queried once for the primary — a window living on a different-Hz panel
+/// keeps this cadence (set `max_fps` explicitly to override).
+fn display_refresh_hz() -> u32 {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, VREFRESH};
+        let dc = GetDC(None);
+        let hz = GetDeviceCaps(Some(dc), VREFRESH);
+        let _ = ReleaseDC(None, dc);
+        if hz > 1 {
+            return hz as u32;
+        }
+    }
+    120
+}
+
 gpui::actions!(
     rikka_terminal,
     [
@@ -146,9 +164,16 @@ fn apply_appearance(cfg: &config::Config) {
     if let Some(features) = &cfg.appearance.font_features {
         rikka_terminal_core::renderer::set_font_features(config::parse_font_features(features));
     }
-    if let Some(fps) = cfg.appearance.max_fps {
+    {
+        // Cadence target: explicit max_fps, else the display's own refresh
+        // rate — a fixed default quietly capped a 120Hz panel at ~100fps.
         // Cadence ≈ window + ~2ms of work, so aim the window 2ms short.
-        let ms = (1000 / fps.clamp(30, 1000)).saturating_sub(2).clamp(1, 15);
+        let fps = cfg
+            .appearance
+            .max_fps
+            .unwrap_or_else(display_refresh_hz)
+            .clamp(30, 1000);
+        let ms = (1000 / fps).saturating_sub(2).clamp(1, 15);
         FRAME_COALESCE_MS.store(u64::from(ms), std::sync::atomic::Ordering::Relaxed);
     }
     match cfg.appearance.search_style.as_deref() {

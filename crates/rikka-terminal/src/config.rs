@@ -46,9 +46,10 @@ pub struct Config {
 /// acrylic = true           # blurred window background (default: off;
 ///                          # the RIKKA_ACRYLIC env var still works)
 /// max_fps = 200            # redraw-cadence target under sustained output
-///                          # (default: 100). Raising it shortens the PTY
-///                          # burst-coalescing window, trading CPU/GPU for
-///                          # latency — worthwhile on high-refresh displays.
+///                          # (default: the primary display's refresh rate).
+///                          # Sets the PTY burst-coalescing window; raising
+///                          # it past the panel's Hz trades CPU/GPU for
+///                          # nothing visible.
 /// ```
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct AppearanceSection {
