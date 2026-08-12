@@ -145,9 +145,29 @@ pub(crate) const BRAILLE_DOTS: [(u8, u8); 8] = [
 /// A previous implementation switched to MS Gothic for these; that was wrong because
 /// alacritty_terminal already assigns display_width=1 to EAW=A chars, so a full-width
 /// MS Gothic glyph would overflow the 1-cell container.
+/// A stretch of cells inside one [`Run`] sharing a foreground color.
+/// Color does not affect shaping, so runs MERGE across fg changes and carry
+/// the colors here — the measurement that forced this: an SGR-churn flood
+/// (per-char colors, lolcat/btop style) split every char into its own run,
+/// ~18k shape calls per 4K frame, paint p95 ≈ 20 ms.
+#[derive(Clone, Copy)]
+pub(crate) struct FgSpan {
+    /// UTF-8 length of this span's slice of [`Run::text`].
+    pub bytes: u32,
+    /// Char count (parallel slice of [`Run::char_widths`]).
+    pub chars: u32,
+    /// Display-column width of the span.
+    pub cells: u32,
+    pub fg: ResolvedColor,
+}
+
 pub(crate) struct Run {
     pub text: String,
+    /// First span's fg — the whole run's fg when `fg_spans.len() == 1`
+    /// (cursor and cluster runs are always single-span).
     pub fg: ResolvedColor,
+    /// Foreground spans, in order; always non-empty, lengths sum to `text`.
+    pub fg_spans: Vec<FgSpan>,
     pub bg: ResolvedColor,
     /// Total display-column width of this run (sum of each cell's `display_width`).
     pub width: usize,
@@ -196,8 +216,28 @@ fn resolve_run_colors(
     cursor_color: Option<Rgba>,
     reverse_screen: bool,
 ) -> (Rgba, Option<Rgba>) {
-    let mut fg = color_to_rgba(run.fg);
-    let mut bg = match run.bg {
+    resolve_cell_colors(
+        run.fg,
+        run.bg,
+        &run.style,
+        run.is_cursor,
+        cursor_color,
+        reverse_screen,
+    )
+}
+
+/// Same resolution for one fg/bg pair — the per-span form of
+/// [`resolve_run_colors`], used when a run carries several [`FgSpan`]s.
+fn resolve_cell_colors(
+    fg0: ResolvedColor,
+    bg0: ResolvedColor,
+    style: &crate::CellStyle,
+    is_cursor: bool,
+    cursor_color: Option<Rgba>,
+    reverse_screen: bool,
+) -> (Rgba, Option<Rgba>) {
+    let mut fg = color_to_rgba(fg0);
+    let mut bg = match bg0 {
         ResolvedColor::Rgb(r, g, b) => Some(rgba(u32::from_be_bytes([r, g, b, 0xff]))),
         ResolvedColor::Default => None,
     };
@@ -209,7 +249,7 @@ fn resolve_run_colors(
         fg = bg.unwrap_or_else(default_bg);
         bg = new_bg;
     }
-    if run.style.dim {
+    if style.dim {
         // SGR 2 (faint): scale the ink toward black, leaving bg untouched.
         // Applied BEFORE inverse (xterm order): faint dims the original
         // foreground, and the swap then moves that dimmed ink to the bg.
@@ -220,19 +260,52 @@ fn resolve_run_colors(
             a: fg.a,
         };
     }
-    if run.style.inverse {
+    if style.inverse {
         // SGR 7: swap fg/bg. A transparent default bg swaps in as the pane's
         // base color so the inverted text stays legible.
         let new_bg = Some(fg);
         fg = bg.unwrap_or_else(default_bg);
         bg = new_bg;
     }
-    if run.is_cursor {
+    if is_cursor {
         let cursor_bg = cursor_color.unwrap_or(fg);
         let cursor_fg = bg.unwrap_or_else(default_bg);
         (cursor_fg, Some(cursor_bg))
     } else {
         (fg, bg)
+    }
+}
+
+/// Expand per-span resolved fg colors into one entry per char, for the
+/// paths that walk a run char by char (geometry, ligatures-off, mixed
+/// widths). Cheap: allocated only inside those branches.
+fn expand_span_fgs(spans: &[FgSpan], colors: &[(Rgba, Option<Rgba>)]) -> Vec<Rgba> {
+    let total: usize = spans.iter().map(|s| s.chars as usize).sum();
+    let mut out = Vec::with_capacity(total);
+    for (sp, (fg, _)) in spans.iter().zip(colors) {
+        out.extend(std::iter::repeat_n(*fg, sp.chars as usize));
+    }
+    out
+}
+
+/// [`paint_run_decorations`] once per fg span, each with its own resolved
+/// ink — identical to a single whole-run call when the run is single-span.
+#[allow(clippy::too_many_arguments)]
+fn paint_span_decorations(
+    style: &crate::CellStyle,
+    x: f32,
+    cw: f32,
+    oy: f32,
+    ch: f32,
+    spans: &[FgSpan],
+    colors: &[(Rgba, Option<Rgba>)],
+    window: &mut Window,
+) {
+    let mut dx = x;
+    for (sp, (fg, _)) in spans.iter().zip(colors) {
+        let w_px = sp.cells as f32 * cw;
+        paint_run_decorations(style, dx, w_px, oy, ch, *fg, window);
+        dx += w_px;
     }
 }
 
@@ -1327,15 +1400,44 @@ pub fn render_grid(
                         col += run.width;
                         let (fg_rgba, bg_opt) =
                             resolve_run_colors(&run, cursor_rgba, reverse_screen);
+                        // Per-span resolved colors. Single-span (the vast
+                        // majority) reuses the run-level resolution above.
+                        let span_colors: Vec<(Rgba, Option<Rgba>)> = if run.fg_spans.len() == 1 {
+                            vec![(fg_rgba, bg_opt)]
+                        } else {
+                            run.fg_spans
+                                .iter()
+                                .map(|sp| {
+                                    resolve_cell_colors(
+                                        sp.fg,
+                                        run.bg,
+                                        &run.style,
+                                        run.is_cursor,
+                                        cursor_rgba,
+                                        reverse_screen,
+                                    )
+                                })
+                                .collect()
+                        };
 
-                        if let Some(bg) = bg_opt {
-                            window.paint_quad(fill(
-                                Bounds {
-                                    origin: point(px(x), px(oy)),
-                                    size: size(px(cw * run.width as f32), px(ch)),
-                                },
-                                bg,
-                            ));
+                        {
+                            // bg per span: identical to the old whole-run
+                            // quad when single-span; under SGR 7 the swapped
+                            // bg follows each span's fg.
+                            let mut bx = x;
+                            for (sp, (_, sbg)) in run.fg_spans.iter().zip(&span_colors) {
+                                let w_px = cw * sp.cells as f32;
+                                if let Some(bg) = sbg {
+                                    window.paint_quad(fill(
+                                        Bounds {
+                                            origin: point(px(bx), px(oy)),
+                                            size: size(px(w_px), px(ch)),
+                                        },
+                                        *bg,
+                                    ));
+                                }
+                                bx += w_px;
+                            }
                         }
 
                         // SGR 8 (hidden) / SGR 5-6 blink off-phase: bg is
@@ -1347,21 +1449,26 @@ pub fn render_grid(
 
                         if run.use_geom {
                             // ── Box drawing / block elements as filled quads ───
+                            let char_fgs = expand_span_fgs(&run.fg_spans, &span_colors);
                             let mut x_off = x;
-                            for (c, dw) in run.text.chars().zip(run.char_widths.iter().copied()) {
+                            for ((c, dw), cfg) in run
+                                .text
+                                .chars()
+                                .zip(run.char_widths.iter().copied())
+                                .zip(char_fgs)
+                            {
                                 let char_cw = cw * dw as f32;
-                                if !paint_box_char(c, x_off, oy, char_cw, ch, fg_rgba, window) {
+                                if !paint_box_char(c, x_off, oy, char_cw, ch, cfg, window) {
                                     // Geometry doesn't cover this code point (the
                                     // arcs ╭╮╯╰, diagonals ╱╲╳, and a few mixed
                                     // heavy/light junctions). `paint_box_char`'s
                                     // `false` is the "fall back to the font" signal
                                     // — honor it, cell-pinned, so the glyph shows
                                     // instead of leaving the cell blank.
-                                    let fg_hsla: gpui::Hsla = fg_rgba.into();
                                     let text_run = gpui::TextRun {
                                         len: c.len_utf8(),
                                         font: terminal_font(&font_name),
-                                        color: fg_hsla,
+                                        color: cfg.into(),
                                         background_color: None,
                                         underline: None,
                                         strikethrough: None,
@@ -1382,14 +1489,16 @@ pub fn render_grid(
                                 x_off += char_cw;
                             }
                             // Geometry runs carry SGR 4/9 too — same
-                            // decoration quads as the glyph path.
-                            paint_run_decorations(
+                            // decoration quads as the glyph path, per span
+                            // so an SGR 58-less underline tracks each fg.
+                            paint_span_decorations(
                                 &run.style,
                                 x,
-                                run.width as f32 * cw,
+                                cw,
                                 oy,
                                 ch,
-                                fg_rgba,
+                                &run.fg_spans,
+                                &span_colors,
                                 window,
                             );
                             continue;
@@ -1573,12 +1682,13 @@ pub fn render_grid(
                             // `ligatures_disabled`). Single-char lines hit
                             // the per-frame shape cache hard, so this stays
                             // cheap despite the extra calls.
+                            let char_fgs = expand_span_fgs(&run.fg_spans, &span_colors);
                             let mut x_off = x;
-                            for c in run.text.chars() {
+                            for (c, cfg) in run.text.chars().zip(char_fgs) {
                                 let text_run = gpui::TextRun {
                                     len: c.len_utf8(),
                                     font: run_font.clone(),
-                                    color: fg_hsla,
+                                    color: cfg.into(),
                                     background_color: None,
                                     underline: underline_style,
                                     strikethrough: strikethrough_style,
@@ -1594,18 +1704,27 @@ pub fn render_grid(
                                 x_off += cw;
                             }
                         } else if all_narrow {
-                            let text_run = gpui::TextRun {
-                                len: run.text.len(),
-                                font: run_font,
-                                color: fg_hsla,
-                                background_color: None,
-                                underline: underline_style,
-                                strikethrough: strikethrough_style,
-                            };
+                            // One shape_line for the whole run; colors ride
+                            // as one TextRun per span. The vendored gpui
+                            // merges FontRuns on font alone, so the layout
+                            // (and its cache key) is color-independent.
+                            let text_runs: Vec<gpui::TextRun> = run
+                                .fg_spans
+                                .iter()
+                                .zip(&span_colors)
+                                .map(|(sp, (sfg, _))| gpui::TextRun {
+                                    len: sp.bytes as usize,
+                                    font: run_font.clone(),
+                                    color: (*sfg).into(),
+                                    background_color: None,
+                                    underline: underline_style,
+                                    strikethrough: strikethrough_style,
+                                })
+                                .collect();
                             let line = window.text_system().shape_line(
                                 run.text.into(),
                                 font_size,
-                                &[text_run],
+                                &text_runs,
                                 Some(px(cw)),
                             );
                             let _ = line.paint(point(px(x), px(oy)), line_height, window, cx);
@@ -1613,10 +1732,13 @@ pub fn render_grid(
                             // Maximal segments of uniform display width, one
                             // shape_line each: glyph n of an all-wide segment
                             // belongs at n × 2cw, so force_width still applies.
+                            let char_fgs = expand_span_fgs(&run.fg_spans, &span_colors);
                             let mut x_off = x;
                             let mut seg = String::new();
+                            let mut seg_cols: Vec<(usize, Rgba)> = Vec::new();
                             let mut seg_w = 0u8;
                             let flush = |seg: &mut String,
+                                         seg_cols: &mut Vec<(usize, Rgba)>,
                                          seg_w: u8,
                                          x_off: &mut f32,
                                          window: &mut Window,
@@ -1625,42 +1747,57 @@ pub fn render_grid(
                                     return;
                                 }
                                 let cells = seg.chars().count() as f32 * seg_w as f32;
-                                let text_run = gpui::TextRun {
-                                    len: seg.len(),
-                                    font: run_font.clone(),
-                                    color: fg_hsla,
-                                    background_color: None,
-                                    underline: underline_style,
-                                    strikethrough: strikethrough_style,
-                                };
+                                let text_runs: Vec<gpui::TextRun> = seg_cols
+                                    .drain(..)
+                                    .map(|(len, c)| gpui::TextRun {
+                                        len,
+                                        font: run_font.clone(),
+                                        color: c.into(),
+                                        background_color: None,
+                                        underline: underline_style,
+                                        strikethrough: strikethrough_style,
+                                    })
+                                    .collect();
                                 let line = window.text_system().shape_line(
                                     std::mem::take(seg).into(),
                                     font_size,
-                                    &[text_run],
+                                    &text_runs,
                                     Some(px(cw * seg_w as f32)),
                                 );
                                 let _ =
                                     line.paint(point(px(*x_off), px(oy)), line_height, window, cx);
                                 *x_off += cw * cells;
                             };
-                            for (c, w) in run.text.chars().zip(run.char_widths.iter().copied()) {
+                            for ((c, w), cfg) in run
+                                .text
+                                .chars()
+                                .zip(run.char_widths.iter().copied())
+                                .zip(char_fgs)
+                            {
                                 if w != seg_w {
-                                    flush(&mut seg, seg_w, &mut x_off, window, cx);
+                                    flush(&mut seg, &mut seg_cols, seg_w, &mut x_off, window, cx);
                                     seg_w = w;
                                 }
                                 seg.push(c);
+                                match seg_cols.last_mut() {
+                                    Some((len, col)) if *col == cfg => *len += c.len_utf8(),
+                                    _ => seg_cols.push((c.len_utf8(), cfg)),
+                                }
                             }
-                            flush(&mut seg, seg_w, &mut x_off, window, cx);
+                            flush(&mut seg, &mut seg_cols, seg_w, &mut x_off, window, cx);
                         }
 
-                        // Underline/strikeout quads along the exact grid span.
-                        paint_run_decorations(
+                        // Underline/strikeout quads along the exact grid
+                        // span, per fg span (SGR 58-less underlines track
+                        // the ink).
+                        paint_span_decorations(
                             &run.style,
                             x,
-                            run.width as f32 * cw,
+                            cw,
                             oy,
                             ch,
-                            fg_rgba,
+                            &run.fg_spans,
+                            &span_colors,
                             window,
                         );
                     }
@@ -1908,22 +2045,44 @@ pub(crate) fn coalesce_runs(
             if !is_cursor
                 && !last.is_cursor
                 && !last.is_cluster()
-                && last.fg == cell.fg
                 && last.bg == cell.bg
                 && last.style == cell.style
                 && last.use_geom == use_geom
             {
+                // fg deliberately NOT compared: color does not affect
+                // shaping, so it lives in fg_spans instead of splitting the
+                // run (per-char color floods used to shape per char).
                 last.text.push(cell.c);
                 last.width += w;
                 last.char_widths.push(w as u8);
+                match last.fg_spans.last_mut() {
+                    Some(sp) if sp.fg == cell.fg => {
+                        sp.bytes += cell.c.len_utf8() as u32;
+                        sp.chars += 1;
+                        sp.cells += w as u32;
+                    }
+                    _ => last.fg_spans.push(FgSpan {
+                        bytes: cell.c.len_utf8() as u32,
+                        chars: 1,
+                        cells: w as u32,
+                        fg: cell.fg,
+                    }),
+                }
                 continue;
             }
         }
         let mut text = cell.c.to_string();
         text.extend(tail);
+        let span = FgSpan {
+            bytes: text.len() as u32,
+            chars: text.chars().count() as u32,
+            cells: w as u32,
+            fg: cell.fg,
+        };
         runs.push(Run {
             text,
             fg: cell.fg,
+            fg_spans: vec![span],
             bg: cell.bg,
             width: w,
             style: cell.style,
@@ -2090,10 +2249,31 @@ mod tests {
     }
 
     #[test]
-    fn different_fg_splits_run() {
-        let cells = [cell_rgb('a', 255, 0, 0), cell_rgb('b', 0, 255, 0)];
+    fn different_fg_merges_into_one_run_with_spans() {
+        // Color does not affect shaping: a rainbow row must stay ONE run
+        // (one shape) with per-span colors — the SGR-churn fix.
+        let cells = [
+            cell_rgb('a', 255, 0, 0),
+            cell_rgb('b', 0, 255, 0),
+            cell_rgb('c', 0, 255, 0),
+            cell_rgb('d', 0, 0, 255),
+        ];
         let runs: Vec<_> = coalesce_runs(&cells, None).collect();
-        assert_eq!(runs.len(), 2);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].text, "abcd");
+        let spans = &runs[0].fg_spans;
+        assert_eq!(spans.len(), 3);
+        assert_eq!(
+            spans
+                .iter()
+                .map(|s| (s.bytes, s.chars, s.cells))
+                .collect::<Vec<_>>(),
+            vec![(1, 1, 1), (2, 2, 2), (1, 1, 1)]
+        );
+        assert_eq!(
+            spans.iter().map(|s| s.bytes).sum::<u32>() as usize,
+            runs[0].text.len()
+        );
     }
 
     #[test]
@@ -2127,6 +2307,12 @@ mod tests {
         Run {
             text: "x".into(),
             fg,
+            fg_spans: vec![FgSpan {
+                bytes: 1,
+                chars: 1,
+                cells: 1,
+                fg,
+            }],
             bg,
             width: 1,
             style,

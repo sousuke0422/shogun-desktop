@@ -540,32 +540,28 @@ impl WindowTextSystem {
         force_width: Option<Pixels>,
     ) -> Arc<LineLayout> {
         let mut last_run = None::<&TextRun>;
-        let mut last_font: Option<FontId> = None;
         let mut font_runs = self.font_runs_pool.lock().pop().unwrap_or_default();
         font_runs.clear();
 
+        // FontRuns merge on FONT alone. Upstream also split them on any
+        // decoration change (color/underline/strikethrough), which made the
+        // layout-cache key depend on the color pattern and re-shaped a
+        // rainbow line per colored fragment — a terminal SGR-churn flood
+        // (lolcat, btop gradients) paid ~20ms/frame for it. Decorations do
+        // not affect glyphs; they live in `decoration_runs` (built by
+        // `shape_line`) and are applied per byte range at paint. Behavioural
+        // consequence, accepted deliberately: ligatures can now form across
+        // decoration boundaries within one font; such a ligature glyph is
+        // painted with the color of the range its first byte falls in.
         for run in runs.iter() {
-            let decoration_changed = if let Some(last_run) = last_run
-                && last_run.color == run.color
-                && last_run.underline == run.underline
-                && last_run.strikethrough == run.strikethrough
-            // we do not consider differing background color relevant, as it does not affect glyphs
-            // && last_run.background_color == run.background_color
-            {
-                false
-            } else {
-                last_run = Some(run);
-                true
-            };
-
-            if let Some(font_run) = font_runs.last_mut()
-                && Some(font_run.font_id) == last_font
-                && !decoration_changed
+            let font_changed = last_run.is_none_or(|lr: &TextRun| lr.font != run.font);
+            last_run = Some(run);
+            if !font_changed
+                && let Some(font_run) = font_runs.last_mut()
             {
                 font_run.len += run.len;
             } else {
                 let font_id = self.resolve_font(&run.font);
-                last_font = Some(font_id);
                 font_runs.push(FontRun {
                     len: run.len,
                     font_id,
