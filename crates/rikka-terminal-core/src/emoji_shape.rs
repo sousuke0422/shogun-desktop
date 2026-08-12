@@ -42,12 +42,21 @@ pub(crate) fn is_emoji_ligature_cluster(text: &str) -> bool {
 
 /// Shape `text` with rustybuzz against the bundled font. `Some(gids)` iff
 /// every glyph resolved (no .notdef anywhere).
+/// The parsed shaping face, built once — `FONT_BYTES` is `'static`, and a
+/// coverage sweep (or a busy grid) would otherwise re-parse the whole font
+/// per cluster.
+fn face() -> Option<&'static rustybuzz::Face<'static>> {
+    static FACE: OnceLock<Option<rustybuzz::Face<'static>>> = OnceLock::new();
+    FACE.get_or_init(|| rustybuzz::Face::from_slice(FONT_BYTES, 0))
+        .as_ref()
+}
+
 pub(crate) fn shape_cluster_gids(text: &str) -> Option<Vec<u32>> {
-    let face = rustybuzz::Face::from_slice(FONT_BYTES, 0)?;
+    let face = face()?;
     let shape = |t: &str| -> Option<Vec<u32>> {
         let mut buf = rustybuzz::UnicodeBuffer::new();
         buf.push_str(t);
-        let shaped = rustybuzz::shape(&face, &[], buf);
+        let shaped = rustybuzz::shape(face, &[], buf);
         let gids: Vec<u32> = shaped.glyph_infos().iter().map(|i| i.glyph_id).collect();
         (!gids.is_empty() && !gids.contains(&0)).then_some(gids)
     };
@@ -170,6 +179,51 @@ mod tests {
                 .unwrap();
         assert_eq!(gids.len(), 1, "tag flag should collapse: {gids:?}");
         assert_ne!(gids[0], 0);
+    }
+
+    /// Every fully-qualified RGI sequence from Unicode's emoji-test.txt
+    /// must resolve in the bundled font: no .notdef anywhere, and every
+    /// multi-codepoint sequence must collapse to a single glyph (via the
+    /// ligature tables or the VS16-strip retry). This is the net that
+    /// catches a font swap losing coverage — the keycap miss that needed
+    /// the VS16 retry would have been caught here on day one.
+    ///
+    /// The fixture is Emoji 16.0 (17.0's file was not yet published at the
+    /// pinned URL); the bundled font is an Emoji 17 build, so this asserts
+    /// a lower bound. Refresh testdata/emoji-test.txt when Unicode ships it.
+    #[test]
+    fn rgi_coverage_is_total() {
+        let data = include_str!("../testdata/emoji-test.txt");
+        let mut total = 0u32;
+        let mut failures: Vec<String> = Vec::new();
+        for line in data.lines() {
+            let Some((seq, rest)) = line.split_once(';') else {
+                continue;
+            };
+            if !rest.trim_start().starts_with("fully-qualified") {
+                continue;
+            }
+            let text: String = seq
+                .trim()
+                .split_whitespace()
+                .map(|h| char::from_u32(u32::from_str_radix(h, 16).unwrap()).unwrap())
+                .collect();
+            total += 1;
+            match shape_cluster_gids(&text) {
+                Some(gids) if gids.len() == 1 => {}
+                got => failures.push(format!("{text} {:X?} -> {got:?}", text.chars())),
+            }
+        }
+        assert!(
+            total > 3700,
+            "fixture parsed suspiciously few sequences: {total}"
+        );
+        assert!(
+            failures.is_empty(),
+            "{} of {total} RGI sequences unresolved:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 
     #[test]
