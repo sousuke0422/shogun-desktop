@@ -3222,7 +3222,10 @@ impl Render for TabsWindow {
                     .lock()
                     .clone()
                     .unwrap_or_else(|| format!("シェル {}", ix + 1));
+                // Keep the untruncated title for the hover tooltip below.
+                let full_title = title.clone();
                 let title: String = title.chars().take(20).collect();
+                let truncated = full_title.chars().count() > 20;
                 let drag_title = title.clone();
                 let active = ix == active_ix;
                 // Each tab always wears ITS profile's background color, so
@@ -3301,6 +3304,14 @@ impl Render for TabsWindow {
                     // The dragged tab's strip original fades — the ghost is
                     // what you're holding, this is where it came from.
                     .when(self.dragging_tab == Some(ix), |t| t.opacity(0.35))
+                    // Full title on hover — only when the strip actually cut
+                    // it (a tooltip repeating visible text is noise).
+                    .when(truncated, |t| {
+                        let full = gpui::SharedString::from(full_title.clone());
+                        t.tooltip(move |window, cx| {
+                            gpui_component::tooltip::Tooltip::new(full.clone()).build(window, cx)
+                        })
+                    })
                     .children(icon_el)
                     .children(rec_dot)
                     .children(bc_mark)
