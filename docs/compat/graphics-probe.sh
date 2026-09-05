@@ -7,8 +7,10 @@
 #
 # Kitty graphics is deliberately absent: behind ConPTY its detection loses
 # the DA1 race no matter what the terminal does (see "Graphics protocols
-# behind ConPTY" in README.md). Sixel is the one raster protocol a console
-# host lets through, so it is the one this probe measures.
+# behind ConPTY" in README.md). A v2 host passes kitty APC byte-exact, so
+# transport is not the divide — sixel is the one raster protocol an app
+# can DETECT behind a console host (the host's own DA1 reply advertises
+# ";4;" on the terminal's behalf), so it is the one this probe measures.
 set -u
 esc=$'\033'
 

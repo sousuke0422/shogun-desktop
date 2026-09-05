@@ -392,6 +392,23 @@ version of this table said "forwarded" for all of them — wezterm could not
 expose the difference, because its engine implements margins either way; a
 terminal that cannot is what makes the host's own hand visible.
 
+Upstream later gave this table an authoritative anchor (spotted via
+noctty's conformance notes,
+[windows-vt-conformance.md](https://github.com/amanthanvi/noctty/blob/main/docs/windows-vt-conformance.md)):
+the boundary is [microsoft/terminal#17510](https://github.com/microsoft/terminal/pull/17510),
+the Windows Terminal 1.22 ConPTY rewrite. Everything before it — every
+in-box conhost, and bundled pairs of wezterm-2024's vintage — parses child
+VT into the host's own buffer and re-renders a snapshot ("v1": our strip
+and interpret rows are two personalities of that model). From 1.22 the
+host parses for console state while separately copying the original bytes
+to the pipe ("v2": our forward row — the 1.24 pair we sideload). Two
+modifications survive even in v2's raw path, both confirmed against our
+own dumps: bare LF is expanded to CRLF unless the child sets
+`DISABLE_NEWLINE_AUTO_RETURN` — harmless for base64 kitty payloads, but a
+raw-binary DCS payload containing LF gets rewritten — and the host
+re-injects `CSI ?1004h` / `CSI ?9001h` on RIS, which is exactly the
+preamble every capture on this page shows ahead of the first payload.
+
 Two consequences worth spelling out. On a modern, forwarding host,
 engine-side DECSLRM is *mandatory* — which is exactly why the karo-pane wipe
 needed an engine fix and not a host swap. And an old interpreting host can

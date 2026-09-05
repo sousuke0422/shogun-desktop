@@ -445,6 +445,15 @@ keyboard protocol・Tera Term 風セッションログ・検索の regex/全マ�
         teardown burst 調査（ホストを握ればデバッグが楽になる）。
       - **代償の明記義務**: compat README の「WT 同梱物とバイト同一」という
         provenance の物語が変わる（既に CLSID パッチで配布物は非同一）。
+      - **upstream 追い風・注意（noctty の適合性文書経由で発見 2026-09-05）**:
+        画像シーケンス後のカーソル再同期修正
+        [#20009](https://github.com/microsoft/terminal/pull/20009) は
+        **1.25 系から**＝1.24 ピンには無い。「検出合格後の未検証リスク＝
+        ホスト再描画の画像塗り潰し」と直結するので、fork のベース選定時に
+        1.25 再評価とセットで判断。未解決の
+        [#19621](https://github.com/microsoft/terminal/issues/19621)
+        （リサイズ中の DCS/APC 転送へ CPR/DSR が割り込む）は fork でも残る
+        前提で、長い転送中のリサイズ抑止をアプリ側に持つ。
       - 検出合格後の未検証リスク: ホスト差分再描画が画像セルを塗り潰す
         可能性 — fork 後に実測。
       - upstream への issue 起票（gh RO のため殿の手）: 下書きと証跡は
