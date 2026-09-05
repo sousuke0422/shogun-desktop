@@ -983,6 +983,40 @@ impl SettingsWindow {
             .into_any_element()
     }
 
+    /// The ConPTY implementation this process ACTUALLY loaded — module
+    /// identity via `GetModuleHandle`, not file presence, so a PATH-walk
+    /// hijack (the WezTerm re-hosting incident in docs/compat) shows its
+    /// real path instead of a comforting lie. noctty surfaces the same fact
+    /// through `+version`; here it lives on the About page.
+    fn conpty_source() -> String {
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+            use windows::core::w;
+            if let Ok(h) = GetModuleHandleW(w!("conpty.dll")) {
+                let mut buf = [0u16; 1024];
+                let len = GetModuleFileNameW(Some(h.into()), &mut buf) as usize;
+                if len > 0 {
+                    let path = String::from_utf16_lossy(&buf[..len]);
+                    let beside_exe = std::env::current_exe()
+                        .ok()
+                        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+                        .is_some_and(|d| std::path::Path::new(&path).parent() == Some(d.as_path()));
+                    return if beside_exe {
+                        format!("同梱ペア — {path}")
+                    } else {
+                        format!("⚠ 同梱物ではない（PATH 経由の可能性）— {path}")
+                    };
+                }
+            }
+            "conpty.dll 未ロード — 内蔵 ConPTY (conhost) 相当".to_string()
+        }
+        #[cfg(not(windows))]
+        {
+            "非 Windows（ConPTY なし）".to_string()
+        }
+    }
+
     fn page_about(c: &SearchColors) -> AnyElement {
         let dim = |text: String| {
             div()
@@ -1012,6 +1046,7 @@ impl SettingsWindow {
                 Some(p) => format!("設定ファイル: {}", p.display()),
                 None => "設定ファイル: 場所を解決できません".to_string(),
             }))
+            .child(dim(format!("ConPTY: {}", Self::conpty_source())))
             .into_any_element()
     }
 }
@@ -1378,6 +1413,24 @@ mod tests {
         )
         .unwrap();
         assert!(out.contains("max_fps = 120"), "{out}");
+    }
+
+    /// The About page's ConPTY line must always resolve to one of the three
+    /// honest shapes. The test process spawns no PTY, so conpty.dll is not
+    /// loaded here and the in-box wording is the expected one — which also
+    /// pins that an unloaded module reads as in-box, never as bundled.
+    #[test]
+    fn conpty_source_reports_without_panicking() {
+        let s = super::SettingsWindow::conpty_source();
+        assert!(
+            s.contains("同梱ペア") || s.contains("内蔵 ConPTY") || s.contains("非 Windows"),
+            "{s}"
+        );
+        #[cfg(windows)]
+        assert!(
+            s.contains("内蔵 ConPTY"),
+            "test process should not have conpty.dll: {s}"
+        );
     }
 
     #[test]

@@ -411,6 +411,17 @@ keyboard protocol・Tera Term 風セッションログ・検索の regex/全マ�
 
 ## 将来構想
 
+- [ ] **専用 GPU グリッドレンダラを開封する場合は Vulkan か DirectX（殿方針
+      2026-09-05）** — OpenGL は不採用。noctty/ghostty の「WGL・GL 4.3 床・
+      フォールバック無し」は WSLg 等で起動不能を招いた実例（ghostty AppImage
+      が WSLg の GL 3.3 で起動拒否・docs/compat の実測）。現行 gpui は DX11
+      で床問題なし。なお開封条件自体は封印中（240Hz+ パネル導入 or frametime
+      の数字が動いた時）。
+- [ ] **Power-aware rendering（noctty 採用候補 2026-09-05）** — 電源状態
+      （バッテリー/AC）で描画ケイデンスを絞る。実装は既存の合流窓レバー
+      （frame_coalesce / max_fps 機構）1本で足りる見込み。auto 時のみ
+      「バッテリー→パネル Hz でなく 60 上限」等。
+
 - [ ] **スクロールバック永続化（VSCode 型の再起動復元）＋保存時暗号化** —
       需要が立ったら着手する条件付き ToDo（殿裁定 2026-08-12）。現状の
       スクロールバックは純粋に RAM のみでディスクに触れず、Ptyxis/VTE の
