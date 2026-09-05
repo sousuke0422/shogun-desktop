@@ -1416,20 +1416,19 @@ mod tests {
     }
 
     /// The About page's ConPTY line must always resolve to one of the three
-    /// honest shapes. The test process spawns no PTY, so conpty.dll is not
-    /// loaded here and the in-box wording is the expected one — which also
-    /// pins that an unloaded module reads as in-box, never as bundled.
+    /// honest shapes. Which shape is NOT asserted: the pty_local tests load
+    /// conpty.dll into this same test process, so the answer depends on test
+    /// scheduling — an environment-order-dependent assertion here failed CI
+    /// on its first run while passing locally, the textbook flake.
     #[test]
     fn conpty_source_reports_without_panicking() {
         let s = super::SettingsWindow::conpty_source();
         assert!(
-            s.contains("同梱ペア") || s.contains("内蔵 ConPTY") || s.contains("非 Windows"),
+            s.contains("同梱ペア")
+                || s.contains("内蔵 ConPTY")
+                || s.contains("同梱物ではない")
+                || s.contains("非 Windows"),
             "{s}"
-        );
-        #[cfg(windows)]
-        assert!(
-            s.contains("内蔵 ConPTY"),
-            "test process should not have conpty.dll: {s}"
         );
     }
 
