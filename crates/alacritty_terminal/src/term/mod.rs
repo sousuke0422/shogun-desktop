@@ -4,6 +4,12 @@ use std::ops::{Index, IndexMut, Range};
 use std::sync::Arc;
 use std::{cmp, mem, ptr, slice, str};
 
+/// Whether DA1 advertises sixel (`;4`). Process-wide because the host's
+/// graphics switch is process-wide; flipped by the embedder
+/// (`rikka_terminal_core::graphics::configure`), read on every DA1.
+pub static ADVERTISE_SIXEL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -1567,8 +1573,14 @@ impl<T: EventListener> Handler for Term<T> {
                 trace!("Reporting primary device attributes");
                 // shogun-desktop patch: advertise VT220-level with sixel
                 // graphics (4) and ANSI color (22) — lsix, img2sixel and
-                // friends probe DA1 for `;4` before emitting sixel.
-                let text = String::from("\x1b[?62;4;22c");
+                // friends probe DA1 for `;4` before emitting sixel. The `;4`
+                // follows the host's sixel switch: a terminal that will
+                // discard sixel must not invite it.
+                let text = if ADVERTISE_SIXEL.load(std::sync::atomic::Ordering::Relaxed) {
+                    String::from("\x1b[?62;4;22c")
+                } else {
+                    String::from("\x1b[?62;22c")
+                };
                 self.event_proxy.send_event(Event::PtyWrite(text));
             },
             Some('>') => {
@@ -3890,5 +3902,31 @@ mod tests {
         assert_eq!(version_number("0.1.2-dev"), 1_02);
         assert_eq!(version_number("1.2.3-dev"), 1_02_03);
         assert_eq!(version_number("999.99.99"), 9_99_99_99);
+    }
+
+    /// DA1's `;4` (sixel) follows the process-wide switch: a host that will
+    /// drop sixel must not advertise it, or apps send images into the void.
+    #[test]
+    fn da1_drops_sixel_when_not_advertised() {
+        use std::sync::atomic::Ordering;
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone)]
+        struct Collect(Arc<Mutex<Vec<String>>>);
+        impl EventListener for Collect {
+            fn send_event(&self, event: Event) {
+                if let Event::PtyWrite(text) = event {
+                    self.0.lock().unwrap().push(text);
+                }
+            }
+        }
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 24), Collect(out.clone()));
+        let mut parser = crate::vte::ansi::Processor::<crate::vte::ansi::StdSyncHandler>::new();
+        ADVERTISE_SIXEL.store(false, Ordering::Relaxed);
+        for &b in b"\x1b[c".iter() {
+            parser.advance(&mut term, b);
+        }
+        ADVERTISE_SIXEL.store(true, Ordering::Relaxed);
+        assert_eq!(out.lock().unwrap().as_slice(), ["\x1b[?62;22c".to_string()]);
     }
 }

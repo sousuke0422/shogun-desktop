@@ -555,7 +555,12 @@ pub fn build_terminal_session_with_preface(
                                     Some(OscEvent::Cwd(path)) => *cwd2.lock() = Some(path),
                                     None => {}
                                 }
+                                // The APC scanner always consumes; with kitty
+                                // graphics switched off the payload is dropped
+                                // unanswered, so `a=q` detection reads as
+                                // unsupported (see `graphics`).
                                 if let Some(payload) = apc.advance(byte)
+                                    && crate::graphics::kitty_enabled()
                                     && let Some(resp) = kitty.apply(&payload)
                                 {
                                     responses.push(resp);
@@ -577,6 +582,7 @@ pub fn build_terminal_session_with_preface(
                                 // as unhandled), store the image and lay down
                                 // placeholder cells at the cursor.
                                 if let Some(seq) = sixel_scanner.advance(byte)
+                                    && crate::graphics::sixel_enabled()
                                     && let Some(img) = crate::sixel::decode(&seq.data)
                                 {
                                     // A ?2026 synchronized update buffers bytes

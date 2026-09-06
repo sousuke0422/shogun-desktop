@@ -1,5 +1,6 @@
 pub mod emoji_shape;
 pub mod frametime;
+pub mod graphics;
 pub mod ime;
 pub mod keys;
 pub mod kitty_graphics;

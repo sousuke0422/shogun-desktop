@@ -207,6 +207,12 @@ fn apply_appearance(cfg: &config::Config) {
     }
     let _ = ACRYLIC_CFG.set(cfg.appearance.acrylic.unwrap_or(false));
     let _ = SCROLLBACK_CFG.set(cfg.terminal.scrollback.map(|n| n as usize));
+    // Graphics switches are atomics, so this line is what makes them
+    // hot-reload (apply_appearance runs again on every config reload).
+    rikka_terminal_core::graphics::configure(
+        cfg.terminal.sixel.unwrap_or(true),
+        cfg.terminal.kitty_graphics.unwrap_or(true),
+    );
 }
 
 /// The environment/identity a spawned shell is launched with. Resolved once

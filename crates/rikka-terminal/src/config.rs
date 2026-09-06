@@ -114,6 +114,13 @@ pub fn parse_font_features(list: &[String]) -> Vec<(String, u32)> {
 ///                          # or "ghostty" (masquerade so emulator-sniffing apps
 ///                          # enable kitty features). Default honest — a spoof
 ///                          # over ConPTY invites conhost-stripped features.
+/// sixel = true             # decode sixel AND advertise it in DA1 (default on).
+///                          # false: DA1 loses its ";4", DCS payloads are dropped.
+/// kitty_graphics = true    # kitty graphics protocol (default on). false: the
+///                          # a=q query goes unanswered, so protocol-following
+///                          # clients detect "unsupported" and send nothing.
+///                          # Both hot-reload; apps that already probed keep
+///                          # their earlier verdict until they re-probe.
 /// ```
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TerminalSection {
@@ -123,6 +130,10 @@ pub struct TerminalSection {
     pub term: Option<String>,
     #[serde(default)]
     pub identity: Option<String>,
+    #[serde(default)]
+    pub sixel: Option<bool>,
+    #[serde(default)]
+    pub kitty_graphics: Option<bool>,
 }
 
 /// Tera Term-style session logging (Ctrl+Shift+L per tab; see session_log).
@@ -557,5 +568,19 @@ mod tests {
         let cfg: Config = toml::from_str(raw).unwrap();
         assert_eq!(cfg.profiles.hidden, ["Azure Cloud Shell"]);
         assert_eq!(cfg.profiles.default.as_deref(), Some("PowerShell"));
+    }
+
+    #[test]
+    fn graphics_switches_parse_and_default_to_unset() {
+        let cfg: Config =
+            toml::from_str("[terminal]\nsixel = false\nkitty_graphics = false\n").expect("parse");
+        assert_eq!(cfg.terminal.sixel, Some(false));
+        assert_eq!(cfg.terminal.kitty_graphics, Some(false));
+        let cfg: Config = toml::from_str("[terminal]\nscrollback = 1\n").expect("parse");
+        assert_eq!(
+            cfg.terminal.sixel, None,
+            "unset means on (apply uses unwrap_or(true))"
+        );
+        assert_eq!(cfg.terminal.kitty_graphics, None);
     }
 }
