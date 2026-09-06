@@ -190,6 +190,9 @@ pub fn build_terminal_session_with_preface(
     // Channel capacity of 16 is enough to absorb bursts without blocking the
     // PTY reader thread. Events are silently dropped when the buffer is full.
     let (cb_tx, cb_rx) = std::sync::mpsc::sync_channel::<ClipboardEvent>(16);
+    // Engine replies park here and leave through the parse loop's ordered
+    // response queue — see `PendingReplies` for the DA1/kitty race this closes.
+    let replies: Arc<crate::PendingReplies> = Arc::default();
     let writer_for_cb = Arc::clone(&writer);
     let term_for_cb = Arc::clone(&term_slot);
     let cell_px_for_cb = Arc::clone(&cell_size_px);
@@ -260,6 +263,7 @@ pub fn build_terminal_session_with_preface(
     let title: Arc<FairMutex<Option<String>>> = Arc::default();
     let listener = ClipboardListener {
         tx: cb_tx,
+        replies: Arc::clone(&replies),
         title: Arc::clone(&title),
     };
     // OSC 52: alacritty's default is OnlyCopy — store works but load (the
@@ -325,6 +329,7 @@ pub fn build_terminal_session_with_preface(
         let prompt_marks2 = Arc::clone(&prompt_marks);
         let cwd2 = Arc::clone(&cwd);
         let cell_px2 = Arc::clone(&cell_size_px);
+        let replies2 = Arc::clone(&replies);
         let writer2 = Arc::clone(&writer);
         let preface_done2 = Arc::clone(&preface_done);
         let output_log2 = Arc::clone(&output_log);
@@ -564,6 +569,9 @@ pub fn build_terminal_session_with_preface(
                                     responses.push(crate::winops::cell_size_reply(cw, chp));
                                 }
                                 parser.advance(&mut *t, byte);
+                                // Engine replies for the query this byte may
+                                // have completed go out in stream order.
+                                replies2.drain_into(&mut responses);
                                 // Sixel: on a completed DCS (the parser has just
                                 // consumed the terminator and discarded the DCS
                                 // as unhandled), store the image and lay down

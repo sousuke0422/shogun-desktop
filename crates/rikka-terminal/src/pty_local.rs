@@ -448,9 +448,16 @@ mod tests {
             .filter(|e| e.to_uppercase().starts_with("TERM_PROGRAM="))
             .collect();
         assert_eq!(terms, ["TERM_PROGRAM=x"], "override must not duplicate");
+        // A name is everything before the first '=' that is not the
+        // leading one: cmd's hidden per-drive entries (`=C:=C:\dir`) start
+        // WITH '=' and sort by "=C:", not by an empty name — this test
+        // failed on exactly such an entry once the environment carried one.
         let names: Vec<String> = entries
             .iter()
-            .map(|e| e.split('=').next().unwrap().to_uppercase())
+            .map(|e| {
+                let split = e[1..].find('=').map_or(e.len(), |i| i + 1);
+                e[..split].to_uppercase()
+            })
             .collect();
         let mut sorted = names.clone();
         sorted.sort();

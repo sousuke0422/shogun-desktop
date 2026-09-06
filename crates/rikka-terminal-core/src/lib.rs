@@ -60,6 +60,10 @@ pub enum ClipboardEvent {
 /// clipboard operation — events are silently dropped if the buffer is full.
 pub struct ClipboardListener {
     pub tx: std::sync::mpsc::SyncSender<ClipboardEvent>,
+    /// Engine-generated protocol replies (DA1/DA2, DSR, DECRQM, …), handed
+    /// to the parse loop so they leave in STREAM ORDER with the replies the
+    /// loop produces itself (XTVERSION, kitty graphics, XTWINOPS).
+    pub replies: Arc<PendingReplies>,
     /// OSC 0/2 window title set by the application (`None` = no title /
     /// reset). Shared with [`TerminalSession::title`]; the UI mirrors it
     /// into the OS window title.
@@ -76,9 +80,7 @@ impl EventListener for ClipboardListener {
             Event::ClipboardLoad(_ty, callback) => {
                 let _ = self.tx.try_send(ClipboardEvent::Load(callback));
             }
-            Event::PtyWrite(text) => {
-                let _ = self.tx.try_send(ClipboardEvent::PtyWrite(text));
-            }
+            Event::PtyWrite(text) => self.replies.push(text),
             // OSC 10/11 etc. — vim queries the background to pick its theme.
             Event::ColorRequest(idx, formatter) => {
                 let _ = self.tx.try_send(ClipboardEvent::ColorQuery(idx, formatter));
@@ -91,6 +93,46 @@ impl EventListener for ClipboardListener {
             Event::ResetTitle => *self.title.lock() = None,
             _ => {}
         }
+    }
+}
+
+/// Protocol replies the engine emits while a chunk is being parsed, parked
+/// until the parse loop reaches the same point in the byte stream.
+///
+/// Why this exists (measured 2026-09-07, `docs/compat/README.md`, graphics
+/// section addendum): the engine's DA1 reply used to go out through the
+/// clipboard thread — an immediate write — while XTVERSION, kitty `a=q`
+/// and XTWINOPS replies were batched in the parse loop and written after
+/// the chunk. A client sending `XTVERSION, a=q, DA1` in one write therefore
+/// received `DA1, XTVERSION, OK`: the DA1 fence that kitty-style detection
+/// waits on arrived BEFORE the answer it was fencing, and every such
+/// client concluded "no kitty graphics". That reordering was misread for a
+/// month as the ConPTY host answering DA1 locally; the host relays the
+/// terminal's own reply, and the inversion was ours. The parse loop drains
+/// this buffer after every byte it feeds the engine, so a reply lands in
+/// the response queue exactly where its query sat in the input.
+#[derive(Default)]
+pub struct PendingReplies {
+    pending: AtomicBool,
+    buf: parking_lot::Mutex<Vec<String>>,
+}
+
+impl PendingReplies {
+    pub fn push(&self, text: String) {
+        self.buf.lock().push(text);
+        self.pending.store(true, Ordering::Release);
+    }
+
+    /// Move parked replies onto `out` in emission order. The atomic check
+    /// keeps the per-byte cost to one relaxed load while nothing is parked.
+    #[inline]
+    pub fn drain_into(&self, out: &mut Vec<Vec<u8>>) {
+        if !self.pending.load(Ordering::Acquire) {
+            return;
+        }
+        let mut buf = self.buf.lock();
+        self.pending.store(false, Ordering::Release);
+        out.extend(buf.drain(..).map(String::into_bytes));
     }
 }
 
@@ -3154,6 +3196,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
         let listener = ClipboardListener {
             tx,
+            replies: Arc::default(),
             title: Arc::default(),
         };
         let mut term = Term::new(Config::default(), &TermSize::new(80, 24), listener);
@@ -3604,5 +3647,54 @@ mod tests {
         assert!(!is_benign_log_noise("gpui", "window not found: extra"));
         assert!(!is_benign_log_noise("gpui", "root view not found"));
         assert!(!is_benign_log_noise("rikka_terminal", "window not found"));
+    }
+
+    /// DA1 must park in the ordered reply buffer, never on the clipboard
+    /// channel — the channel is an immediate write and would put the fence
+    /// ahead of the answers it fences (the kitty-detection inversion).
+    #[test]
+    fn da1_reply_parks_in_pending_replies_not_on_the_channel() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let replies: Arc<PendingReplies> = Arc::default();
+        let listener = ClipboardListener {
+            tx,
+            replies: Arc::clone(&replies),
+            title: Arc::default(),
+        };
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 24), listener);
+        let mut parser = Processor::<StdSyncHandler>::new();
+        for &b in b"\x1b[c".iter() {
+            parser.advance(&mut term, b);
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "DA1 must not take the immediate path"
+        );
+        let mut out = Vec::new();
+        replies.drain_into(&mut out);
+        assert_eq!(out, vec![b"\x1b[?62;4;22c".to_vec()]);
+    }
+
+    /// The engine's parked replies leave in emission order and the flag
+    /// resets, so a second drain with nothing parked is a no-op.
+    #[test]
+    fn pending_replies_drain_in_order_and_reset() {
+        let r = PendingReplies::default();
+        let mut out: Vec<Vec<u8>> = vec![b"before".to_vec()];
+        r.drain_into(&mut out);
+        assert_eq!(out.len(), 1, "nothing parked, nothing appended");
+        r.push("\x1b[?62;4;22c".into());
+        r.push("\x1b[>0;1;1c".into());
+        r.drain_into(&mut out);
+        assert_eq!(
+            out,
+            vec![
+                b"before".to_vec(),
+                b"\x1b[?62;4;22c".to_vec(),
+                b"\x1b[>0;1;1c".to_vec()
+            ]
+        );
+        r.drain_into(&mut out);
+        assert_eq!(out.len(), 3, "drained buffer stays empty");
     }
 }
