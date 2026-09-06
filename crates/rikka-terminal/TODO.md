@@ -437,14 +437,19 @@ keyboard protocol・Tera Term 風セッションログ・検索の regex/全マ�
 > 前提事実も 2026-08-10〜12 の実測で更新済み — 旧記述の「conhost が APC を
 > 落とす」は**再現せず**（1MB のチャンク APC が byte-perfect で往復・
 > docs/compat 参照）。kitty graphics を殺しているのは輸送でなく
-> **ホストの DA1 ローカル即答が検出フェンスに必ず先着する**レース。
+> **ホストの DA1 ローカル即答が検出フェンスに必ず先着する**レース——
+> **と 2026-08-10 に診断したが、2026-09-07 に誤りと判明**。ホストは DA1 を
+> 端末へ転送し実応答を中継していた（noctty＝同一 sha256 の conpty.dll で
+> 到着順が逆・受信した DA1 文字列は各端末自身のもの）。先着させていたのは
+> **rikka 自身の返答経路**（エンジン返答が即書き・他は parse 後一括）。
+> `PendingReplies`（rikka-terminal-core）で同日修正済・到着順 OK→DA1 を
+> 実測で確認。**fork の建前動機は消えた**。残る動機は下の果実欄のみで、
+> fork するか否かは殿の再裁可待ち。
 
-- [ ] **OpenConsole fork（本命・殿決定 2026-08-10）** — 修正の芯は
-      `AdaptDispatch::DeviceAttributes` の DA1 ローカル応答を「端末へ転送→
-      実応答を中継→timeout でローカルへフォールバック」に組み替えること。
-      **部品は upstream に既存**（`VtIo::StartIfNeeded` が起動時に端末へ
-      DA1 を打ち `WaitUntilDA1(3000)` で待つ・入力側は端末の DA1 応答を
-      保存して握り潰している→条件付き転送に変える）。
+- [ ] **OpenConsole fork（殿決定 2026-08-10・前提崩れにより再裁可待ち
+      2026-09-07）** — 当初の芯「DA1 ローカル応答を転送に組み替える」は
+      **不要と判明**（ホストは既に転送・中継している。上記）。fork を
+      続ける場合の動機は次の果実欄に限られる。
       - **運用形態は「patchdev を git で」**（殿相談 2026-08-10）: GitHub に
         microsoft/terminal の fork・`rikka/1.24.x` ブランチ＝upstream tag の
         真上に少数の直列コミット（1コミット=1目的）・更新は次 tag へ

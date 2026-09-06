@@ -290,7 +290,8 @@ runs inside `$(…)`, so its stdout is captured — the query must go to
 and every terminal looks mute while its answers echo as stray text over
 the rows. Second, a host observation worth keeping: the three answers
 differ between terminals behind the SAME ConPTY build, so DECRQM
-round-trips to the terminal — unlike DA1, which the host answers locally.
+round-trips to the terminal — and so, it turned out a month later, does
+DA1 (see the correction at the end of the graphics section).
 The probe's first run showed RikkaTerminal answering `2027=0` while
 Windows Terminal answered `3`: the engine had grapheme clustering
 unconditionally on but never told anyone. Fixed the same day — mode 2027
@@ -708,28 +709,54 @@ suspects, which took three measurements (2026-08-10, sideloaded 1.24 pair,
 - **The detection race is the killer.** Watching yazi under the dump (with
   the default `TERM=xterm-256color`, see the addendum): it sends one `a=q`
   probe and then never transmits a single byte of image data. The kitty
-  protocol's canonical detection sends the query followed
-  by DA1 and uses the DA1 reply as the fence. Behind ConPTY the fence
-  always wins: the host answers DA1 **locally and instantly**
-  (`CSI ?62;4;22c`, without consulting the terminal), while the APC reply
-  has to round-trip through the host to the terminal and back. Measured
-  arrival order at the application: DA1 reply at byte 0, our `OK` at
-  byte 11 — reliably too late. The app concludes "no kitty graphics" and
-  sends nothing.
+  protocol's canonical detection sends the query followed by DA1 and uses
+  the DA1 reply as the fence. Measured arrival order at the application:
+  DA1 reply at byte 0, our `OK` at byte 11 — reliably too late. The app
+  concludes "no kitty graphics" and sends nothing.
 
-The symmetry is worth savouring: the same locally-answered DA1 that kills
-kitty detection is what **enables** sixel — its `;4;` is the host
-advertising sixel on the terminal's behalf. One host behaviour, one
-protocol saved, one protocol unreachable — and nothing at the terminal's
-layer can fix it, because the losing reply is already as fast as it can
-be. The fix has to happen in the host itself, and the host is MIT-licensed
-code we already ship and binary-patch: the planned direction is a fork of
-OpenConsole that forwards DA1 to the attached terminal and relays the real
-answer, falling back to the local reply on timeout. Upstream already
-contains every part of that machinery — at startup the host sends the
-terminal a DA1 of its own and waits on the answer (`WaitUntilDA1`); the
-fork inverts that plumbing so the client's fence round-trips too, and
-ordering fixes itself.
+For a month this page blamed the host for that order — "ConPTY answers
+DA1 locally and instantly, without consulting the terminal, and nothing
+at the terminal's layer can fix it" — and planned an OpenConsole fork to
+forward DA1. **That diagnosis was wrong**, and the correction below is
+kept next to it because the wrong reading was so plausible: the DA1 the
+client received, `CSI ?62;4;22c`, carries a `;4;` for sixel, which looked
+like a host advertising sixel on the terminal's behalf. It is
+RikkaTerminal's *own* DA1 string (the engine advertises sixel itself);
+conhost's own reply reads `?61;4;6;7;…c` and never appeared. The host
+forwards DA1 and relays the terminal's answer. The inversion was ours.
+
+### Correction (2026-09-07): the race was inside RikkaTerminal
+
+The trigger was a competitor's claim. noctty (a ghostty core on Windows,
+shipping the **byte-identical** `conpty.dll` — sha256 matches ours) says
+kitty graphics work, so a small client that writes `XTVERSION`, `a=q`,
+`DA1` in one `write()` and records what comes back, in order, was run
+under both terminals from WSL (`TERM=xterm-256color`, no brand hints):
+
+| Terminal | Arrival order | DA1 payload |
+|---|---|---|
+| noctty | XTVERSION → OK → **DA1** | `?62;22;52c` — ghostty's own |
+| RikkaTerminal (before) | **DA1** → XTVERSION → OK | `?62;4;22c` — our own |
+| RikkaTerminal (after the fix) | XTVERSION → OK → **DA1** | `?62;4;22c` |
+
+Same host bytes, opposite order, each terminal's own DA1 string: the host
+relays, and the order is the terminal's. In RikkaTerminal the engine's DA1
+reply left through the clipboard thread — an immediate write — while the
+XTVERSION, kitty and XTWINOPS replies were batched by the parse loop and
+written after the chunk. Any query bundle that ended in DA1 got its fence
+first. The fix parks engine replies in a buffer the parse loop drains
+after every byte it feeds the engine, so every reply leaves at the point
+in the stream where its query sat (`PendingReplies` in
+`rikka-terminal-core`, with the arrival table above as its positive
+control). yazi under the unknown-brand path now sees `OK` before the
+fence and marks kitty graphics available; it still prefers sixel when
+both are advertised, which is its choice to make.
+
+What this removes: the OpenConsole fork's founding reason. Forwarding DA1
+was never needed because the host already does it. The fork's other
+motives (a source constant for the CLSID rebrand, the ambiguous-width
+flag, the kitty-keyboard teardown burst, the 1.25 cursor-resync fix) are
+listed in TODO.md for a separate decision.
 
 ### Addendum (2026-09-07): the race only kills *query-based* detection
 
@@ -741,7 +768,7 @@ from the **environment** never enter it. yazi is the worked example
 Ghostty, whose driver list is `[Kgp]` **regardless of the `a=q` result**;
 the probe still goes out, but nothing waits on it. Only an unknown brand
 falls back to the `a=q` + DA1 fence — and, losing it, to sixel via the
-host's `;4;`.
+`;4;` in the DA1 reply.
 
 Measured in an isolated RikkaTerminal (same 1.24 pair, `RIKKA_PTY_DUMP`,
 one PNG in the browsed directory, screenshots of the preview pane):
@@ -757,14 +784,11 @@ default identity is the honest one, which sends yazi down the unknown
 path, and the unknown path is the one the race kills. The
 `[terminal] term = "xterm-ghostty"` masquerade puts yazi on the kitty
 path, and the engine's Unicode-placeholder (`U=1`) renderer draws the
-result through ConPTY unchanged. What stays true: any application whose
-only detection is `a=q` + DA1 (kitty's own `icat` by default, generic
-auto-detectors) cannot reach kitty graphics behind a console host, and no
-terminal-side change fixes that — the OpenConsole fork above remains the
-answer for *those*. The same reasoning applies to any other terminal
-sitting behind the v2 host, so a competitor's "kitty graphics works"
-claim should be read with this split in mind: true for brand-detected
-clients, unproven for query-detected ones.
+result through ConPTY unchanged. (An earlier version of this paragraph
+went on to say that query-only clients could never reach kitty graphics
+behind a console host and that only the OpenConsole fork could help
+them. The correction above supersedes it: the order was ours to fix, and
+it is fixed.)
 
 ## Notes
 
