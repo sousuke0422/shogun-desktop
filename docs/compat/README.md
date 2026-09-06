@@ -689,10 +689,13 @@ image data arriving intact is the practical counterpart to the probe's
 synthetic bars. Kitty graphics is deliberately absent from this probe — the next
 section is the reason.
 
-## Graphics protocols behind ConPTY: why sixel lives and kitty graphics cannot
+## Graphics protocols behind ConPTY: why sixel lives and kitty detection dies
 
-RikkaTerminal implements both sixel and the kitty graphics protocol, and
-behind ConPTY only sixel is reachable. The reason is none of the usual
+RikkaTerminal implements both sixel and the kitty graphics protocol. Behind
+ConPTY, sixel is always reachable and kitty graphics is reachable only
+when the application decides to use it **without asking** — the section
+below explains why, and the 2026-09-07 addendum at its end narrows an
+earlier, too-strong version of the claim. The reason is none of the usual
 suspects, which took three measurements (2026-08-10, sideloaded 1.24 pair,
 `RIKKA_PTY_DUMP`) to establish:
 
@@ -702,9 +705,10 @@ suspects, which took three measurements (2026-08-10, sideloaded 1.24 pair,
   (256 × 4096 B) arrives byte-perfect, every chunk intact.
 - **The terminal is innocent.** `a=q,t=d,f=24` — yazi's exact probe — is
   answered `OK`.
-- **The detection race is the killer.** Watching yazi under the dump: it
-  sends one `a=q` probe and then never transmits a single byte of image
-  data. The kitty protocol's canonical detection sends the query followed
+- **The detection race is the killer.** Watching yazi under the dump (with
+  the default `TERM=xterm-256color`, see the addendum): it sends one `a=q`
+  probe and then never transmits a single byte of image data. The kitty
+  protocol's canonical detection sends the query followed
   by DA1 and uses the DA1 reply as the fence. Behind ConPTY the fence
   always wins: the host answers DA1 **locally and instantly**
   (`CSI ?62;4;22c`, without consulting the terminal), while the APC reply
@@ -726,6 +730,41 @@ contains every part of that machinery — at startup the host sends the
 terminal a DA1 of its own and waits on the answer (`WaitUntilDA1`); the
 fork inverts that plumbing so the client's fence round-trips too, and
 ordering fixes itself.
+
+### Addendum (2026-09-07): the race only kills *query-based* detection
+
+The paragraph above generalised too far. The race decides the outcome
+only for applications that ask the terminal; applications that decide
+from the **environment** never enter it. yazi is the worked example
+(`yazi-emulator/src/brand.rs`, `drivers.rs`): `TERM=xterm-ghostty`,
+`TERM_PROGRAM=ghostty` or `GHOSTTY_RESOURCES_DIR` resolves the brand to
+Ghostty, whose driver list is `[Kgp]` **regardless of the `a=q` result**;
+the probe still goes out, but nothing waits on it. Only an unknown brand
+falls back to the `a=q` + DA1 fence — and, losing it, to sixel via the
+host's `;4;`.
+
+Measured in an isolated RikkaTerminal (same 1.24 pair, `RIKKA_PTY_DUMP`,
+one PNG in the browsed directory, screenshots of the preview pane):
+
+| Child environment | What yazi transmitted | Preview |
+|---|---|---|
+| default identity (`TERM=xterm-256color`) | one `a=q`, then sixel DCS, 93 KB, 350×284 | drawn |
+| `TERM=xterm-ghostty`, Windows-native yazi | `a=T,U=1,f=32,s=350,v=284` + 129 chunks (530 KB) + 900 placeholder cells | **drawn** |
+| `TERM=xterm-ghostty`, WSL yazi | same | **drawn** |
+
+So the August observation was correct and its scope was wrong: rikka's
+default identity is the honest one, which sends yazi down the unknown
+path, and the unknown path is the one the race kills. The
+`[terminal] term = "xterm-ghostty"` masquerade puts yazi on the kitty
+path, and the engine's Unicode-placeholder (`U=1`) renderer draws the
+result through ConPTY unchanged. What stays true: any application whose
+only detection is `a=q` + DA1 (kitty's own `icat` by default, generic
+auto-detectors) cannot reach kitty graphics behind a console host, and no
+terminal-side change fixes that — the OpenConsole fork above remains the
+answer for *those*. The same reasoning applies to any other terminal
+sitting behind the v2 host, so a competitor's "kitty graphics works"
+claim should be read with this split in mind: true for brand-detected
+clients, unproven for query-detected ones.
 
 ## Notes
 

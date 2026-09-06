@@ -5,12 +5,15 @@
 #
 #   bash graphics-probe.sh
 #
-# Kitty graphics is deliberately absent: behind ConPTY its detection loses
-# the DA1 race no matter what the terminal does (see "Graphics protocols
-# behind ConPTY" in README.md). A v2 host passes kitty APC byte-exact, so
-# transport is not the divide — sixel is the one raster protocol an app
-# can DETECT behind a console host (the host's own DA1 reply advertises
-# ";4;" on the terminal's behalf), so it is the one this probe measures.
+# Kitty graphics is deliberately absent: behind ConPTY its QUERY-based
+# detection (a=q + DA1 fence) loses the DA1 race no matter what the
+# terminal does (see "Graphics protocols behind ConPTY" in README.md). A
+# v2 host passes kitty APC byte-exact, and clients that pick kitty from the
+# environment (yazi under TERM=xterm-ghostty, measured 2026-09-07) do get
+# images through — but that depends on the client's identity rules, not
+# on the terminal. Sixel is the one raster protocol that works by ASKING
+# behind a console host (the host's own DA1 reply advertises ";4;" on the
+# terminal's behalf), so it is the one this probe measures.
 set -u
 esc=$'\033'
 
