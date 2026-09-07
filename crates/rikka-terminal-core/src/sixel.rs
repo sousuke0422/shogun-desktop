@@ -564,6 +564,21 @@ pub fn placeholder_bytes(id: u32, cols: u16, rows: u16, start_col: u16) -> Vec<u
     out
 }
 
+/// Cursor correction appended after [`placeholder_bytes`] for a kitty CLASSIC
+/// placement, whose cursor rules differ from sixel's "line below the image":
+/// by default the cursor ends just right of the image on its last row; with
+/// `C=1` it goes back to where it was. Both are expressed relative to where
+/// `placeholder_bytes` leaves it (one row below, at `start_col`), so a
+/// placement that scrolled the screen at the bottom margin still lands on
+/// the right row.
+pub fn placement_cursor_bytes(cols: u16, rows: u16, start_col: u16, cursor_stays: bool) -> Vec<u8> {
+    if cursor_stays {
+        format!("\x1b[{}A\x1b[{}G", rows.max(1), start_col as usize + 1).into_bytes()
+    } else {
+        format!("\x1b[1A\x1b[{}G", start_col as usize + cols as usize + 1).into_bytes()
+    }
+}
+
 /// SGR bytes that restore a foreground color captured before placeholder
 /// injection. `placeholder_bytes` already ends with `CSI 39 m` (default fg),
 /// so only non-default foregrounds need extra bytes.
@@ -720,5 +735,14 @@ mod tests {
         let b = alloc.next_id();
         assert_ne!(a, b);
         assert!((SIXEL_ID_BASE..SIXEL_ID_BASE + SIXEL_ID_SPAN).contains(&a));
+    }
+
+    #[test]
+    fn classic_cursor_tail_moves_right_of_image_or_back_up() {
+        // Default: up one row (placeholder_bytes left us one below), then
+        // to the column after the image.
+        assert_eq!(placement_cursor_bytes(4, 2, 10, false), b"\x1b[1A\x1b[15G");
+        // C=1: back up over every image row, to the starting column.
+        assert_eq!(placement_cursor_bytes(4, 2, 10, true), b"\x1b[2A\x1b[11G");
     }
 }

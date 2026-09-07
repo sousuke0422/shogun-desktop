@@ -1,12 +1,18 @@
 //! Kitty graphics protocol (subset) — inline images for yazi and friends.
 //!
-//! Scope (2026-07-06): Unicode-placeholder virtual placements only (`U=1`),
-//! direct base64 transmission (`t=d`), formats `f=24/32/100` (+`o=z` zlib),
-//! queries (`a=q`) and deletes (`a=d`). Classic cursor-anchored placements
-//! are NOT implemented: placeholder cells (U+10EEEE + row/column combining
-//! diacritics, image id in the fg color) travel through alacritty's grid
-//! like ordinary text, so scrollback / alt-screen / resize behave for free —
-//! the same trick as OSC 8: keep state in cells, not in a side table.
+//! Scope: Unicode-placeholder virtual placements (`U=1`), classic
+//! cursor-anchored placements (`a=T` / `a=p` without `U=1`, since
+//! 2026-09-07), direct base64 transmission (`t=d`), formats `f=24/32/100`
+//! (+`o=z` zlib), queries (`a=q`) and deletes (`a=d`). Both placement kinds
+//! end up as placeholder cells (U+10EEEE + row/column combining diacritics,
+//! image id in the fg color) travelling through alacritty's grid like
+//! ordinary text, so scrollback / alt-screen / resize behave for free — the
+//! same trick as OSC 8: keep state in cells, not in a side table. A classic
+//! placement is a [`ClassicPlacement`] request the PTY reader turns into the
+//! same injection sixel uses; without `c=`/`r=` the stored image keeps
+//! `cols = rows = 0`, which the renderer paints at its natural pixel size —
+//! the protocol's default, and the reason a client's pre-scaled image is
+//! never stretched to a cell box.
 //!
 //! Like OSC 9;4 (see `progress.rs`), the vte stack swallows APC without
 //! exposing it, so a passive [`ApcScanner`] in the PTY reader thread collects
@@ -683,6 +689,8 @@ struct GCmd {
     /// `c=`/`r=` placement size in cells.
     cols: u32,
     rows: u32,
+    /// `C=1` — classic placement leaves the cursor where it was.
+    cursor_stays: bool,
     /// `d=` delete target selector.
     delete: u8,
     /// `o=z` — payload is zlib-compressed.
@@ -714,6 +722,7 @@ fn parse_controls(controls: &str) -> GCmd {
             "U" => cmd.unicode = int() == 1,
             "c" => cmd.cols = int(),
             "r" => cmd.rows = int(),
+            "C" => cmd.cursor_stays = int() == 1,
             "d" => cmd.delete = byte(),
             "o" => cmd.zlib = byte() == b'z',
             _ => {}
@@ -729,11 +738,25 @@ struct Pending {
     b64: Vec<u8>,
 }
 
+/// A classic (cursor-anchored) placement the protocol driver cannot perform
+/// itself — it has no cursor — handed to the PTY reader, which owns the grid.
+/// `cols`/`rows` are the client's `c=`/`r=` (0 = absent: size from pixels).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClassicPlacement {
+    pub id: u32,
+    pub cols: u16,
+    pub rows: u16,
+    /// `C=1`: the cursor stays put instead of moving past the image.
+    pub cursor_stays: bool,
+}
+
 /// Per-session protocol state, owned by the PTY reader thread. `apply` maps
-/// each APC payload to an optional response to write back to the PTY.
+/// each APC payload to an optional response to write back to the PTY; a
+/// classic placement it implies is parked for [`Self::take_placement`].
 pub struct KittyGraphics {
     store: Arc<KittyImageStore>,
     pending: Option<Pending>,
+    placement: Option<ClassicPlacement>,
 }
 
 impl KittyGraphics {
@@ -741,7 +764,14 @@ impl KittyGraphics {
         Self {
             store,
             pending: None,
+            placement: None,
         }
+    }
+
+    /// The classic placement requested by the last `apply`, if any. The
+    /// reader calls this right after `apply`, while it holds the grid.
+    pub fn take_placement(&mut self) -> Option<ClassicPlacement> {
+        self.placement.take()
     }
 
     pub fn apply(&mut self, payload: &[u8]) -> Option<Vec<u8>> {
@@ -798,17 +828,21 @@ impl KittyGraphics {
                 }
             }
             b'p' => {
-                if !cmd.unicode {
-                    return respond(&cmd, "ENOTSUPPORTED:only virtual placements");
-                }
-                if self
+                if !self
                     .store
                     .set_placement(cmd.id, cmd.cols as u16, cmd.rows as u16)
                 {
-                    respond(&cmd, "OK")
-                } else {
-                    respond(&cmd, "ENOENT:no such image")
+                    return respond(&cmd, "ENOENT:no such image");
                 }
+                if !cmd.unicode {
+                    self.placement = Some(ClassicPlacement {
+                        id: cmd.id,
+                        cols: cmd.cols as u16,
+                        rows: cmd.rows as u16,
+                        cursor_stays: cmd.cursor_stays,
+                    });
+                }
+                respond(&cmd, "OK")
             }
             b'd' => {
                 // Lower/upper case selectors behave the same here — we keep
@@ -846,16 +880,16 @@ impl KittyGraphics {
                     },
                 );
                 if cmd.action == b'T' && !cmd.unicode {
-                    // CLASSIC transmit+display wants a cursor placement,
-                    // which we do not implement (`a=T,U=1` virtual and
-                    // `a=p,U=1` placements render via placeholder cells and
-                    // stay OK). The image IS stored, so a later a=p can
-                    // still show it — but answering OK left classic clients
-                    // (icat, timg) believing an invisible image displayed.
-                    respond(&cmd, "ENOTSUPPORTED:only virtual placements (a=p,U=1)")
-                } else {
-                    respond(&cmd, "OK")
+                    // Classic transmit+display: the reader lays the cells
+                    // down at the cursor (see `ClassicPlacement`).
+                    self.placement = Some(ClassicPlacement {
+                        id: cmd.id,
+                        cols: cmd.cols as u16,
+                        rows: cmd.rows as u16,
+                        cursor_stays: cmd.cursor_stays,
+                    });
                 }
+                respond(&cmd, "OK")
             }
             Err(msg) => respond(&cmd, &msg),
         }
@@ -1082,18 +1116,60 @@ mod tests {
         assert!(store.is_empty());
     }
 
+    /// Classic `a=T` (no U=1) stores the image, answers OK and parks a
+    /// cursor placement for the reader; `C=1` rides along; the stored
+    /// cols/rows stay 0 without c=/r= so the renderer keeps natural size.
     #[test]
-    fn classic_transmit_and_display_reports_unsupported() {
+    fn classic_transmit_and_display_parks_a_cursor_placement() {
         let store = Arc::new(KittyImageStore::default());
         let mut kg = KittyGraphics::new(Arc::clone(&store));
         let b64 = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3, 255]);
-        // No U=1: we cannot place at the cursor — the image is stored for a
-        // later a=p, but the response must not claim it was displayed.
         let resp = kg
-            .apply(format!("Ga=T,i=11,f=32,s=1,v=1;{b64}").as_bytes())
+            .apply(format!("Ga=T,i=11,f=32,s=1,v=1,C=1,z=-1;{b64}").as_bytes())
             .unwrap();
-        assert!(resp.starts_with(b"\x1b_Gi=11;ENOTSUPPORTED"));
-        assert!(store.get(11).is_some());
+        assert!(resp.starts_with(b"\x1b_Gi=11;OK"), "{resp:?}");
+        let img = store.get(11).expect("stored");
+        assert_eq!((img.cols, img.rows), (0, 0), "no c=/r= → natural size");
+        assert_eq!(
+            kg.take_placement(),
+            Some(ClassicPlacement {
+                id: 11,
+                cols: 0,
+                rows: 0,
+                cursor_stays: true
+            })
+        );
+        assert_eq!(kg.take_placement(), None, "taken once");
+        // Virtual placements never park one.
+        kg.apply(format!("Ga=T,i=12,U=1,f=32,s=1,v=1;{b64}").as_bytes());
+        assert_eq!(kg.take_placement(), None);
+    }
+
+    /// Classic `a=p` with c=/r= sizes the stored placement AND parks the
+    /// cursor placement; an unknown id is ENOENT with nothing parked.
+    #[test]
+    fn classic_place_by_id_parks_with_cell_size() {
+        let store = Arc::new(KittyImageStore::default());
+        let mut kg = KittyGraphics::new(Arc::clone(&store));
+        let b64 = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3, 255]);
+        kg.apply(format!("Ga=t,i=21,f=32,s=1,v=1;{b64}").as_bytes());
+        assert_eq!(kg.take_placement(), None, "a=t is transmit only");
+        let resp = kg.apply(b"Ga=p,i=21,c=4,r=2").unwrap();
+        assert!(resp.starts_with(b"\x1b_Gi=21;OK"));
+        assert_eq!(
+            kg.take_placement(),
+            Some(ClassicPlacement {
+                id: 21,
+                cols: 4,
+                rows: 2,
+                cursor_stays: false
+            })
+        );
+        let img = store.get(21).unwrap();
+        assert_eq!((img.cols, img.rows), (4, 2));
+        let resp = kg.apply(b"Ga=p,i=99").unwrap();
+        assert!(resp.starts_with(b"\x1b_Gi=99;ENOENT"));
+        assert_eq!(kg.take_placement(), None);
     }
 
     #[test]

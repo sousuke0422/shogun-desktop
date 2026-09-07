@@ -561,9 +561,10 @@ pub fn build_terminal_session_with_preface(
                                 // unsupported (see `graphics`).
                                 if let Some(payload) = apc.advance(byte)
                                     && crate::graphics::kitty_enabled()
-                                    && let Some(resp) = kitty.apply(&payload)
                                 {
-                                    responses.push(resp);
+                                    if let Some(resp) = kitty.apply(&payload) {
+                                        responses.push(resp);
+                                    }
                                 }
                                 if let Some(reply) = xtversion.advance(byte) {
                                     responses.push(reply);
@@ -577,6 +578,57 @@ pub fn build_terminal_session_with_preface(
                                 // Engine replies for the query this byte may
                                 // have completed go out in stream order.
                                 replies2.drain_into(&mut responses);
+                                // Classic (cursor-anchored) kitty placement:
+                                // the same placeholder injection sixel uses.
+                                // Without c=/r= the cell footprint comes from
+                                // the image's pixels and the stored cols/rows
+                                // stay 0, so the renderer paints it at natural
+                                // size — never stretched. It runs HERE, after
+                                // the parser has consumed the APC's terminator:
+                                // injecting while the parser still sits inside
+                                // the APC string fed the id-carrying SGR to the
+                                // APC and left a row of bare placeholder cells
+                                // (rendered as tofu) plus a stray backslash.
+                                if let Some(pl) = kitty.take_placement() {
+                                    if parser.sync_timeout().sync_timeout().is_some() {
+                                        parser.stop_sync(&mut *t);
+                                    }
+                                    let (cw, chp, start_col, fit_cols) =
+                                        placement_geometry(&t, &cell_px2);
+                                    let (cols, rows) = if pl.cols > 0 && pl.rows > 0 {
+                                        (pl.cols.min(fit_cols.max(1) as u16), pl.rows)
+                                    } else if let Some(img) = images2.get(pl.id) {
+                                        let sz = img.image.size(0);
+                                        let (w, h) = (
+                                            u32::from(sz.width) as usize,
+                                            u32::from(sz.height) as usize,
+                                        );
+                                        (
+                                            w.div_ceil(cw).clamp(1, fit_cols.max(1)).min(296)
+                                                as u16,
+                                            h.div_ceil(chp).clamp(1, 296) as u16,
+                                        )
+                                    } else {
+                                        (0, 0)
+                                    };
+                                    if cols > 0 && rows > 0 {
+                                        let tail = crate::sixel::placement_cursor_bytes(
+                                            cols,
+                                            rows,
+                                            start_col as u16,
+                                            pl.cursor_stays,
+                                        );
+                                        inject_placeholder_cells(
+                                            &mut t,
+                                            &mut parser,
+                                            pl.id,
+                                            cols,
+                                            rows,
+                                            start_col as u16,
+                                            &tail,
+                                        );
+                                    }
+                                }
                                 // Sixel: on a completed DCS (the parser has just
                                 // consumed the terminator and discarded the DCS
                                 // as unhandled), store the image and lay down
@@ -596,19 +648,8 @@ pub fn build_terminal_session_with_preface(
                                     if parser.sync_timeout().sync_timeout().is_some() {
                                         parser.stop_sync(&mut *t);
                                     }
-                                    let cw = cell_px2.0.load(Ordering::Relaxed).max(1) as usize;
-                                    let chp = cell_px2.1.load(Ordering::Relaxed).max(1) as usize;
-                                    // Before the first resize the cell size is
-                                    // unknown; assume a common 10×20 device px.
-                                    let (cw, chp) = if cw <= 1 { (10, 20) } else { (cw, chp) };
-                                    use alacritty_terminal::grid::Dimensions as _;
-                                    let grid_cols = t.columns().max(1);
-                                    // Fit the placement to the space right of the
-                                    // cursor (yazi draws previews mid-screen via
-                                    // CUP; wrapping would shred the layout).
-                                    let start_col =
-                                        t.grid().cursor.point.column.0.min(grid_cols - 1);
-                                    let fit_cols = grid_cols - start_col;
+                                    let (cw, chp, start_col, fit_cols) =
+                                        placement_geometry(&t, &cell_px2);
                                     let cols =
                                         img.width.div_ceil(cw).clamp(1, fit_cols).min(296) as u16;
                                     let rows = img.height.div_ceil(chp).clamp(1, 296) as u16;
@@ -621,22 +662,15 @@ pub fn build_terminal_session_with_preface(
                                         cols,
                                         rows,
                                     ) {
-                                        // The injection changes the fg color to
-                                        // carry the image id; save and restore
-                                        // the application's SGR foreground.
-                                        let restore =
-                                            crate::sixel::sgr_fg_bytes(t.grid().cursor.template.fg);
-                                        for &b in &crate::sixel::placeholder_bytes(
+                                        inject_placeholder_cells(
+                                            &mut t,
+                                            &mut parser,
                                             id,
                                             cols,
                                             rows,
                                             start_col as u16,
-                                        ) {
-                                            parser.advance(&mut *t, b);
-                                        }
-                                        for &b in &restore {
-                                            parser.advance(&mut *t, b);
-                                        }
+                                            &[],
+                                        );
                                     }
                                 }
                             }
@@ -1276,5 +1310,48 @@ mod tests {
     fn replay_sanitizer_limits_private_modes_to_restore_set() {
         let got = sanitize_replay(b"\x1b[?1049h\x1b[?1004h\x1b[?2026h\x1b[>0q");
         assert_eq!(got, b"\x1b[?1049h\x1b[?1004h");
+    }
+}
+
+/// Geometry for a cursor-anchored image placement: cell size in device px
+/// (with a 10×20 stand-in before the first resize), the cursor column, and
+/// how many columns remain right of it — placements are fitted there
+/// because wrapping would shred a layout that placed the image via CUP.
+fn placement_geometry(
+    t: &alacritty_terminal::Term<crate::ClipboardListener>,
+    cell_px: &(AtomicU16, AtomicU16),
+) -> (usize, usize, usize, usize) {
+    use alacritty_terminal::grid::Dimensions as _;
+    let cw = cell_px.0.load(Ordering::Relaxed).max(1) as usize;
+    let chp = cell_px.1.load(Ordering::Relaxed).max(1) as usize;
+    let (cw, chp) = if cw <= 1 { (10, 20) } else { (cw, chp) };
+    let grid_cols = t.columns().max(1);
+    let start_col = t.grid().cursor.point.column.0.min(grid_cols - 1);
+    (cw, chp, start_col, grid_cols - start_col)
+}
+
+/// Lay `cols × rows` placeholder cells for image `id` down at the cursor,
+/// then `tail` (cursor correction), then restore the application's SGR
+/// foreground that the id-carrying fg colour displaced.
+fn inject_placeholder_cells(
+    t: &mut alacritty_terminal::Term<crate::ClipboardListener>,
+    parser: &mut alacritty_terminal::vte::ansi::Processor<
+        alacritty_terminal::vte::ansi::StdSyncHandler,
+    >,
+    id: u32,
+    cols: u16,
+    rows: u16,
+    start_col: u16,
+    tail: &[u8],
+) {
+    let restore = crate::sixel::sgr_fg_bytes(t.grid().cursor.template.fg);
+    for &b in &crate::sixel::placeholder_bytes(id, cols, rows, start_col) {
+        parser.advance(&mut *t, b);
+    }
+    for &b in tail {
+        parser.advance(&mut *t, b);
+    }
+    for &b in &restore {
+        parser.advance(&mut *t, b);
     }
 }
