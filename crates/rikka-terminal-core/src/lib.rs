@@ -1003,6 +1003,17 @@ impl TerminalSession {
         self.notify.notify_one();
     }
 
+    /// Scroll so that `offset` lines of history sit above the screen
+    /// (0 = live view). The scrollbar thumb speaks in this absolute unit;
+    /// it is a delta underneath, clamped by the grid like any wheel step.
+    pub fn scroll_display_to(&self, offset: usize) {
+        let current = self.term.lock().grid().display_offset();
+        let delta = i32::try_from(offset)
+            .unwrap_or(i32::MAX)
+            .saturating_sub(current as i32);
+        self.scroll_display(delta);
+    }
+
     /// Snap the display window back to the live view (bottom).
     pub fn scroll_display_to_bottom(&self) {
         use alacritty_terminal::grid::Scroll;
@@ -1093,6 +1104,9 @@ pub struct GridSnapshot {
     pub selection: Option<((usize, usize), (usize, usize))>,
     /// Lines scrolled back into history (0 = live view at the bottom).
     pub display_offset: usize,
+    /// Scrollback lines above the screen — with `rows`, the document the
+    /// scrollbar thumb is sized against (0 = nothing to scroll, no bar).
+    pub history_len: usize,
     /// Any visible cell carries SGR blink — the refresh task adds a phase
     /// timer only while this is set, keeping idle wakeups at zero otherwise.
     pub has_blink: bool,
@@ -1119,6 +1133,7 @@ impl GridSnapshot {
             cursor_blink: false,
             selection: None,
             display_offset: 0,
+            history_len: 0,
             has_blink: false,
             links: Vec::new(),
             has_images: false,
@@ -1834,6 +1849,7 @@ pub fn take_snapshot<L: EventListener>(term: &Term<L>) -> GridSnapshot {
         cursor_blink: term.cursor_style().blinking && cursor_shape != CursorShapeKind::Hidden,
         selection,
         display_offset: term.grid().display_offset(),
+        history_len: term.grid().history_size(),
         has_blink,
         links,
         has_images,

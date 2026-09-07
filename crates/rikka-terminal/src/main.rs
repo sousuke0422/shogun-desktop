@@ -800,6 +800,61 @@ struct Leaf {
     entry: TabEntry,
     measured: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
     origin: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    scrollbar: std::rc::Rc<std::cell::RefCell<ScrollbarUi>>,
+}
+
+/// Overlay scrollbar state of one pane — WinUI's auto-hiding indicator, the
+/// shape Windows Terminal inherits unchanged: a 2 px resting indicator that
+/// shows on scroll activity and fades, 6 px when the pointer is over the
+/// bar's zone, 8 px while dragging, nothing at all when there is no
+/// scrollback. The bar never occupies a column: it floats over the grid's
+/// right edge like WinUI's overlay scrollbars.
+struct ScrollbarUi {
+    /// Last wheel/drag/hover moment — the resting indicator stays visible
+    /// for [`SCROLLBAR_LINGER`] after it.
+    last_activity: std::time::Instant,
+    hovered: bool,
+    /// Thumb drag in progress: (pointer y at grab, display offset at grab).
+    drag: Option<(f32, usize)>,
+    /// A hide timer is already scheduled — one per linger, not per frame.
+    hide_armed: bool,
+}
+
+const SCROLLBAR_LINGER: Duration = Duration::from_millis(1200);
+/// Pointer zone at the pane's right edge that reveals and operates the bar.
+const SCROLLBAR_ZONE_W: f32 = 12.0;
+
+impl Default for ScrollbarUi {
+    fn default() -> Self {
+        Self {
+            last_activity: std::time::Instant::now() - SCROLLBAR_LINGER,
+            hovered: false,
+            drag: None,
+            hide_armed: false,
+        }
+    }
+}
+
+impl ScrollbarUi {
+    fn touch(&mut self) {
+        self.last_activity = std::time::Instant::now();
+    }
+
+    fn resting_visible(&self) -> bool {
+        self.last_activity.elapsed() < SCROLLBAR_LINGER
+    }
+}
+
+/// Thumb geometry as fractions of the track: (top, height). `rows` visible
+/// lines out of `history + rows`, the viewport's top sitting `history −
+/// offset` lines into that document. The thumb never shrinks below
+/// `min_frac` so a deep scrollback still leaves something to grab.
+fn scrollbar_thumb(history: usize, rows: usize, offset: usize, min_frac: f32) -> (f32, f32) {
+    let total = (history + rows).max(1) as f32;
+    let h = (rows as f32 / total).clamp(min_frac.min(1.0), 1.0);
+    let top_line = history.saturating_sub(offset) as f32;
+    let top = (top_line / total).min(1.0 - h);
+    (top, h)
 }
 
 impl Leaf {
@@ -809,6 +864,7 @@ impl Leaf {
             entry,
             measured: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
             origin: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
+            scrollbar: std::rc::Rc::new(std::cell::RefCell::new(ScrollbarUi::default())),
         }
     }
 }
@@ -1703,6 +1759,7 @@ impl TabsWindow {
             self.scroll_accum -= whole as f32;
             if !s.wheel_to_pty(whole, col, row, mods) {
                 s.scroll_display(whole);
+                leaf.scrollbar.borrow_mut().touch();
             }
         }
         // Horizontal: reporting-only (buttons 66/67).
@@ -2401,6 +2458,158 @@ impl TabsWindow {
         }
     }
 
+    /// The pane's overlay scrollbar, or nothing when there is no scrollback.
+    /// Hidden (opacity 0) once the linger expires with the pointer away — the
+    /// zone keeps listening so hovering the edge brings it back, exactly the
+    /// WinUI behaviour. The linger's end is a one-shot timer armed here.
+    fn scrollbar_overlay(
+        &self,
+        leaf: &Leaf,
+        snap: &rikka_terminal_core::GridSnapshot,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if snap.history_len == 0 {
+            return None;
+        }
+        let pane_id = leaf.id;
+        let ui = leaf.scrollbar.borrow();
+        let dragging = ui.drag.is_some();
+        let hovered = ui.hovered;
+        let resting = ui.resting_visible();
+        let visible = dragging || hovered || resting;
+        // RIKKA_DEBUG_SCROLLBAR=<path>: state per render (GUI process → file).
+        if let Some(path) = std::env::var_os("RIKKA_DEBUG_SCROLLBAR") {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(
+                    f,
+                    "pane {pane_id}: visible={visible} hovered={hovered} dragging={dragging} resting={resting} armed={} since_activity={:?} history={} offset={}",
+                    ui.hide_armed,
+                    ui.last_activity.elapsed(),
+                    snap.history_len,
+                    snap.display_offset
+                );
+            }
+        }
+        if resting && !hovered && !dragging && !ui.hide_armed {
+            drop(ui);
+            leaf.scrollbar.borrow_mut().hide_armed = true;
+            let bar = leaf.scrollbar.clone();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(SCROLLBAR_LINGER).await;
+                bar.borrow_mut().hide_armed = false;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        } else {
+            drop(ui);
+        }
+        let (top, h) = scrollbar_thumb(snap.history_len, snap.rows, snap.display_offset, 0.04);
+        // WinUI ScrollViewer defaults: 2 px resting indicator, 6 px expanded
+        // on pointer-over, 8 px thumb while dragging.
+        let w = if dragging {
+            8.0
+        } else if hovered {
+            6.0
+        } else {
+            2.0
+        };
+        let thumb_color = if hovered || dragging {
+            gpui::rgba((TEXT_PRIMARY << 8) | 0x99)
+        } else {
+            gpui::rgba((TEXT_PRIMARY << 8) | 0x66)
+        };
+        let history = snap.history_len;
+        let rows = snap.rows;
+        let zone = div()
+            // Stateful: `on_hover` needs an element id.
+            .id(("scrollbar", pane_id))
+            .absolute()
+            .top_0()
+            .right_0()
+            .h_full()
+            .w(px(SCROLLBAR_ZONE_W))
+            .when(hovered || dragging, |d| {
+                d.bg(gpui::rgba((TEXT_PRIMARY << 8) | 0x0C))
+            })
+            .when(!visible, |d| d.opacity(0.0))
+            .on_hover(cx.listener(move |this, hovered: &bool, _w, cx| {
+                if let Some(leaf) = this
+                    .tabs
+                    .get(this.active)
+                    .and_then(|t| t.root.find(pane_id))
+                {
+                    let mut ui = leaf.scrollbar.borrow_mut();
+                    ui.hovered = *hovered;
+                    ui.touch();
+                    cx.notify();
+                }
+            }))
+            // Track click: page towards the pointer (thumb clicks are
+            // consumed by the thumb's own handler below).
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, ev: &gpui::MouseDownEvent, _w, cx| {
+                    let Some(leaf) = this
+                        .tabs
+                        .get(this.active)
+                        .and_then(|t| t.root.find(pane_id))
+                    else {
+                        return;
+                    };
+                    let (_, oy) = leaf.origin.get();
+                    let (_, mh) = leaf.measured.get();
+                    if mh <= 0.0 {
+                        return;
+                    }
+                    let frac = ((ev.position.y / px(1.) - oy) / mh).clamp(0.0, 1.0);
+                    let total = (history + rows) as f32;
+                    let centre_line = frac * total;
+                    let top_line = (centre_line - rows as f32 / 2.0).max(0.0);
+                    let offset = (history as f32 - top_line)
+                        .round()
+                        .clamp(0.0, history as f32);
+                    leaf.entry.0.session.scroll_display_to(offset as usize);
+                    leaf.scrollbar.borrow_mut().touch();
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .right_0()
+                    .top(gpui::relative(top))
+                    .h(gpui::relative(h))
+                    .w(px(w))
+                    .rounded(px(w / 2.0))
+                    .bg(thumb_color)
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _w, cx| {
+                            let Some(leaf) = this
+                                .tabs
+                                .get(this.active)
+                                .and_then(|t| t.root.find(pane_id))
+                            else {
+                                return;
+                            };
+                            let offset = leaf.entry.0.session.snapshot.lock().display_offset;
+                            let mut ui = leaf.scrollbar.borrow_mut();
+                            ui.drag = Some((ev.position.y / px(1.), offset));
+                            ui.touch();
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+        Some(zone.into_any_element())
+    }
+
     /// One pane: grid + shared overlay, with its own painted-size PTY fit.
     /// The focused pane owns the caret, IME preedit and search highlight;
     /// unfocused panes of a split get a subtle dim wash. `show_handle`
@@ -2487,6 +2696,61 @@ impl TabsWindow {
                     }
                 }),
             )
+            // Scrollbar thumb drag: the pointer may leave the thumb (and the
+            // zone) mid-drag, so movement and release are watched here at
+            // the pane level.
+            .on_mouse_move(cx.listener(move |this, ev: &gpui::MouseMoveEvent, _w, cx| {
+                let Some(leaf) = this
+                    .tabs
+                    .get(this.active)
+                    .and_then(|t| t.root.find(pane_id))
+                else {
+                    return;
+                };
+                let drag = leaf.scrollbar.borrow().drag;
+                let Some((start_y, start_offset)) = drag else {
+                    return;
+                };
+                let (_, mh) = leaf.measured.get();
+                let snap = leaf.entry.0.session.snapshot.lock().clone();
+                let total = (snap.history_len + snap.rows) as f32;
+                if mh <= 0.0 || snap.history_len == 0 {
+                    return;
+                }
+                let dy = ev.position.y / px(1.) - start_y;
+                let lines = (dy / mh * total).round() as i64;
+                // Thumb down = viewport down = fewer history lines above.
+                let target = (start_offset as i64 - lines).clamp(0, snap.history_len as i64);
+                leaf.entry.0.session.scroll_display_to(target as usize);
+                leaf.scrollbar.borrow_mut().touch();
+                cx.notify();
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseUpEvent, _w, cx| {
+                    if let Some(leaf) = this
+                        .tabs
+                        .get(this.active)
+                        .and_then(|t| t.root.find(pane_id))
+                        && leaf.scrollbar.borrow_mut().drag.take().is_some()
+                    {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseUpEvent, _w, cx| {
+                    if let Some(leaf) = this
+                        .tabs
+                        .get(this.active)
+                        .and_then(|t| t.root.find(pane_id))
+                        && leaf.scrollbar.borrow_mut().drag.take().is_some()
+                    {
+                        cx.notify();
+                    }
+                }),
+            )
             .child(render_grid(
                 &snap,
                 mono_font(),
@@ -2565,6 +2829,8 @@ impl TabsWindow {
                     )
                 },
             )
+            // Overlay scrollbar (WinUI shape, see `ScrollbarUi`).
+            .children(self.scrollbar_overlay(leaf, &snap, cx))
             // The grabbed pane's original fades, like a dragged tab's.
             .when(self.dragging_pane == Some(pane_id), |d| d.opacity(0.5))
             // Split tabs: a hover handle at the top center grabs this pane
@@ -6032,5 +6298,24 @@ mod tests {
         out_write.write_all(b" STILL-FLOWING").unwrap();
         sees("STILL-FLOWING");
         drop(accept);
+    }
+
+    #[test]
+    fn scrollbar_thumb_tracks_the_viewport_through_the_document() {
+        // No history: the thumb is the whole track (but the bar is not shown).
+        assert_eq!(scrollbar_thumb(0, 24, 0, 0.04), (0.0, 1.0));
+        // 76 lines of history + 24 rows = 100; live view sits at the bottom.
+        let (top, h) = scrollbar_thumb(76, 24, 0, 0.04);
+        assert!((h - 0.24).abs() < 1e-6);
+        assert!((top - 0.76).abs() < 1e-6);
+        // Scrolled all the way back: the thumb is at the top.
+        assert_eq!(scrollbar_thumb(76, 24, 76, 0.04).0, 0.0);
+        // Halfway.
+        let (top, _) = scrollbar_thumb(76, 24, 38, 0.04);
+        assert!((top - 0.38).abs() < 1e-6);
+        // A deep scrollback keeps a grabbable minimum and never overshoots.
+        let (top, h) = scrollbar_thumb(100_000, 24, 0, 0.04);
+        assert_eq!(h, 0.04);
+        assert!(top + h <= 1.0 + 1e-6);
     }
 }
