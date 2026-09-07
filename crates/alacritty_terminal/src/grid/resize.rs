@@ -95,10 +95,21 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
             let mut old_x = 0usize;
             loop {
+                if old_x >= limit {
+                    break;
+                }
+                // Rule 4: forced wrap — only when there is more content to
+                // place. Checked AFTER the exhaustion test: a row that fills
+                // the new width exactly and then ends its logical line must
+                // not wrap first and newline second, or an empty row appears
+                // between it and the next line. conhost defers the wrap
+                // (measured 2026-09-07: a 44-char line, resize to 44 columns,
+                // `[Console]::CursorTop` advanced by exactly the lines typed
+                // — no phantom row); the earlier ordering here inserted one.
                 if new_x >= columns {
-                    // Rule 4: forced wrap. A wide char split by the new
-                    // boundary moves whole to the next row, leaving a
-                    // spacer (same contract as the native reflow paths).
+                    // A wide char split by the new boundary moves whole to
+                    // the next row, leaving a spacer (same contract as the
+                    // native reflow paths).
                     let carry = if cur[Column(columns - 1)].flags().contains(Flags::WIDE_CHAR) {
                         let mut spacer = T::default();
                         spacer.flags_mut().insert(Flags::LEADING_WIDE_CHAR_SPACER);
@@ -113,9 +124,6 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                         cur[Column(0)] = wide;
                         new_x = 1;
                     }
-                }
-                if old_x >= limit {
-                    break;
                 }
                 let n = min(limit - old_x, columns - new_x);
                 for k in 0..n {

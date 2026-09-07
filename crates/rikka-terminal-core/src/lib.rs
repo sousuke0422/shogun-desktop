@@ -1035,9 +1035,11 @@ impl TerminalSession {
     /// This updates the internal `alacritty_terminal::Term` geometry **and**
     /// notifies the backing PTY / SSH channel so that remote applications
     /// (e.g. tmux) can reflow their layout accordingly.
-    /// `cell_px` is the renderer's cell size in logical pixels; it rides
-    /// along so PTY consumers see real `TIOCGWINSZ` pixel dimensions (kitty
-    /// graphics clients size images with them).
+    /// `cell_px` is the renderer's cell size in DEVICE pixels; it rides
+    /// along so PTY consumers see real `TIOCGWINSZ` pixel dimensions and
+    /// `CSI 16 t` replies (kitty graphics clients size images with them),
+    /// and so image placements are footprinted in the same units the
+    /// images are measured in.
     pub fn resize(&self, cols: u16, rows: u16, cell_px: (f32, f32)) {
         // Everything — term reflow, snapshot, PTY notification — happens on
         // the debounced settler thread (see the `pty_resize` field docs):
@@ -3697,5 +3699,64 @@ mod tests {
         );
         r.drain_into(&mut out);
         assert_eq!(out.len(), 3, "drained buffer stays empty");
+    }
+    /// Placeholder rows through both reflow paths — Alacritty's native one
+    /// and the conhost-parity one a local ConPTY session uses — at a width
+    /// they fill EXACTLY, narrower (they split), and back. The exact-fit
+    /// case is the one that regressed live: the conhost port wrapped first
+    /// and newlined second, leaving an empty row after every image row, so
+    /// an image that fit the window to the cell doubled its height with
+    /// blank stripes. Real conhost defers that wrap (probe in pty_local).
+    #[test]
+    fn placeholder_rows_reflow_without_phantom_rows_on_both_paths() {
+        use alacritty_terminal::grid::Dimensions as _;
+        use alacritty_terminal::index::{Column, Line};
+        let placeholder_lines = |term: &Term<VoidListener>| -> Vec<(usize, usize)> {
+            (0..term.screen_lines())
+                .filter_map(|line| {
+                    let row = &term.grid()[Line(line as i32)];
+                    let n = (0..term.columns())
+                        .filter(|&c| row[Column(c)].c == kitty_graphics::PLACEHOLDER)
+                        .count();
+                    (n > 0).then_some((line, n))
+                })
+                .collect()
+        };
+        let mut bytes = b"\x1b[2J\x1b[Hlabel\r\n".to_vec();
+        bytes.extend(crate::sixel::placeholder_bytes(78, 44, 3, 0));
+        bytes.extend(b"\r\nafter image\r\n");
+        for conhost in [false, true] {
+            let mut term = Term::new(Config::default(), &TermSize::new(133, 12), VoidListener);
+            advance_bytes(&mut term, &bytes);
+            let resize = |term: &mut Term<VoidListener>, cols: usize| {
+                if conhost {
+                    term.resize_anchored(TermSize::new(cols, 12), true);
+                } else {
+                    term.resize(TermSize::new(cols, 12));
+                }
+            };
+            // The native path may scroll leading rows into history while
+            // narrowing (viewport anchoring differs), so compare the
+            // visible tail: contiguous lines, expected widths.
+            let check = |term: &Term<VoidListener>, expect: &[usize], what: &str| {
+                let got = placeholder_lines(term);
+                let contiguous = got.windows(2).all(|w| w[1].0 == w[0].0 + 1);
+                let widths: Vec<usize> = got.iter().map(|&(_, n)| n).collect();
+                assert!(
+                    contiguous,
+                    "{what}: phantom row between image rows (conhost={conhost}): {got:?}"
+                );
+                assert!(
+                    !widths.is_empty() && expect.ends_with(&widths),
+                    "{what} (conhost={conhost}): got {widths:?}, expected a tail of {expect:?}"
+                );
+            };
+            resize(&mut term, 44);
+            check(&term, &[44, 44, 44], "exact fit");
+            resize(&mut term, 31);
+            check(&term, &[31, 13, 31, 13, 31, 13], "narrower splits 31 + 13");
+            resize(&mut term, 133);
+            check(&term, &[44, 44, 44], "widening restores the rows");
+        }
     }
 }

@@ -2270,13 +2270,23 @@ impl TabsWindow {
         tab_is_split: bool,
         cw: f32,
         ch: f32,
+        // Window scale factor: the PTY's cell size is reported in DEVICE
+        // pixels (see `TerminalSession::resize`), the layout in logical.
+        sf: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match node {
             PaneNode::Empty => div().into_any_element(),
-            PaneNode::Leaf(leaf) => {
-                self.render_leaf(leaf, active_pane, tab_is_split, tab_is_split, cw, ch, cx)
-            }
+            PaneNode::Leaf(leaf) => self.render_leaf(
+                leaf,
+                active_pane,
+                tab_is_split,
+                tab_is_split,
+                cw,
+                ch,
+                sf,
+                cx,
+            ),
             PaneNode::Split {
                 horizontal,
                 ratio,
@@ -2310,7 +2320,16 @@ impl TabsWindow {
                                 .bottom(gpui::relative(1.0 - ratio))
                         }
                     })
-                    .child(self.render_pane_node(a, path_a, active_pane, tab_is_split, cw, ch, cx));
+                    .child(self.render_pane_node(
+                        a,
+                        path_a,
+                        active_pane,
+                        tab_is_split,
+                        cw,
+                        ch,
+                        sf,
+                        cx,
+                    ));
                 let second = div()
                     .absolute()
                     .map(|d| {
@@ -2320,7 +2339,16 @@ impl TabsWindow {
                             d.bottom_0().left_0().right_0().top(gpui::relative(ratio))
                         }
                     })
-                    .child(self.render_pane_node(b, path_b, active_pane, tab_is_split, cw, ch, cx));
+                    .child(self.render_pane_node(
+                        b,
+                        path_b,
+                        active_pane,
+                        tab_is_split,
+                        cw,
+                        ch,
+                        sf,
+                        cx,
+                    ));
                 let divider = div()
                     .absolute()
                     .map(|d| {
@@ -2387,6 +2415,7 @@ impl TabsWindow {
         show_handle: bool,
         cw: f32,
         ch: f32,
+        sf: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         use std::sync::atomic::Ordering;
@@ -2403,7 +2432,7 @@ impl TabsWindow {
                 session.rows.load(Ordering::Relaxed),
             ) != (cols, rows)
             {
-                session.resize(cols, rows, (cw, ch));
+                session.resize(cols, rows, (cw * sf, ch * sf));
             }
         }
         let snap = session.snapshot.lock().clone();
@@ -3119,7 +3148,8 @@ impl Render for TabsWindow {
             agg,
         );
 
-        let (cw, ch) = measure_cell_metrics(&cx.text_system(), mono_font(), window.scale_factor());
+        let sf = window.scale_factor();
+        let (cw, ch) = measure_cell_metrics(&cx.text_system(), mono_font(), sf);
 
         // Fit the ACTIVE tab's PTY to the pane (viewport minus strip/padding).
         let vp = window.viewport_size();
@@ -3143,7 +3173,15 @@ impl Render for TabsWindow {
                         continue;
                     }
                     tab.for_each_entry(|entry| {
-                        entry.0.session.resize(new_cols, new_rows, (cw, ch));
+                        // Device pixels: what CSI 16 t reports and what
+                        // image placements are footprinted with. Logical
+                        // values here made every image 1/scale too large a
+                        // footprint (measured 2026-09-07 at 125%: a 600 px
+                        // image took 44 columns instead of 35).
+                        entry
+                            .0
+                            .session
+                            .resize(new_cols, new_rows, (cw * sf, ch * sf));
                     });
                 }
             }
@@ -3611,7 +3649,16 @@ impl Render for TabsWindow {
                         div()
                             .relative()
                             .size_full()
-                            .child(self.render_leaf(leaf, tab.active_pane, true, false, cw, ch, cx))
+                            .child(self.render_leaf(
+                                leaf,
+                                tab.active_pane,
+                                true,
+                                false,
+                                cw,
+                                ch,
+                                sf,
+                                cx,
+                            ))
                             .child(
                                 div()
                                     .absolute()
@@ -3636,6 +3683,7 @@ impl Render for TabsWindow {
                             tab.is_split(),
                             cw,
                             ch,
+                            sf,
                             cx,
                         )
                     }

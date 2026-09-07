@@ -464,6 +464,86 @@ mod tests {
         assert_eq!(names, sorted, "block must be name-sorted");
     }
 
+    /// Diagnostic probe (not a test): does conhost's reflow insert an empty
+    /// line after a row that EXACTLY fills the new width and ends with a
+    /// newline? `[Console]::CursorTop` reports conhost's own cursor row
+    /// before and after the resize; every typed line stays under the new
+    /// width so only the exact-fit row can shift it. Run with
+    /// `cargo test conpty_exact_fit_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn conpty_exact_fit_probe() {
+        use rikka_terminal_core::pty_handoff::resize_signal_packet;
+        use std::io::{Read as _, Write as _};
+        let assets = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/conpty"));
+        let dll = ConptyDll::load(assets).expect("vendored conpty.dll");
+        let (their_input, mut our_input) = std::io::pipe().unwrap();
+        let (our_output, their_output) = std::io::pipe().unwrap();
+        let mut hpcon: Hpcon = std::ptr::null_mut();
+        unsafe {
+            (dll.create)(
+                Coord { x: 80, y: 24 },
+                HANDLE(their_input.as_raw_handle()),
+                HANDLE(their_output.as_raw_handle()),
+                0,
+                &mut hpcon,
+            )
+        }
+        .ok()
+        .unwrap();
+        drop((their_input, their_output));
+        let forty_four = "A".repeat(44);
+        let client = launch_client(
+            hpcon,
+            "cmd.exe",
+            &[
+                "/k".into(),
+                format!("prompt $G & cls & echo label & echo {forty_four} & echo after"),
+            ],
+            None,
+        )
+        .unwrap();
+        let abi = unsafe { &*(hpcon as *const PseudoConsoleAbi) };
+        let mut signal: std::fs::File = dup(abi.signal).unwrap().into();
+        unsafe { (dll.release)(hpcon) }.ok().unwrap();
+        unsafe { (dll.close)(hpcon) };
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let mut out: std::fs::File = OwnedHandle::from(our_output).into();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 65536];
+            while let Ok(n) = out.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let collect = |label: &str, ms: u64| {
+            let mut bytes = Vec::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+                match rx.recv_timeout(left) {
+                    Ok(chunk) => bytes.extend(chunk),
+                    Err(_) => break,
+                }
+            }
+            let text: String = String::from_utf8_lossy(&bytes).escape_debug().to_string();
+            println!("=== {label}: {} bytes ===\n{text}\n", bytes.len());
+        };
+        collect("initial", 3000);
+        our_input
+            .write_all(b"powershell -nop -c [Console]::CursorTop\r")
+            .unwrap();
+        collect("cursor row BEFORE resize (80 cols)", 6000);
+        signal.write_all(&resize_signal_packet(44, 24)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        collect("resize emissions", 1500);
+        our_input
+            .write_all(b"powershell -nop -c [Console]::CursorTop\r")
+            .unwrap();
+        collect("cursor row AFTER resize (44 cols)", 6000);
+        drop(client);
+    }
+
     /// Diagnostic probe (not a test): what does the vendored conpty emit on
     /// a resize? Determines whether resize desync self-heals (conhost
     /// repaints) or accumulates (quirk-era silence). Run with
