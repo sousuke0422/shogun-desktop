@@ -1222,6 +1222,80 @@ pub(crate) fn image_runs_for_row(cells: &[SnapshotCell]) -> Vec<ImageRun> {
     runs
 }
 
+/// Where a reflowed placement's (0,0) tile sits — the point an intact paint
+/// hangs from. Computed ONLY for placements whose rows have wrapped onto
+/// more than one line, recognised by a run of the image starting a line at
+/// column 0 with `pcol0 != 0` (the remainder of a row that no longer fits).
+/// Unwrapped placements are absent from the map and keep the per-run paint,
+/// which is exact for them and masks to the cells that actually remain —
+/// this path only ever activates where the per-run paint had already
+/// degraded into a collage of row fragments.
+///
+/// `line` may be negative: when the (0,0) row has scrolled off the top, it
+/// is extrapolated from the visible row heads, using the line stride between
+/// the first two of them (2 while wrapped in half, 3 in thirds, …).
+///
+/// The paint hangs the image from the BOTTOM of the region the wrapped cells
+/// occupy, not its top (`line + (stride − 1) × image rows`): the viewport
+/// is pinned to the bottom during a resize, so a top-hung picture would sit
+/// entirely in the doubled region's upper half and scroll out of view —
+/// measured 2026-09-07, the anchor landed at line −21 with a 22-line image.
+/// Bottom-hung, the picture stays adjacent to the text that followed it,
+/// which is what ghostty shows (its placements occupy no cells, so nothing
+/// doubles); the surplus lines end up above the image instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WrapAnchor {
+    pub line: i64,
+    pub col: usize,
+    /// Grid lines per tile row in the current width.
+    pub stride: f64,
+}
+
+pub(crate) fn wrapped_anchors(
+    cells: &[Vec<SnapshotCell>],
+) -> std::collections::HashMap<u32, WrapAnchor> {
+    struct Acc {
+        heads: Vec<(u16, usize, usize)>, // (prow, line, c0) of pcol0 == 0 runs
+        wrapped: bool,
+    }
+    let mut acc: std::collections::HashMap<u32, Acc> = std::collections::HashMap::new();
+    for (line, row) in cells.iter().enumerate() {
+        for run in image_runs_for_row(row) {
+            let a = acc.entry(run.id).or_insert(Acc {
+                heads: Vec::new(),
+                wrapped: false,
+            });
+            if run.pcol0 == 0 {
+                a.heads.push((run.prow, line, run.c0));
+            } else if run.c0 == 0 {
+                a.wrapped = true;
+            }
+        }
+    }
+    acc.into_iter()
+        .filter(|(_, a)| a.wrapped && !a.heads.is_empty())
+        .map(|(id, mut a)| {
+            a.heads.sort_unstable();
+            let (p0, l0, c0) = a.heads[0];
+            let stride = a
+                .heads
+                .get(1)
+                .filter(|&&(p1, _, _)| p1 > p0)
+                .map(|&(p1, l1, _)| (l1 - l0) as f64 / f64::from(p1 - p0))
+                .unwrap_or(1.0);
+            let line = l0 as i64 - (f64::from(p0) * stride).round() as i64;
+            (
+                id,
+                WrapAnchor {
+                    line,
+                    col: c0,
+                    stride,
+                },
+            )
+        })
+        .collect()
+}
+
 pub fn render_grid(
     snap: &GridSnapshot,
     font: &str,
@@ -1298,10 +1372,55 @@ pub fn render_grid(
     let cursor_rgba: Option<Rgba> = snap
         .cursor_color
         .map(|(r, g, b)| rgba(u32::from_be_bytes([r, g, b, 0xff])));
+    // Reflowed image placements (window narrower than an image): anchors
+    // for the intact paint below. Empty — and the per-run paint untouched —
+    // whenever nothing has wrapped, which is every frame in normal use.
+    let wrapped_anchors_map = std::sync::Arc::new(match images.filter(|_| snap.has_images) {
+        Some(_) => wrapped_anchors(&snap.cells),
+        None => std::collections::HashMap::new(),
+    });
+    // RIKKA_DEBUG_IMGWRAP=<path>: the reflow-paint instrument (GUI process,
+    // so a file, not stdout) — per frame: grid size, anchors, and every line
+    // carrying image cells as `line:c0-c1/prow.pcol0`.
+    if snap.has_images
+        && let Some(path) = std::env::var_os("RIKKA_DEBUG_IMGWRAP")
+    {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let image_lines: Vec<String> = snap
+                .cells
+                .iter()
+                .enumerate()
+                .filter_map(|(i, row)| {
+                    let runs = image_runs_for_row(row);
+                    (!runs.is_empty()).then(|| {
+                        let parts: Vec<String> = runs
+                            .iter()
+                            .map(|r| format!("{}-{}/{}.{}", r.c0, r.c1, r.prow, r.pcol0))
+                            .collect();
+                        format!("{i}:{}", parts.join(","))
+                    })
+                })
+                .collect();
+            let _ = writeln!(
+                f,
+                "frame cols={} rows={} anchors={:?} lines=[{}]",
+                snap.cols,
+                snap.cells.len(),
+                wrapped_anchors_map,
+                image_lines.join(" ")
+            );
+        }
+    }
     v_flex()
         .font_family(font.to_string())
         .text_size(crate::typography::font_size())
         .children(snap.cells.iter().enumerate().map(move |(row_idx, row)| {
+            let wrapped_anchors_map = std::sync::Arc::clone(&wrapped_anchors_map);
             // Reverse-video marking is the Block presentation only; Beam /
             // Underline draw a thin quad instead (below), and Hidden (?25l)
             // draws nothing. A blinking cursor (DECSCUSR 1/3/5, DECSET 12)
@@ -1813,6 +1932,7 @@ pub fn render_grid(
                     // visibility (scrolling, top/bottom of screen) is just
                     // the mask doing its job. Painted before the selection
                     // quad so a selection stays visible over an image.
+                    let mut painted_wrapped: Vec<u32> = Vec::new();
                     for (irun, img) in &image_runs {
                         // Placement size: `c=`/`r=` cells when the client
                         // sent them; otherwise kitty's default applies — the
@@ -1829,18 +1949,92 @@ pub fn render_grid(
                                 u32::from(sz.height) as f32 / sf,
                             )
                         };
-                        let placement = Bounds {
-                            origin: point(
-                                px(ox + (irun.c0 as f32 - irun.pcol0 as f32) * cw),
-                                px(oy - irun.prow as f32 * ch),
+                        if let Some(path) = std::env::var_os("RIKKA_DEBUG_IMGWRAP")
+                            && irun.prow == 0
+                            && irun.pcol0 == 0
+                        {
+                            use std::io::Write as _;
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(path)
+                            {
+                                let sz = img.image.size(0);
+                                let _ = writeln!(
+                                    f,
+                                    "  paint id={} line={row_idx} sf={:.2} cell=({cw:.2},{ch:.2}) img_px=({},{}) box=({box_w:.0},{box_h:.0}) cr=({},{})",
+                                    irun.id,
+                                    window.scale_factor(),
+                                    u32::from(sz.width),
+                                    u32::from(sz.height),
+                                    img.cols,
+                                    img.rows
+                                );
+                            }
+                        }
+                        let (placement, mask) = match wrapped_anchors_map.get(&irun.id) {
+                            // Reflowed placement (measured 2026-09-07: the
+                            // window shrunk below the image's width): the
+                            // cells' tile positions describe a collage of
+                            // row fragments. Paint the image intact instead,
+                            // hung from its anchor, one line-slice per grid
+                            // line, masked to the box's width and clipped by
+                            // the window — ghostty's behaviour. The lines
+                            // the wrap added below the box paint nothing.
+                            Some(anchor) => {
+                                let box_rows = (box_h / ch).ceil().max(1.0);
+                                let top = anchor.line
+                                    + ((anchor.stride - 1.0) * f64::from(box_rows)).round() as i64;
+                                let off = row_idx as i64 - top;
+                                if let Some(path) = std::env::var_os("RIKKA_DEBUG_IMGWRAP") {
+                                    use std::io::Write as _;
+                                    if let Ok(mut f) =
+                                        std::fs::OpenOptions::new().create(true).append(true).open(path)
+                                    {
+                                        let _ = writeln!(
+                                            f,
+                                            "  line {row_idx} id={} run=({},{}) prow={} pcol0={} off={off} box=({box_w:.0},{box_h:.0}) ch={ch:.1} ox={ox:.0} oy={oy:.0}",
+                                            irun.id, irun.c0, irun.c1, irun.prow, irun.pcol0
+                                        );
+                                    }
+                                }
+                                if off < 0
+                                    || off as f32 * ch >= box_h
+                                    || painted_wrapped.contains(&irun.id)
+                                {
+                                    continue;
+                                }
+                                painted_wrapped.push(irun.id);
+                                let ax = ox + anchor.col as f32 * cw;
+                                let avail = (grid_cols.saturating_sub(anchor.col)) as f32 * cw;
+                                (
+                                    Bounds {
+                                        origin: point(px(ax), px(oy - off as f32 * ch)),
+                                        size: size(px(box_w), px(box_h)),
+                                    },
+                                    gpui::ContentMask {
+                                        bounds: Bounds {
+                                            origin: point(px(ax), px(oy)),
+                                            size: size(px(box_w.min(avail)), px(ch)),
+                                        },
+                                    },
+                                )
+                            }
+                            None => (
+                                Bounds {
+                                    origin: point(
+                                        px(ox + (irun.c0 as f32 - irun.pcol0 as f32) * cw),
+                                        px(oy - irun.prow as f32 * ch),
+                                    ),
+                                    size: size(px(box_w), px(box_h)),
+                                },
+                                gpui::ContentMask {
+                                    bounds: Bounds {
+                                        origin: point(px(ox + irun.c0 as f32 * cw), px(oy)),
+                                        size: size(px((irun.c1 - irun.c0) as f32 * cw), px(ch)),
+                                    },
+                                },
                             ),
-                            size: size(px(box_w), px(box_h)),
-                        };
-                        let mask = gpui::ContentMask {
-                            bounds: Bounds {
-                                origin: point(px(ox + irun.c0 as f32 * cw), px(oy)),
-                                size: size(px((irun.c1 - irun.c0) as f32 * cw), px(ch)),
-                            },
                         };
                         window.with_content_mask(Some(mask), |window| {
                             let _ = window.paint_image(
@@ -2604,6 +2798,76 @@ mod tests {
             }),
             ..SnapshotCell::blank()
         }
+    }
+
+    /// No wrap → no anchors: the per-run paint stays the only path.
+    #[test]
+    fn wrapped_anchors_empty_when_rows_fit() {
+        let rows: Vec<Vec<SnapshotCell>> = (0..3)
+            .map(|r| (0..5).map(|c| cell_image(7, r, c)).collect())
+            .collect();
+        assert!(wrapped_anchors(&rows).is_empty());
+    }
+
+    /// A row split as 3 + 2 cells: the remainder starts line 1 at column 0
+    /// with pcol0 = 3, which marks the placement as wrapped; the anchor is
+    /// the (0,0) head's line and column.
+    #[test]
+    fn wrapped_anchors_find_the_head_of_a_split_placement() {
+        let rows = vec![
+            vec![
+                cell(' '),
+                cell_image(7, 0, 0),
+                cell_image(7, 0, 1),
+                cell_image(7, 0, 2),
+            ],
+            vec![cell_image(7, 0, 3), cell_image(7, 0, 4)],
+            vec![
+                cell(' '),
+                cell_image(7, 1, 0),
+                cell_image(7, 1, 1),
+                cell_image(7, 1, 2),
+            ],
+            vec![cell_image(7, 1, 3), cell_image(7, 1, 4)],
+        ];
+        let m = wrapped_anchors(&rows);
+        assert_eq!(
+            m.get(&7),
+            Some(&WrapAnchor {
+                line: 0,
+                col: 1,
+                stride: 2.0
+            })
+        );
+    }
+
+    /// The (0,0) row scrolled off: extrapolate from the visible heads with
+    /// their line stride (2 lines per tile row while wrapped).
+    #[test]
+    fn wrapped_anchors_extrapolate_a_scrolled_head() {
+        let rows = vec![
+            vec![
+                cell_image(7, 3, 0),
+                cell_image(7, 3, 1),
+                cell_image(7, 3, 2),
+            ],
+            vec![cell_image(7, 3, 3), cell_image(7, 3, 4)],
+            vec![
+                cell_image(7, 4, 0),
+                cell_image(7, 4, 1),
+                cell_image(7, 4, 2),
+            ],
+            vec![cell_image(7, 4, 3), cell_image(7, 4, 4)],
+        ];
+        let m = wrapped_anchors(&rows);
+        assert_eq!(
+            m.get(&7),
+            Some(&WrapAnchor {
+                line: -6,
+                col: 0,
+                stride: 2.0
+            })
+        );
     }
 
     #[test]
