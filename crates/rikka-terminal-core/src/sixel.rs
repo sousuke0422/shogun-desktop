@@ -537,6 +537,17 @@ pub fn decode(data: &[u8]) -> Option<SixelImage> {
 /// preview pane (images placed at a non-zero column via CUP) got shredded
 /// into a staircase over the file list. The cursor ends on the line below
 /// the image at its starting column (sixel scrolling-mode semantics).
+///
+/// Every cell carries its own row AND column diacritics — the spec's
+/// run-length shortcut (continue from the left neighbour) is deliberately
+/// not used. Measured 2026-09-07: shrink the window below an image's width
+/// and each placeholder row reflows onto two lines; the wrapped remainder
+/// starts a line with no left neighbour, so run-length cells could not be
+/// decoded and the image degraded into bands with blank lines between
+/// them. Self-describing cells survive any reflow: the remainder renders as
+/// the right part of that image row at the head of the next line, exactly
+/// as text would, and widening the window restores the image whole. Cost
+/// is three code points per cell instead of one.
 pub fn placeholder_bytes(id: u32, cols: u16, rows: u16, start_col: u16) -> Vec<u8> {
     let mut out = Vec::new();
     let (r, g, b) = ((id >> 16) & 0xff, (id >> 8) & 0xff, id & 0xff);
@@ -544,18 +555,12 @@ pub fn placeholder_bytes(id: u32, cols: u16, rows: u16, start_col: u16) -> Vec<u
     out.extend_from_slice(format!("\x1b[38;2;{r};{g};{b}m").as_bytes());
     let mut buf = [0u8; 4];
     let cha = format!("\x1b[{}G", start_col as usize + 1);
+    let mark = |i: u16| ROWCOL_DIACRITICS[i as usize % ROWCOL_DIACRITICS.len()];
     for row in 0..rows {
-        // First cell of the row: explicit row+col diacritics; the rest
-        // continue from their left neighbour (run-length form).
-        out.extend_from_slice(PLACEHOLDER.encode_utf8(&mut buf).as_bytes());
-        out.extend_from_slice(
-            ROWCOL_DIACRITICS[row as usize % ROWCOL_DIACRITICS.len()]
-                .encode_utf8(&mut buf)
-                .as_bytes(),
-        );
-        out.extend_from_slice(ROWCOL_DIACRITICS[0].encode_utf8(&mut buf).as_bytes());
-        for _ in 1..cols {
+        for col in 0..cols {
             out.extend_from_slice(PLACEHOLDER.encode_utf8(&mut buf).as_bytes());
+            out.extend_from_slice(mark(row).encode_utf8(&mut buf).as_bytes());
+            out.extend_from_slice(mark(col).encode_utf8(&mut buf).as_bytes());
         }
         out.extend_from_slice(b"\x1bD");
         out.extend_from_slice(cha.as_bytes());
@@ -735,6 +740,34 @@ mod tests {
         let b = alloc.next_id();
         assert_ne!(a, b);
         assert!((SIXEL_ID_BASE..SIXEL_ID_BASE + SIXEL_ID_SPAN).contains(&a));
+    }
+
+    /// Reflow safety: any single cell decodes on its own (no left
+    /// neighbour), and the cell positions match its (row, col).
+    #[test]
+    fn every_placeholder_cell_is_self_describing() {
+        use crate::kitty_graphics::{decode_placeholder, diacritic_index};
+        let bytes = placeholder_bytes(0x00_10_20_30, 5, 3, 0);
+        let s = String::from_utf8(bytes).unwrap();
+        let mut cells = Vec::new();
+        let chars: Vec<char> = s.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == PLACEHOLDER {
+                let marks = [chars[i + 1], chars[i + 2]];
+                assert!(
+                    marks.iter().all(|m| diacritic_index(*m).is_some()),
+                    "cell {i}"
+                );
+                let cell = decode_placeholder(0x10_20_30, &marks, None).expect("standalone decode");
+                cells.push((cell.row, cell.col));
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+        let expected: Vec<(u16, u16)> = (0..3).flat_map(|r| (0..5).map(move |c| (r, c))).collect();
+        assert_eq!(cells, expected);
     }
 
     #[test]
