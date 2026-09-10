@@ -11,3 +11,9 @@ target-win-verify/
 *.msi
 *.wixpdb
 crates/*/target/
+
+# pnpm 12 trial (feat/pnpm12-trial): pnpm-managed crate sources are symlinks into
+# the pnpm store and must be ignored — the pipeline hashes every unignored file
+# and rejects symlinks.
+.pnpm/
+node_modules/

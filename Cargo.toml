@@ -13,7 +13,7 @@ members = [
     "crates/rikka-terminal-ipc",
     "crates/shogun-core",
 ]
-exclude = ["crates/alacritty_terminal", "crates/gpui", "crates/vte"]
+exclude = ["crates/alacritty_terminal", "crates/gpui", "crates/gpui-component", "crates/vte"]
 
 [package]
 name = "shogun-desktop"

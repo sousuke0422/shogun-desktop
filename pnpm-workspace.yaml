@@ -1,0 +1,27 @@
+# pnpm 12.4 trial (branch feat/pnpm12-trial): can pnpm act as the workspace
+# orchestrator for a pure-Rust repository? Two features under test —
+#   cargo.enabled : `pnpm install` resolves the Cargo graph from Cargo.lock,
+#                   vendors crates into the pnpm store and leaves cargo able
+#                   to build offline (pnpm 12.4.0 release notes);
+#   pipelines     : `pnpm pipeline` runs the task graph with per-task Cargo
+#                   build-state snapshots shared between git worktrees
+#                   (tasks.<name>.cargoTargetDir, pnpm/scripts/pipeline-cargo-cache.md).
+# No JavaScript packages: `packages: []` and the root package.json only
+# carries the task scripts (`includeWorkspaceRoot` is what lets root tasks run).
+packages: []
+includeWorkspaceRoot: true
+
+cargo:
+  enabled: true
+
+pipelines:
+  default: [build]
+  ci: [build, test]
+
+tasks:
+  build:
+    dependsOn: []
+    cargoTargetDir: target
+  test:
+    dependsOn: [build]
+    cargoTargetDir: target

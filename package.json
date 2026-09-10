@@ -1,0 +1,10 @@
+{
+  "name": "shogun-desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "pnpm 12.4 trial: task scripts for `pnpm pipeline` over a pure-Rust workspace (see pnpm-workspace.yaml)",
+  "scripts": {
+    "build": "cargo build --release --locked -p rikka-terminal",
+    "test": "cargo test --locked -p rikka-terminal-core -p rikka-terminal"
+  }
+}
