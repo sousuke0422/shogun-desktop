@@ -182,6 +182,7 @@ fn establish(
             };
             ipc::StartupInfo {
                 title: (!title.is_empty()).then_some(title),
+                icon: None,
                 x: 0,
                 y: 0,
                 cols: dim(si.dwXCountChars),
