@@ -1576,6 +1576,8 @@ pub struct TabsWindow {
     /// change can leave the cell COUNT identical while CSI 14t/16t and
     /// every image footprint still need the new pixel size.
     fit_px: (f32, f32),
+    /// Last line written by the RIKKA_DEBUG_TABICON instrument (dedup).
+    tabicon_debug_last: std::cell::RefCell<String>,
     /// Last OSC title applied to the OS window (dedup).
     applied_title: Option<String>,
     /// The new-tab profile dropdown is open (rendered below the strip).
@@ -1730,6 +1732,7 @@ impl TabsWindow {
             cols: 0,
             rows: 0,
             fit_px: (0.0, 0.0),
+            tabicon_debug_last: std::cell::RefCell::new(String::new()),
             applied_title: None,
             profile_menu: false,
             tab_menu: None,
@@ -3703,6 +3706,43 @@ impl Render for TabsWindow {
             + 32.0
             + 6.0;
         let menu_left = chevron_x.clamp(8.0, (vp.width / px(1.) - 208.0).max(8.0));
+        // RIKKA_DEBUG_TABICON=<path>: one line per CHANGE of the strip's
+        // icon inputs (per tab: progress state, icon kind, title), so a tab
+        // whose icon does not come back after progress can be diagnosed
+        // from the data the strip actually saw.
+        if let Some(path) = std::env::var_os("RIKKA_DEBUG_TABICON") {
+            let line: String = self
+                .tabs
+                .iter()
+                .enumerate()
+                .map(|(ix, t)| {
+                    let e = t.primary();
+                    let icon = match e.0.icon() {
+                        Some(tab_icon::TabIcon::Image(_)) => "img",
+                        Some(tab_icon::TabIcon::Glyph { .. }) => "glyph",
+                        None => "none",
+                    };
+                    format!(
+                        "[{ix}{} prog={:?} icon={icon} title={:?}]",
+                        if ix == active_ix { "*" } else { "" },
+                        tab_progress(&e.0.session),
+                        e.0.session.title.lock().as_deref().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if *self.tabicon_debug_last.borrow() != line {
+                use std::io::Write as _;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let _ = writeln!(f, "{:?} {line}", std::time::SystemTime::now());
+                }
+                *self.tabicon_debug_last.borrow_mut() = line;
+            }
+        }
         let tab_viewport = div()
             .id("tab-viewport")
             .flex_1()
