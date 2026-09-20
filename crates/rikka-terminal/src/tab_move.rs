@@ -63,6 +63,7 @@ pub fn is_transferable(session: &TerminalSession) -> bool {
 pub fn send_tab(
     session: &TerminalSession,
     palette: Option<Vec<u32>>,
+    icon: Option<ipc::WireIcon>,
     dest: Destination,
 ) -> Result<()> {
     // Refuse before quiescing — a session without a kit (SSH, legacy
@@ -78,6 +79,7 @@ pub fn send_tab(
     );
     let startup = ipc::StartupInfo {
         title: session.title.lock().clone(),
+        icon,
         x: 0,
         y: 0,
         cols: session.cols.load(Ordering::Relaxed),
@@ -241,6 +243,7 @@ pub(crate) fn resolve_window(window: u64) -> Result<String> {
 pub fn move_to_any_other_window(
     session: &TerminalSession,
     palette: Option<Vec<u32>>,
+    icon: Option<ipc::WireIcon>,
 ) -> Result<()> {
     let others = other_windows()?;
     let target = others
@@ -250,6 +253,7 @@ pub fn move_to_any_other_window(
     send_tab(
         session,
         palette,
+        icon,
         Destination::Window {
             id: target.id,
             endpoint,
@@ -289,6 +293,7 @@ mod tests {
 
         let err = send_tab(
             &session,
+            None,
             None,
             Destination::Window {
                 id: 9,
@@ -347,6 +352,7 @@ mod tests {
         });
         let err = send_tab(
             &session,
+            None,
             None,
             Destination::Window {
                 id: 9,

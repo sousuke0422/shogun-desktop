@@ -35,10 +35,11 @@ toml = "1"
 # Same version gpui builds against, so `image::Frame` unifies with
 # `RenderImage::new` (tab icons extracted from program resources become frames).
 image = "0.25"
+# Tab icons ride cross-process tab moves as base64 RGBA (tab_icon::to_wire);
+# the attach-validation tests encode synthetic kitty PNG payloads with it too.
+base64 = "0.22"
 
 [dev-dependencies]
-# Attach-validation tests encode synthetic kitty-graphics PNG payloads as base64.
-base64 = "0.22"
 # Hub lifecycle tests use real GPUI Entity/WeakEntity refcounts without
 # constructing platform windows.
 gpui = { version = "0.2.2", features = ["test-support"] }

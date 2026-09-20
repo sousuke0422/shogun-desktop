@@ -80,10 +80,28 @@ pub struct Handles {
     pub shell: i64,
 }
 
+/// A tab's icon on the wire, so a moved tab keeps its shell icon on the far
+/// side (the receiver has no program/argv to re-resolve it from).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WireIcon {
+    /// A bundled icon-font glyph tinted `0xRRGGBB`.
+    Glyph { text: String, tint: u32 },
+    /// A raster icon: RGBA8, row-major, base64.
+    Image {
+        width: u32,
+        height: u32,
+        rgba_b64: String,
+    },
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct StartupInfo {
     #[serde(default)]
     pub title: Option<String>,
+    /// The tab's icon; absent for OS handoffs and old senders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<WireIcon>,
     #[serde(default)]
     pub x: i32,
     #[serde(default)]

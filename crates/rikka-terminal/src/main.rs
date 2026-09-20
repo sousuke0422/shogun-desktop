@@ -3328,6 +3328,7 @@ impl TabsWindow {
                 match tab_move::send_tab(
                     &entry.0.session,
                     palette,
+                    entry.0.icon().map(|i| i.to_wire()),
                     tab_move::Destination::NewProcess,
                 ) {
                     Ok(()) => self.close_at(ix, window, cx),
@@ -3399,6 +3400,7 @@ impl TabsWindow {
         match tab_move::send_tab(
             &entry.0.session,
             entry.0.theme().map(|p| p.to_wire()),
+            entry.0.icon().map(|i| i.to_wire()),
             tab_move::Destination::Window {
                 id: u64::from(pid),
                 endpoint,
@@ -3431,6 +3433,7 @@ impl TabsWindow {
         match tab_move::move_to_any_other_window(
             &entry.0.session,
             entry.0.theme().map(|p| p.to_wire()),
+            entry.0.icon().map(|i| i.to_wire()),
         ) {
             Ok(()) => self.close_at(self.active, window, cx),
             Err(e) => {
@@ -4979,6 +4982,7 @@ fn attach_request(a: &cli::AttachSpec, launch: &cli::Launch) -> ipc::AttachArgs 
         },
         startup: ipc::StartupInfo {
             title: a.title.clone(),
+            icon: None,
             x: 0,
             y: 0,
             cols: launch.size_cells.map_or(0, |s| s.0),
@@ -5885,9 +5889,11 @@ fn adopt_forwarded(
     match target {
         Some(view) => {
             let entry = hub::new_tab(cx, session);
-            // The palette that rode the move: the tab keeps its profile
-            // colors on this side instead of falling back to our default.
+            // The palette and icon that rode the move: the tab keeps its
+            // profile colors and shell icon on this side instead of
+            // falling back to our default / no icon.
             entry.0.set_theme(wire_theme(palette));
+            entry.0.set_icon(wire_icon(&startup));
             let _ = view.update(cx, |v, cx| v.adopt_dropped(entry, drop_at, cx));
         }
         None => open_attached(cx, session, startup, palette),
@@ -5911,7 +5917,18 @@ fn open_attached(
     };
     let entry = hub::new_tab(cx, session);
     entry.0.set_theme(wire_theme(palette));
+    entry.0.set_icon(wire_icon(&startup));
     open_tabs_window_opts(cx, vec![entry], &launch);
+}
+
+/// The icon that rode an attach/move; an OS handoff carries none, so fall
+/// back to what the title alone can say (a distro name → its glyph).
+fn wire_icon(startup: &ipc::StartupInfo) -> Option<tab_icon::TabIcon> {
+    startup
+        .icon
+        .as_ref()
+        .and_then(tab_icon::TabIcon::from_wire)
+        .or_else(|| tab_icon::resolve("", &[], startup.title.as_deref()))
 }
 
 /// Open a targeted spawn's tabs in the addressed window of THIS process
@@ -6496,6 +6513,10 @@ mod tests {
         tab_move::send_tab(
             &source,
             Some(sent_palette.clone()),
+            Some(ipc::WireIcon::Glyph {
+                text: "x".into(),
+                tint: 0x123456,
+            }),
             tab_move::Destination::Window {
                 id: 1,
                 endpoint: name,
@@ -6507,6 +6528,14 @@ mod tests {
         let received = match rx.try_recv().expect("one pumped message") {
             Forwarded::AdoptTab(session, startup, drop_at, palette, _) => {
                 assert_eq!(startup.title.as_deref(), Some("mover"));
+                // The icon rides the move alongside the palette.
+                assert_eq!(
+                    startup.icon,
+                    Some(ipc::WireIcon::Glyph {
+                        text: "x".into(),
+                        tint: 0x123456,
+                    })
+                );
                 // The drag-drop point survives the wire — the receiver
                 // inserts at the strip position under it.
                 assert_eq!(drop_at, Some((123, 45)));

@@ -30,6 +30,53 @@ pub enum TabIcon {
     Glyph { text: gpui::SharedString, tint: u32 },
 }
 
+impl TabIcon {
+    /// Serializable form for a cross-process tab move.
+    pub fn to_wire(&self) -> rikka_terminal_ipc::WireIcon {
+        use base64::Engine as _;
+        match self {
+            TabIcon::Glyph { text, tint } => rikka_terminal_ipc::WireIcon::Glyph {
+                text: text.to_string(),
+                tint: *tint,
+            },
+            TabIcon::Image(img) => {
+                let sz = img.size(0);
+                rikka_terminal_ipc::WireIcon::Image {
+                    width: u32::from(sz.width),
+                    height: u32::from(sz.height),
+                    rgba_b64: base64::engine::general_purpose::STANDARD
+                        .encode(img.as_bytes(0).unwrap_or(&[])),
+                }
+            }
+        }
+    }
+
+    /// Rebuild from the wire form; `None` for corrupt data.
+    pub fn from_wire(w: &rikka_terminal_ipc::WireIcon) -> Option<Self> {
+        use base64::Engine as _;
+        match w {
+            rikka_terminal_ipc::WireIcon::Glyph { text, tint } => Some(TabIcon::Glyph {
+                text: text.clone().into(),
+                tint: *tint,
+            }),
+            rikka_terminal_ipc::WireIcon::Image {
+                width,
+                height,
+                rgba_b64,
+            } => {
+                let buf = base64::engine::general_purpose::STANDARD
+                    .decode(rgba_b64)
+                    .ok()?;
+                let img =
+                    image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(*width, *height, buf)?;
+                Some(TabIcon::Image(Arc::new(gpui::RenderImage::new(vec![
+                    image::Frame::new(img),
+                ]))))
+            }
+        }
+    }
+}
+
 /// A distro's `font-logos` glyph and brand tint, matched from a free-text hint
 /// (the profile/tab name or the `wsl -d <name>` argument).
 fn distro_glyph(hint: &str) -> Option<TabIcon> {
@@ -277,6 +324,44 @@ fn hicon_to_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icons_survive_the_wire_round_trip() {
+        let g = TabIcon::Glyph {
+            text: "\u{f31b}".into(),
+            tint: 0xE95420,
+        };
+        match TabIcon::from_wire(&g.to_wire()).unwrap() {
+            TabIcon::Glyph { text, tint } => {
+                assert_eq!(text.as_ref(), "\u{f31b}");
+                assert_eq!(tint, 0xE95420);
+            }
+            _ => panic!("glyph came back as an image"),
+        }
+        let px = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
+            2,
+            1,
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
+        )
+        .unwrap();
+        let img = TabIcon::Image(Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+            px,
+        )])));
+        match TabIcon::from_wire(&img.to_wire()).unwrap() {
+            TabIcon::Image(back) => {
+                assert_eq!(u32::from(back.size(0).width), 2);
+                assert_eq!(back.as_bytes(0).unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+            }
+            _ => panic!("image came back as a glyph"),
+        }
+        // Corrupt payloads are rejected, not panicked on.
+        let bad = rikka_terminal_ipc::WireIcon::Image {
+            width: 9,
+            height: 9,
+            rgba_b64: "AAAA".into(),
+        };
+        assert!(TabIcon::from_wire(&bad).is_none());
+    }
 
     #[test]
     fn distro_matches_specific_before_generic() {
