@@ -166,6 +166,7 @@ pub fn register_mouse_selection<V: SelectionHost>(
     window: &mut Window,
     view: Entity<V>,
     bounds: Bounds<Pixels>,
+    hitbox: Option<gpui::Hitbox>,
     pane: usize,
     cw: f32,
     ch: f32,
@@ -188,8 +189,13 @@ pub fn register_mouse_selection<V: SelectionHost>(
     };
     window.on_mouse_event({
         let view = view.clone();
-        move |ev: &MouseDownEvent, phase, _window, cx| {
+        move |ev: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble || !bounds.contains(&ev.position) {
+                return;
+            }
+            // Occluded by chrome painted over the pane? Then the press is
+            // theirs (the search bar's buttons, a menu item, a scrim).
+            if hitbox.as_ref().is_some_and(|h| !h.is_hovered(window)) {
                 return;
             }
             let (row, col) = cell_at(ev.position);

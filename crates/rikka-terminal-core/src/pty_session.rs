@@ -596,7 +596,13 @@ pub fn build_terminal_session_with_preface(
                                     let (cw, chp, start_col, fit_cols) =
                                         placement_geometry(&t, &cell_px2);
                                     let (cols, rows) = if pl.cols > 0 && pl.rows > 0 {
-                                        (pl.cols.min(fit_cols.max(1) as u16), pl.rows)
+                                        // 296: the row/col diacritic table has
+                                        // 297 entries; past that tile indices
+                                        // wrap and the image repeats.
+                                        (
+                                            pl.cols.min(fit_cols.max(1) as u16).min(296),
+                                            pl.rows.min(296),
+                                        )
                                     } else if let Some(img) = images2.get(pl.id) {
                                         let sz = img.image.size(0);
                                         let (w, h) = (

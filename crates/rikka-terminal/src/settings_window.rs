@@ -1199,9 +1199,14 @@ impl Render for SettingsWindow {
                         .top_0()
                         .left_0()
                         .size_full()
+                        // Block hover/press/wheel from reaching the page
+                        // underneath; the dismissing click must not also
+                        // press the control it lands on.
+                        .occlude()
                         .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
                             this.scheme_menu = false;
                             cx.notify();
+                            cx.stop_propagation();
                         })),
                 )
                 .child(

@@ -309,6 +309,36 @@ fn paint_span_decorations(
     }
 }
 
+/// A dotted/dashed line over `x..x+span` whose pattern is anchored to
+/// absolute x (period `step`, mark length `mark`), so pieces painted per
+/// span or per run join seamlessly.
+fn paint_pattern(
+    x: f32,
+    span: f32,
+    y: f32,
+    step: f32,
+    mark: f32,
+    color: Rgba,
+    window: &mut Window,
+) {
+    let end = x + span;
+    let mut mx = x - x.rem_euclid(step);
+    while mx < end {
+        let x0 = mx.max(x);
+        let x1 = (mx + mark).min(end);
+        if x1 > x0 {
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(px(x0), px(y)),
+                    size: size(px(x1 - x0), px(1.)),
+                },
+                color,
+            ));
+        }
+        mx += step;
+    }
+}
+
 /// Paint a run's underline (all variants) and strikeout as quads along the
 /// exact grid span `x..x+span` — shared by the glyph AND geometry paths.
 /// The shaper's own decorations are never used: they size to the natural
@@ -343,18 +373,26 @@ fn paint_run_decorations(
             // costs span/2 quads, half the old per-pixel rate. Dot height
             // 2.5px bridges the step between neighboring samples on the
             // steep flanks at this coarser spacing.
+            // Phase and sampling are anchored to absolute x, so a curl that
+            // is painted in several pieces (fg-color spans, the isolated
+            // cursor cell) reads as one continuous wave.
             let base = oy + ch - 2.5;
-            let mut dx = 0.0;
-            while dx < span {
-                let phase = dx / 6.0 * std::f32::consts::TAU;
-                window.paint_quad(fill(
-                    Bounds {
-                        origin: point(px(x + dx), px(base + 1.2 * phase.sin())),
-                        size: size(px((span - dx).min(2.0)), px(2.5)),
-                    },
-                    ul_rgba,
-                ));
-                dx += 2.0;
+            let end = x + span;
+            let mut sx = x - x.rem_euclid(2.0);
+            while sx < end {
+                let x0 = sx.max(x);
+                let x1 = (sx + 2.0).min(end);
+                if x1 > x0 {
+                    let phase = sx / 6.0 * std::f32::consts::TAU;
+                    window.paint_quad(fill(
+                        Bounds {
+                            origin: point(px(x0), px(base + 1.2 * phase.sin())),
+                            size: size(px(x1 - x0), px(2.5)),
+                        },
+                        ul_rgba,
+                    ));
+                }
+                sx += 2.0;
             }
         }
         UnderlineKind::Double => {
@@ -368,34 +406,8 @@ fn paint_run_decorations(
                 ));
             }
         }
-        UnderlineKind::Dotted => {
-            let y = oy + ch - 2.0;
-            let mut dx = 0.0;
-            while dx < span {
-                window.paint_quad(fill(
-                    Bounds {
-                        origin: point(px(x + dx), px(y)),
-                        size: size(px((span - dx).min(1.5)), px(1.)),
-                    },
-                    ul_rgba,
-                ));
-                dx += 3.0;
-            }
-        }
-        UnderlineKind::Dashed => {
-            let y = oy + ch - 2.0;
-            let mut dx = 0.0;
-            while dx < span {
-                window.paint_quad(fill(
-                    Bounds {
-                        origin: point(px(x + dx), px(y)),
-                        size: size(px((span - dx).min(4.0)), px(1.)),
-                    },
-                    ul_rgba,
-                ));
-                dx += 7.0;
-            }
-        }
+        UnderlineKind::Dotted => paint_pattern(x, span, oy + ch - 2.0, 3.0, 1.5, ul_rgba, window),
+        UnderlineKind::Dashed => paint_pattern(x, span, oy + ch - 2.0, 7.0, 4.0, ul_rgba, window),
         UnderlineKind::None => {}
     }
     // Strikeout: same grid-span quad treatment as the underlines (the
@@ -1439,6 +1451,10 @@ pub fn render_grid(
             };
             // Thin-cursor overlay for this row (beam = vertical bar at the
             // cell's left edge, underline = bar along its bottom).
+            let cursor_wcells = row
+                .get(row_cursor_col)
+                .map(|c| usize::from(c.display_width).max(1))
+                .unwrap_or(1);
             let thin_cursor = if cursor_here {
                 match cursor_shape {
                     crate::CursorShapeKind::Beam => Some((row_cursor_col, true)),
@@ -2134,6 +2150,9 @@ pub fn render_grid(
                     if let Some((ccol, beam)) = thin_cursor {
                         let x = ox + ccol as f32 * cw;
                         let t = (cw / 8.0).max(1.0);
+                        // Underline spans the whole glyph (2 cells for CJK /
+                        // emoji), like the block cursor does.
+                        let wcells = cursor_wcells;
                         let b = if beam {
                             Bounds {
                                 origin: point(px(x), px(oy)),
@@ -2142,7 +2161,7 @@ pub fn render_grid(
                         } else {
                             Bounds {
                                 origin: point(px(x), px(oy + ch - t)),
-                                size: size(px(cw), px(t)),
+                                size: size(px(cw * wcells as f32), px(t)),
                             }
                         };
                         window.paint_quad(fill(b, cursor_rgba.unwrap_or_else(default_fg)));
@@ -2201,7 +2220,7 @@ pub fn render_grid(
 /// and clamp it into the row: the run builder drops spacer cells, so the
 /// raw column would never produce a cursor run, and pending-wrap parks
 /// the emulator cursor one past the last column.
-fn cursor_base_col(cells: &[SnapshotCell], col: usize) -> usize {
+pub(crate) fn cursor_base_col(cells: &[SnapshotCell], col: usize) -> usize {
     let mut c = col.min(cells.len().saturating_sub(1));
     while c > 0 && cells.get(c).is_some_and(|cell| cell.display_width == 0) {
         c -= 1;

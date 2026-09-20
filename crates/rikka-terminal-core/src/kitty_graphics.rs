@@ -525,12 +525,19 @@ impl KittyImageStore {
         true
     }
 
+    /// Record an `a=p` placement's explicit size. There is one geometry per
+    /// image id (placeholder cells only carry tile coordinates), so a
+    /// placement WITHOUT `c=`/`r=` keeps the size already stored rather
+    /// than zeroing it — zero would re-paint every earlier placement of
+    /// this id at natural pixel size inside its old cell footprint.
     fn set_placement(&self, id: u32, cols: u16, rows: u16) -> bool {
         let mut inner = self.inner.lock();
         match inner.map.get_mut(&id) {
             Some(img) => {
-                img.cols = cols;
-                img.rows = rows;
+                if cols > 0 && rows > 0 {
+                    img.cols = cols;
+                    img.rows = rows;
+                }
                 true
             }
             None => false,

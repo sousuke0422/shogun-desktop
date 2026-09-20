@@ -191,6 +191,7 @@ pub fn render_terminal_tab(
                                 window,
                                 view.clone(),
                                 bounds,
+                                None,
                                 selection_pane(is_shogun),
                                 cw,
                                 ch,

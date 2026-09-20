@@ -5834,6 +5834,7 @@ dependencies = [
 name = "rikka-terminal-gpui-ime"
 version = "0.1.0"
 dependencies = [
+ "unicode-width 0.2.2",
  "windows 0.61.3",
  "windows-core 0.61.2",
 ]

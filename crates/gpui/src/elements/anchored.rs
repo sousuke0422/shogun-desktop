@@ -154,7 +154,13 @@ impl Element for Anchored {
             size: window.viewport_size(),
         };
 
-        if self.fit_mode == AnchoredFitMode::SwitchAnchor {
+        // Snap modes also try the opposite corner first: a context menu
+        // opened near the bottom edge should open upward, not be translated
+        // over the click point.
+        if matches!(
+            self.fit_mode,
+            AnchoredFitMode::SwitchAnchor | AnchoredFitMode::SnapToWindowWithMargin(_)
+        ) {
             let mut anchor_corner = self.anchor_corner;
 
             if desired.left() < limits.left() || desired.right() > limits.right() {

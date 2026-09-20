@@ -66,6 +66,12 @@ struct Shared {
     text: Vec<u16>,
     selection: Range<usize>,
     caret: Option<CaretRect>,
+    /// Screen position of the client origin when `caret` was last
+    /// published. The caret is client-relative, so moving the window keeps
+    /// it byte-identical; comparing this too makes `set_caret` raise
+    /// `OnLayoutChange` after a move, or the candidate window stays where
+    /// the window used to be.
+    caret_screen_origin: (i32, i32),
     /// Inside a composition (between OnStartComposition and OnEndComposition).
     composing: bool,
     /// Events for the app, drained by [`crate::drain_events`].
@@ -94,6 +100,7 @@ impl Shared {
             text: Vec::new(),
             selection: 0..0,
             caret: None,
+            caret_screen_origin: (0, 0),
             composing: false,
             events: Vec::new(),
             needs_reset: false,
@@ -369,10 +376,12 @@ impl crate::Backend for WindowsTsf {
     fn set_caret(&mut self, caret: Option<CaretRect>) {
         let sink = {
             let mut state = self.state.borrow_mut();
-            if state.caret == caret {
+            let origin = client_origin_on_screen(state.hwnd);
+            if state.caret == caret && state.caret_screen_origin == origin {
                 return;
             }
             state.caret = caret;
+            state.caret_screen_origin = origin;
             // Tell the TIP the layout moved so it re-queries GetTextExt and
             // repositions the candidate window — but never from inside a lock
             // (set_caret runs in app control flow, so lock is None; the check
@@ -757,8 +766,8 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     fn GetTextExt(
         &self,
         _vcView: u32,
-        _acpStart: i32,
-        _acpEnd: i32,
+        acpStart: i32,
+        acpEnd: i32,
         prc: *mut RECT,
         pfClipped: *mut BOOL,
     ) -> WindowsResult<()> {
@@ -772,6 +781,13 @@ impl ITextStoreACP_Impl for TextStore_Impl {
             crate::tsf_log!("store: GetTextExt -> TS_E_NOLAYOUT (no caret rect)");
             WindowsError::from(TS_E_NOLAYOUT)
         })?;
+        // The published caret is the ONE cell the composition starts in.
+        // The preedit is painted inline from that cell, one cell per
+        // half-width character and two per full-width one, so the extent
+        // of `acpStart..acpEnd` is that many cells to the right — which is
+        // where the TIP wants the candidate list for the segment being
+        // converted, not at the phrase's first character.
+        let caret = text_ext_cells(caret, &state.text, acpStart, acpEnd);
         let screen = client_rect_to_screen(hwnd, caret);
         crate::tsf_log!(
             "store: GetTextExt -> screen ({},{})-({},{})",
@@ -1003,6 +1019,45 @@ impl ITextStoreACP_Impl for TextStore_Impl {
 /// Convert an app-supplied caret rect (client-area physical px) to the screen
 /// coordinates TSF expects. `hwnd_raw == 0` falls back to the foreground
 /// window, matching `GetWnd`.
+/// Shift/stretch the single-cell caret rect to cover UTF-16 range
+/// `start..end` of `text`, counting display cells (wide = 2).
+fn text_ext_cells(caret: CaretRect, text: &[u16], start: i32, end: i32) -> CaretRect {
+    use unicode_width::UnicodeWidthChar as _;
+    let cell_w = (caret.right - caret.left).max(1);
+    let len = text.len() as i32;
+    let start = start.clamp(0, len) as usize;
+    let end = end.clamp(start as i32, len) as usize;
+    let cells = |s: &[u16]| -> i32 {
+        char::decode_utf16(s.iter().copied())
+            .map(|c| {
+                c.map(|c| c.width().unwrap_or(1).clamp(1, 2) as i32)
+                    .unwrap_or(1)
+            })
+            .sum()
+    };
+    let before = cells(&text[..start]);
+    let span = cells(&text[start..end]).max(1);
+    CaretRect {
+        left: caret.left + before * cell_w,
+        top: caret.top,
+        right: caret.left + (before + span) * cell_w,
+        bottom: caret.bottom,
+    }
+}
+
+/// Where the window's client origin currently sits on screen.
+fn client_origin_on_screen(hwnd_raw: isize) -> (i32, i32) {
+    if hwnd_raw == 0 {
+        return (0, 0);
+    }
+    let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
+    let mut pt = POINT { x: 0, y: 0 };
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut pt);
+    }
+    (pt.x, pt.y)
+}
+
 fn client_rect_to_screen(hwnd_raw: isize, c: CaretRect) -> RECT {
     let hwnd = if hwnd_raw != 0 {
         HWND(hwnd_raw as *mut core::ffi::c_void)
@@ -1074,7 +1129,7 @@ pub(crate) fn self_check() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{acp_to_off, snap_surrogate};
+    use super::{CaretRect, acp_to_off, snap_surrogate, text_ext_cells};
 
     #[test]
     fn acp_minus_one_is_end_and_other_negatives_clamp_to_start() {
@@ -1093,5 +1148,29 @@ mod tests {
         for off in [0usize, 1, 3, 4] {
             assert_eq!(snap_surrogate(&text, off), off);
         }
+    }
+
+    #[test]
+    fn get_text_ext_follows_the_requested_segment() {
+        // One 10px cell at (100, 20); preedit "きょうはab" = 3 wide + 2 narrow.
+        let caret = CaretRect {
+            left: 100,
+            top: 20,
+            right: 110,
+            bottom: 40,
+        };
+        let text: Vec<u16> = "きょうはab".encode_utf16().collect();
+        // Whole phrase: 4 wide chars (8 cells) + 2 narrow = 10 cells.
+        let all = text_ext_cells(caret, &text, 0, text.len() as i32);
+        assert_eq!((all.left, all.right), (100, 200));
+        // Second bunsetsu "はab" starts after 3 wide chars = 6 cells.
+        let seg = text_ext_cells(caret, &text, 3, 6);
+        assert_eq!((seg.left, seg.right), (160, 200));
+        // An empty range still reports one cell (the insertion point).
+        let pt = text_ext_cells(caret, &text, 2, 2);
+        assert_eq!((pt.left, pt.right), (140, 150));
+        // Out-of-range ACPs clamp instead of panicking.
+        let bad = text_ext_cells(caret, &text, -5, 99);
+        assert_eq!((bad.left, bad.right), (100, 200));
     }
 }

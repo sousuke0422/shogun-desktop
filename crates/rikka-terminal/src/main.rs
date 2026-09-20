@@ -748,7 +748,15 @@ fn render_progress_bar(
 fn icon_element(icon: tab_icon::TabIcon, margin_right: f32) -> gpui::AnyElement {
     let inner: gpui::AnyElement = match icon {
         tab_icon::TabIcon::Image(data) => gpui::img(data).w(px(16.)).h(px(16.)).into_any_element(),
+        // Same 16px slot as the raster icon and the progress ring: a nerd-
+        // font glyph's advance is 11–14px at this size and would otherwise
+        // shift the title when the ring swaps in.
         tab_icon::TabIcon::Glyph { text, tint } => div()
+            .w(px(16.))
+            .h(px(16.))
+            .flex()
+            .items_center()
+            .justify_center()
             .font_family(tab_icon::FONT_LOGOS)
             .text_size(px(14.))
             .text_color(rgb(tint))
@@ -801,6 +809,8 @@ struct Leaf {
     measured: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
     origin: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
     scrollbar: std::rc::Rc<std::cell::RefCell<ScrollbarUi>>,
+    /// Device cell size of the last per-pane PTY fit (see TabsWindow::fit_px).
+    fit_px: std::cell::Cell<(f32, f32)>,
 }
 
 /// Overlay scrollbar state of one pane — WinUI's auto-hiding indicator, the
@@ -820,9 +830,16 @@ struct ScrollbarUi {
     hide_armed: bool,
 }
 
+/// Width reserved for the tab context menu when clamping it to the window:
+/// its widest label (全タブへのブロードキャストを停止, 16 full-width glyphs at
+/// 13px) plus 12px padding each side.
+const TAB_MENU_W: f32 = 240.0;
+
 const SCROLLBAR_LINGER: Duration = Duration::from_millis(1200);
 /// Pointer zone at the pane's right edge that reveals and operates the bar.
 const SCROLLBAR_ZONE_W: f32 = 12.0;
+/// Thumb never shrinks below this fraction of the track.
+const SCROLLBAR_MIN_THUMB: f32 = 0.04;
 
 impl Default for ScrollbarUi {
     fn default() -> Self {
@@ -852,9 +869,69 @@ impl ScrollbarUi {
 fn scrollbar_thumb(history: usize, rows: usize, offset: usize, min_frac: f32) -> (f32, f32) {
     let total = (history + rows).max(1) as f32;
     let h = (rows as f32 / total).clamp(min_frac.min(1.0), 1.0);
+    // Map the scrollable range [0, history] onto the thumb's actual travel
+    // `1 − h`. Mapping onto the full track and then clamping left a dead
+    // band at the bottom whenever the minimum thumb size kicked in (with a
+    // 10 000-line scrollback the last ~360 lines all painted the thumb at
+    // the same place, and a drag detached from the pointer there).
     let top_line = history.saturating_sub(offset) as f32;
-    let top = (top_line / total).min(1.0 - h);
+    let top = if history == 0 {
+        0.0
+    } else {
+        (top_line / history as f32).clamp(0.0, 1.0) * (1.0 - h)
+    };
     (top, h)
+}
+
+/// The pane to focus from `active` when Alt+`key` is pressed, over
+/// normalized (id, x, y, w, h) rects. A candidate must lie wholly in the
+/// pressed direction AND share extent on the other axis (a pane below-right
+/// of a tall neighbour is not "down"); the nearest facing edge wins, ties
+/// broken by the centre offset on the other axis.
+fn pane_in_direction(
+    rects: &[(usize, f32, f32, f32, f32)],
+    active: usize,
+    key: &str,
+) -> Option<usize> {
+    let &(_, ax, ay, aw, ah) = rects.iter().find(|(id, ..)| *id == active)?;
+    let (mx, my) = (ax + aw / 2.0, ay + ah / 2.0);
+    let overlaps = |a0: f32, a1: f32, b0: f32, b1: f32| a0 < b1 - 1e-3 && b0 < a1 - 1e-3;
+    rects
+        .iter()
+        .filter(|(id, ..)| *id != active)
+        .filter_map(|&(id, x, y, w, h)| {
+            let (px_, py_) = (x + w / 2.0, y + h / 2.0);
+            let (gap, lateral) = match key {
+                "left" if x + w <= ax + 1e-3 && overlaps(y, y + h, ay, ay + ah) => {
+                    (ax - (x + w), (py_ - my).abs())
+                }
+                "right" if x >= ax + aw - 1e-3 && overlaps(y, y + h, ay, ay + ah) => {
+                    (x - (ax + aw), (py_ - my).abs())
+                }
+                "up" if y + h <= ay + 1e-3 && overlaps(x, x + w, ax, ax + aw) => {
+                    (ay - (y + h), (px_ - mx).abs())
+                }
+                "down" if y >= ay + ah - 1e-3 && overlaps(x, x + w, ax, ax + aw) => {
+                    (y - (ay + ah), (px_ - mx).abs())
+                }
+                _ => return None,
+            };
+            Some((id, gap, lateral))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)))
+        .map(|(id, ..)| id)
+}
+
+/// Inverse of [`scrollbar_thumb`]: a thumb-top fraction of the track back to
+/// a history offset (lines of history above the viewport's top).
+fn scrollbar_offset_at(history: usize, rows: usize, top_frac: f32, min_frac: f32) -> usize {
+    let total = (history + rows).max(1) as f32;
+    let h = (rows as f32 / total).clamp(min_frac.min(1.0), 1.0);
+    let travel = (1.0 - h).max(f32::EPSILON);
+    let top_line = (top_frac.clamp(0.0, travel) / travel) * history as f32;
+    (history as f32 - top_line)
+        .round()
+        .clamp(0.0, history as f32) as usize
 }
 
 impl Leaf {
@@ -865,6 +942,7 @@ impl Leaf {
             measured: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
             origin: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
             scrollbar: std::rc::Rc::new(std::cell::RefCell::new(ScrollbarUi::default())),
+            fit_px: std::cell::Cell::new((0.0, 0.0)),
         }
     }
 }
@@ -1035,6 +1113,21 @@ impl PaneNode {
         matches!(node, PaneNode::Split { .. }).then_some((x, y, w, h))
     }
 
+    /// Ratio of the Split at `path`; `None` for a stale path.
+    fn ratio_at(&self, path: &[bool]) -> Option<f32> {
+        let mut node = self;
+        for &go_b in path {
+            let PaneNode::Split { a, b, .. } = node else {
+                return None;
+            };
+            node = if go_b { b } else { a };
+        }
+        match node {
+            PaneNode::Split { ratio, .. } => Some(*ratio),
+            _ => None,
+        }
+    }
+
     /// Set the ratio of the Split at `path`; a stale path no-ops.
     fn set_ratio(&mut self, path: &[bool], new_ratio: f32) {
         let mut node = self;
@@ -1203,8 +1296,12 @@ fn create_tab_spec(cx: &mut App, spec: &cli::TabSpec) -> Option<TabEntry> {
 #[cfg(windows)]
 fn other_process_under_cursor() -> Option<(u32, (i32, i32))> {
     use windows::Win32::Foundation::POINT;
+    use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{
         GA_ROOT, GetAncestor, GetCursorPos, GetWindowThreadProcessId, WindowFromPoint,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GW_HWNDNEXT, GetWindow, GetWindowRect, IsWindowVisible,
     };
     let mut pt = POINT::default();
     unsafe { GetCursorPos(&mut pt) }.ok()?;
@@ -1212,10 +1309,42 @@ fn other_process_under_cursor() -> Option<(u32, (i32, i32))> {
     if hwnd.0.is_null() {
         return None;
     }
-    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
-    let mut pid = 0u32;
-    unsafe { GetWindowThreadProcessId(root, Some(&mut pid)) };
-    (pid != 0 && pid != std::process::id()).then_some((pid, (pt.x, pt.y)))
+    // The topmost window under the pointer is usually OUR drag follower
+    // (the chip is placed under the pointer on purpose). Walk down the
+    // z-order past every window of this process to the first foreign
+    // visible top-level window that contains the point.
+    let mut root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    for _ in 0..64 {
+        if root.0.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(root, Some(&mut pid)) };
+        if pid != 0 && pid != std::process::id() {
+            return Some((pid, (pt.x, pt.y)));
+        }
+        // Next top-level window below in z-order that is visible and
+        // under the point.
+        let mut next = unsafe { GetWindow(root, GW_HWNDNEXT) }.ok()?;
+        loop {
+            if next.0.is_null() {
+                return None;
+            }
+            let mut rc = RECT::default();
+            let visible = unsafe { IsWindowVisible(next) }.as_bool()
+                && unsafe { GetWindowRect(next, &mut rc) }.is_ok()
+                && pt.x >= rc.left
+                && pt.x < rc.right
+                && pt.y >= rc.top
+                && pt.y < rc.bottom;
+            if visible {
+                break;
+            }
+            next = unsafe { GetWindow(next, GW_HWNDNEXT) }.ok()?;
+        }
+        root = next;
+    }
+    None
 }
 
 /// Strip content-x → insertion index: the gap nearest the drop point.
@@ -1443,6 +1572,10 @@ pub struct TabsWindow {
     /// after a tab switch or an adoption from another window).
     cols: u16,
     rows: u16,
+    /// Device-pixel cell size that went with (cols, rows): a scale-factor
+    /// change can leave the cell COUNT identical while CSI 14t/16t and
+    /// every image footprint still need the new pixel size.
+    fit_px: (f32, f32),
     /// Last OSC title applied to the OS window (dedup).
     applied_title: Option<String>,
     /// The new-tab profile dropdown is open (rendered below the strip).
@@ -1476,7 +1609,8 @@ pub struct TabsWindow {
     /// A live divider resize: the Split's path in the active tab's tree
     /// (`false` = a, `true` = b) plus its orientation. Mouse moves on the
     /// window root steer the ratio while this is set.
-    divider_drag: Option<(Vec<bool>, bool)>,
+    /// (split path, horizontal, pointer offset from the divider at press).
+    divider_drag: Option<(Vec<bool>, bool, f32)>,
     /// Window-wide broadcast: input fans out to every pane of EVERY tab
     /// of this window (iTerm2's "all panes in all tabs"). Independent of
     /// the per-tab toggle; either one being on broadcasts.
@@ -1595,6 +1729,7 @@ impl TabsWindow {
             window_active: true,
             cols: 0,
             rows: 0,
+            fit_px: (0.0, 0.0),
             applied_title: None,
             profile_menu: false,
             tab_menu: None,
@@ -2029,6 +2164,11 @@ impl TabsWindow {
         {
             entry.0.shutdown();
         }
+        // The survivor of a 2→1 collapse is no longer fit per pane
+        // (render_leaf only fits split tabs), and the window-wide fit is
+        // change-gated on (cols, rows) — which still "match". Reset the
+        // gate so the next frame refits it to the whole pane.
+        self.after_tab_change(cx);
         cx.notify();
     }
 
@@ -2041,30 +2181,7 @@ impl TabsWindow {
         };
         let mut rects = Vec::new();
         tab.root.rects(0.0, 0.0, 1.0, 1.0, &mut rects);
-        let Some(&(_, cx0, cy0, cw0, chh0)) = rects.iter().find(|(id, ..)| *id == tab.active_pane)
-        else {
-            return;
-        };
-        let (mx, my) = (cx0 + cw0 / 2.0, cy0 + chh0 / 2.0);
-        let best = rects
-            .iter()
-            .filter(|(id, ..)| *id != tab.active_pane)
-            .filter_map(|&(id, x, y, w, h)| {
-                let (px_, py_) = (x + w / 2.0, y + h / 2.0);
-                let ok = match key {
-                    "left" => px_ < mx - 1e-3,
-                    "right" => px_ > mx + 1e-3,
-                    "up" => py_ < my - 1e-3,
-                    "down" => py_ > my + 1e-3,
-                    _ => false,
-                };
-                ok.then(|| {
-                    let d = (px_ - mx).powi(2) + (py_ - my).powi(2);
-                    (id, d)
-                })
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(id, _)| id);
+        let best = pane_in_direction(&rects, tab.active_pane, key);
         if let Some(id) = best {
             tab.active_pane = id;
             cx.notify();
@@ -2074,13 +2191,29 @@ impl TabsWindow {
     /// Steer a live divider drag: the mouse position maps to the grabbed
     /// Split's ratio (clamped so neither side can collapse away). The pane
     /// area mirrors render's layout — the strip above, `px_1` at the sides.
+    /// Window-space position of a Split's divider (x for a horizontal split,
+    /// y for a vertical one), in the same arithmetic drag_divider_to uses.
+    fn divider_pos(&self, path: &[bool], horizontal: bool, window: &Window) -> Option<f32> {
+        let tab = self.tabs.get(self.active)?;
+        let (nx, ny, nw, nh) = tab.root.split_rect(path)?;
+        let ratio = tab.root.ratio_at(path)?;
+        let vp = window.viewport_size();
+        Some(if horizontal {
+            let area_w = (vp.width / px(1.) - 8.0).max(1.0);
+            4.0 + (nx + nw * ratio) * area_w
+        } else {
+            let area_h = (vp.height / px(1.) - TAB_STRIP_H).max(1.0);
+            TAB_STRIP_H + (ny + nh * ratio) * area_h
+        })
+    }
+
     fn drag_divider_to(
         &mut self,
         pos: gpui::Point<gpui::Pixels>,
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((path, horizontal)) = self.divider_drag.clone() else {
+        let Some((path, horizontal, grab)) = self.divider_drag.clone() else {
             return;
         };
         let Some(tab) = self.tabs.get_mut(self.active) else {
@@ -2093,11 +2226,11 @@ impl TabsWindow {
         let ratio = if horizontal {
             let area_w = (vp.width / px(1.) - 8.0).max(1.0);
             let sx = 4.0 + nx * area_w;
-            (pos.x / px(1.) - sx) / (nw * area_w).max(1.0)
+            (pos.x / px(1.) - grab - sx) / (nw * area_w).max(1.0)
         } else {
             let area_h = (vp.height / px(1.) - TAB_STRIP_H).max(1.0);
             let sy = TAB_STRIP_H + ny * area_h;
-            (pos.y / px(1.) - sy) / (nh * area_h).max(1.0)
+            (pos.y / px(1.) - grab - sy) / (nh * area_h).max(1.0)
         }
         .clamp(0.1, 0.9);
         tab.root.set_ratio(&path, ratio);
@@ -2137,16 +2270,36 @@ impl TabsWindow {
         let root = window.bounds().origin;
         let chip = point(root.x + pos.x - px(gx), root.y + pos.y - px(gy));
 
+        // gpui's "logical" coordinates are per-window: each window divides
+        // screen pixels by ITS monitor's scale factor, so `chip` (in this
+        // window's space) fed to the follower — which converts with its own,
+        // live scale factor — lands wrong the moment the pointer is on a
+        // monitor of a different DPI. Place the popup in physical pixels
+        // instead, from the physical pointer position.
+        let sf_src = window.scale_factor();
+        let grab_phys = (gx * sf_src, gy * sf_src);
         if let Some(handle) = self.drag_follower {
-            // set_position places the WINDOW, so step back by the inset the
-            // chip sits behind.
-            let win_origin = point(chip.x - px(FOLLOWER_INSET), chip.y - px(FOLLOWER_INSET));
-            let _ = handle.update(cx, |_, win, _| win.set_position(win_origin));
+            let _ = handle.update(cx, |_, win, _| {
+                let inset = FOLLOWER_INSET * win.scale_factor();
+                if !place_follower_physical(grab_phys, inset) {
+                    // Non-Windows / no HWND yet: gpui's logical fallback.
+                    let win_origin =
+                        point(chip.x - px(FOLLOWER_INSET), chip.y - px(FOLLOWER_INSET));
+                    win.set_position(win_origin);
+                }
+            });
             return;
         }
         self.drag_follower = open_drag_follower_window(title, chip, cx);
-        // The popup exists now; take DWM's shadow off it before it is seen.
+        // The popup exists now; take DWM's shadow off it before it is seen,
+        // and put it where the pointer really is (gpui placed it with the
+        // primary monitor's scale factor).
         strip_tool_window_shadows();
+        if let Some(handle) = self.drag_follower {
+            let _ = handle.update(cx, |_, win, _| {
+                place_follower_physical(grab_phys, FOLLOWER_INSET * win.scale_factor());
+            });
+        }
     }
 
     /// Retire the follower window, if one is up.
@@ -2416,33 +2569,44 @@ impl TabsWindow {
                         }
                     })
                     .bg(gpui::rgba(DIVIDER));
-                // The grab strip: an invisible 7px band centered on the 1px
-                // divider, painted last so it wins hit-testing over both
-                // children. Dragging it steers this Split's ratio (mouse
+                // The grab strip: an invisible 5px band starting AT the 1px
+                // divider and extending into the second pane, painted last so
+                // it wins hit-testing. It does not reach back into the first
+                // pane, whose overlay scrollbar sits flush against this edge. Dragging it steers this Split's ratio (mouse
                 // moves land on the window root — see drag_divider_to).
                 let grab = div()
                     .absolute()
                     .map(|d| {
                         if horizontal {
                             d.left(gpui::relative(ratio))
-                                .ml(px(-3.))
                                 .top_0()
                                 .bottom_0()
-                                .w(px(7.))
+                                .w(px(5.))
                                 .cursor(gpui::CursorStyle::ResizeLeftRight)
                         } else {
                             d.top(gpui::relative(ratio))
-                                .mt(px(-3.))
                                 .left_0()
                                 .right_0()
-                                .h(px(7.))
+                                .h(px(5.))
                                 .cursor(gpui::CursorStyle::ResizeUpDown)
                         }
                     })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(move |this, _: &gpui::MouseDownEvent, _w, cx| {
-                            this.divider_drag = Some((path.clone(), horizontal));
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, window, cx| {
+                            // Remember how far the press is from the divider so
+                            // the divider does not jump onto the pointer.
+                            let grab = this
+                                .divider_pos(&path, horizontal, window)
+                                .map(|d| {
+                                    if horizontal {
+                                        ev.position.x / px(1.) - d
+                                    } else {
+                                        ev.position.y / px(1.) - d
+                                    }
+                                })
+                                .unwrap_or(0.0);
+                            this.divider_drag = Some((path.clone(), horizontal, grab));
                             cx.stop_propagation();
                         }),
                     );
@@ -2508,7 +2672,12 @@ impl TabsWindow {
         } else {
             drop(ui);
         }
-        let (top, h) = scrollbar_thumb(snap.history_len, snap.rows, snap.display_offset, 0.04);
+        let (top, h) = scrollbar_thumb(
+            snap.history_len,
+            snap.rows,
+            snap.display_offset,
+            SCROLLBAR_MIN_THUMB,
+        );
         // WinUI ScrollViewer defaults: 2 px resting indicator, 6 px expanded
         // on pointer-over, 8 px thumb while dragging.
         let w = if dragging {
@@ -2525,6 +2694,7 @@ impl TabsWindow {
         };
         let history = snap.history_len;
         let rows = snap.rows;
+        let bar_w = if hovered || dragging { w } else { 6.0 };
         let zone = div()
             // Stateful: `on_hover` needs an element id.
             .id(("scrollbar", pane_id))
@@ -2561,19 +2731,19 @@ impl TabsWindow {
                     else {
                         return;
                     };
-                    let (_, oy) = leaf.origin.get();
-                    let (_, mh) = leaf.measured.get();
-                    if mh <= 0.0 {
+                    // C3/C9: only the visible bar's width takes the press;
+                    // the rest of the 12px hover zone lies over painted text
+                    // and must keep working for selection / mouse reports.
+                    let (ox, oy) = leaf.origin.get();
+                    let (mw, mh) = leaf.measured.get();
+                    if mh <= 0.0 || ev.position.x / px(1.) < ox + mw - bar_w {
                         return;
                     }
                     let frac = ((ev.position.y / px(1.) - oy) / mh).clamp(0.0, 1.0);
-                    let total = (history + rows) as f32;
-                    let centre_line = frac * total;
-                    let top_line = (centre_line - rows as f32 / 2.0).max(0.0);
-                    let offset = (history as f32 - top_line)
-                        .round()
-                        .clamp(0.0, history as f32);
-                    leaf.entry.0.session.scroll_display_to(offset as usize);
+                    let (_, h) = scrollbar_thumb(history, rows, 0, SCROLLBAR_MIN_THUMB);
+                    let offset =
+                        scrollbar_offset_at(history, rows, frac - h / 2.0, SCROLLBAR_MIN_THUMB);
+                    leaf.entry.0.session.scroll_display_to(offset);
                     leaf.scrollbar.borrow_mut().touch();
                     cx.notify();
                     cx.stop_propagation();
@@ -2639,8 +2809,10 @@ impl TabsWindow {
             if (
                 session.cols.load(Ordering::Relaxed),
                 session.rows.load(Ordering::Relaxed),
-            ) != (cols, rows)
+                leaf.fit_px.get(),
+            ) != (cols, rows, (cw * sf, ch * sf))
             {
+                leaf.fit_px.set((cw * sf, ch * sf));
                 session.resize(cols, rows, (cw * sf, ch * sf));
             }
         }
@@ -2661,6 +2833,10 @@ impl TabsWindow {
             .size_full()
             .min_w_0()
             .min_h_0()
+            // The grid keeps its old width until the PTY refit settles
+            // (120 ms), so a shrinking pane would paint over its neighbour
+            // for the whole divider drag without this clip.
+            .overflow_hidden()
             // Click moves the pane focus (split tabs). Right-click too —
             // the context menu's pane actions must hit the pane that was
             // clicked, not whichever held the focus before.
@@ -2718,10 +2894,23 @@ impl TabsWindow {
                     return;
                 }
                 let dy = ev.position.y / px(1.) - start_y;
-                let lines = (dy / mh * total).round() as i64;
                 // Thumb down = viewport down = fewer history lines above.
-                let target = (start_offset as i64 - lines).clamp(0, snap.history_len as i64);
-                leaf.entry.0.session.scroll_display_to(target as usize);
+                // Same mapping as the painter, so the thumb stays under the
+                // pointer even where the minimum thumb size applies.
+                let (start_top, _) = scrollbar_thumb(
+                    snap.history_len,
+                    snap.rows,
+                    start_offset,
+                    SCROLLBAR_MIN_THUMB,
+                );
+                let target = scrollbar_offset_at(
+                    snap.history_len,
+                    snap.rows,
+                    start_top + dy / mh,
+                    SCROLLBAR_MIN_THUMB,
+                );
+                let _ = total;
+                leaf.entry.0.session.scroll_display_to(target);
                 leaf.scrollbar.borrow_mut().touch();
                 cx.notify();
             }))
@@ -3012,6 +3201,7 @@ impl TabsWindow {
         // been sized by another window) and re-sync the OS title.
         self.cols = 0;
         self.rows = 0;
+        self.fit_px = (0.0, 0.0);
         self.applied_title = None;
         // An IME composition in flight belongs to the tab we just left; the
         // next render (which has the Window needed to check focus and
@@ -3424,9 +3614,10 @@ impl Render for TabsWindow {
         if content_w > cw && content_h > ch {
             let new_cols = ((content_w / cw) as u16).max(2);
             let new_rows = ((content_h / ch) as u16).max(2);
-            if (new_cols, new_rows) != (self.cols, self.rows) {
+            if (new_cols, new_rows, (cw * sf, ch * sf)) != (self.cols, self.rows, self.fit_px) {
                 self.cols = new_cols;
                 self.rows = new_rows;
+                self.fit_px = (cw * sf, ch * sf);
                 // Every tab, not just the active one: the guard above is
                 // window state, so a background tab that misses this moment
                 // would never be re-fit — by the time it's activated the
@@ -3493,7 +3684,21 @@ impl Render for TabsWindow {
         // [+]), for dropping the menu under it instead of the strip's left
         // corner. Clamped so the 200px menu stays on-screen; the scroll case
         // (⌄ scrolled to the right end) lands near the clamp, close enough.
-        let chevron_x = 8.0 + self.tabs.len() as f32 * tab_w + 32.0;
+        // Same layout the strip paints: pl_2 + scroll arrow (22) when tabs
+        // overflow + tabs + the 1px separators (before every tab except the
+        // first, the active one and its right neighbour) + [+] with its 4px
+        // margin + the ⌄'s own 6px margin.
+        let n = self.tabs.len();
+        let separators = (1..n)
+            .filter(|&ix| ix != active_ix && ix - 1 != active_ix)
+            .count() as f32;
+        let chevron_x = 8.0
+            + if needs_scroll { 22.0 } else { 0.0 }
+            + n as f32 * tab_w
+            + separators
+            + 4.0
+            + 32.0
+            + 6.0;
         let menu_left = chevron_x.clamp(8.0, (vp.width / px(1.) - 208.0).max(8.0));
         let tab_viewport = div()
             .id("tab-viewport")
@@ -4226,6 +4431,9 @@ impl Render for TabsWindow {
                         .absolute()
                         .top(px(TAB_STRIP_H + 10.))
                         .right(px(14.))
+                        // Presses on the bar's buttons are the bar's alone —
+                        // not also a click on the terminal cell beneath.
+                        .occlude()
                         .child(bar)
                 })
             })
@@ -4240,9 +4448,11 @@ impl Render for TabsWindow {
                         .top_0()
                         .left_0()
                         .size_full()
+                        .occlude()
                         .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
                             this.profile_menu = false;
                             cx.notify();
+                            cx.stop_propagation();
                         })),
                 )
                 .child(
@@ -4330,7 +4540,7 @@ impl Render for TabsWindow {
                     .filter(|t| t.is_split())
                     .map(|t| t.broadcast);
                 let vw = window.viewport_size().width / px(1.);
-                let left = at_x.min(vw - 200.).max(0.);
+                let left = at_x.min(vw - TAB_MENU_W).max(0.);
                 let item = |id: &'static str, label: &'static str| {
                     div()
                         .id(id)
@@ -4351,9 +4561,11 @@ impl Render for TabsWindow {
                         .top_0()
                         .left_0()
                         .size_full()
+                        .occlude()
                         .on_click(cx.listener(|this, _: &ClickEvent, _win, cx| {
                             this.tab_menu = None;
                             cx.notify();
+                            cx.stop_propagation();
                         })),
                 )
                 .child(
@@ -4467,6 +4679,61 @@ impl Render for TabsWindow {
 /// than as depth. `DWMNCRP_DISABLED` turns off non-client rendering for that
 /// window only. DWM attribute only — no gpui changes, same as the dark
 /// titlebar pass below.
+/// Move our (only) tool window so the chip sits `grab_phys` physical pixels
+/// up-left of the physical pointer. Returns false when there is no such
+/// window (or off Windows), so the caller can fall back to gpui.
+#[cfg(windows)]
+fn place_follower_physical(grab_phys: (f32, f32), inset_phys: f32) -> bool {
+    use windows::Win32::Foundation::{HWND, LPARAM, POINT};
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GWL_EXSTYLE, GetCursorPos, GetWindowLongPtrW, GetWindowThreadProcessId,
+        SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WS_EX_TOOLWINDOW,
+    };
+    use windows::core::BOOL;
+    unsafe extern "system" fn find(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let out = lparam.0 as *mut (u32, HWND);
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        if pid == unsafe { (*out).0 } {
+            let ex = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+            if ex & WS_EX_TOOLWINDOW.0 != 0 {
+                unsafe { (*out).1 = hwnd };
+                return BOOL(0);
+            }
+        }
+        BOOL(1)
+    }
+    let mut out = (unsafe { GetCurrentProcessId() }, HWND::default());
+    let _ = unsafe { EnumWindows(Some(find), LPARAM(&raw mut out as isize)) };
+    if out.1.0.is_null() {
+        return false;
+    }
+    let mut pt = POINT::default();
+    if unsafe { GetCursorPos(&mut pt) }.is_err() {
+        return false;
+    }
+    let x = (pt.x as f32 - grab_phys.0 - inset_phys).round() as i32;
+    let y = (pt.y as f32 - grab_phys.1 - inset_phys).round() as i32;
+    unsafe {
+        SetWindowPos(
+            out.1,
+            None,
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .is_ok()
+    }
+}
+
+#[cfg(not(windows))]
+fn place_follower_physical(_grab_phys: (f32, f32), _inset_phys: f32) -> bool {
+    false
+}
+
 #[cfg(windows)]
 fn strip_tool_window_shadows() {
     use windows::Win32::Foundation::{HWND, LPARAM};
@@ -4546,12 +4813,18 @@ fn open_tabs_window(cx: &mut App, initial: Vec<TabEntry>) {
 /// ESTIMATES (real metrics need a live window; the PTY refits to the painted
 /// pane on the first frame, so only the window's outer size is approximate).
 fn open_tabs_window_opts(cx: &mut App, initial: Vec<TabEntry>, launch: &cli::Launch) {
-    const EST_CW: f32 = 8.5;
-    const EST_CH: f32 = 21.0;
+    // Estimates from the configured typography (a live window is needed
+    // for the exact DirectWrite advance): Consolas' '0' is 0.55 em, and the
+    // row height is font_size × line_height ceil-snapped at 100 %.
+    let font_size = rikka_terminal_core::typography::font_size() / px(1.);
+    let est_cw = font_size * 0.55;
+    let est_ch = (font_size * rikka_terminal_core::typography::line_height()).ceil();
+    // Reserve exactly what the fit subtracts (PAD horizontally, the tab
+    // strip vertically — the pane has no vertical padding).
     let win_size = match launch.size_cells {
         Some((c, r)) => size(
-            px(c as f32 * EST_CW + PAD * 2.0),
-            px(r as f32 * EST_CH + TAB_STRIP_H + PAD * 2.0),
+            px(c as f32 * est_cw + PAD),
+            px(r as f32 * est_ch + TAB_STRIP_H),
         ),
         None => size(px(1000.), px(640.)),
     };
@@ -6317,5 +6590,40 @@ mod tests {
         let (top, h) = scrollbar_thumb(100_000, 24, 0, 0.04);
         assert_eq!(h, 0.04);
         assert!(top + h <= 1.0 + 1e-6);
+    }
+
+    #[test]
+    fn scrollbar_thumb_has_no_dead_band_at_the_minimum_size() {
+        // 10 000 lines of history, 40 rows: the thumb is clamped to 4 %.
+        // The live bottom is flush with the track end, and every step
+        // back moves the thumb — no band of offsets painting the same top.
+        let (bottom, h) = scrollbar_thumb(10_000, 40, 0, 0.04);
+        assert!((bottom + h - 1.0).abs() < 1e-6);
+        let (t1, _) = scrollbar_thumb(10_000, 40, 100, 0.04);
+        let (t2, _) = scrollbar_thumb(10_000, 40, 300, 0.04);
+        assert!(t1 < bottom && t2 < t1);
+        // Painter and drag/track mapping are inverses across the travel.
+        for offset in [0usize, 1, 37, 4_000, 9_999, 10_000] {
+            let (top, _) = scrollbar_thumb(10_000, 40, offset, 0.04);
+            assert_eq!(scrollbar_offset_at(10_000, 40, top, 0.04), offset);
+        }
+        // Past the travel the mapping saturates at the ends.
+        assert_eq!(scrollbar_offset_at(10_000, 40, -0.5, 0.04), 10_000);
+        assert_eq!(scrollbar_offset_at(10_000, 40, 1.5, 0.04), 0);
+    }
+
+    #[test]
+    fn pane_direction_requires_overlap_on_the_other_axis() {
+        // Left half A (full height); right half split into B (top 90 %)
+        // and C (bottom 10 %). From A, "down" must find nothing (nothing is
+        // below A), and "right" must prefer B, which faces most of A's edge.
+        let a = (0usize, 0.0f32, 0.0f32, 0.5f32, 1.0f32);
+        let b = (1usize, 0.5f32, 0.0f32, 0.5f32, 0.9f32);
+        let c = (2usize, 0.5f32, 0.9f32, 0.5f32, 0.1f32);
+        assert_eq!(pane_in_direction(&[a, b, c], 0, "down"), None);
+        assert_eq!(pane_in_direction(&[a, b, c], 0, "right"), Some(1));
+        // From C, "up" is B (shares C's column), never A.
+        assert_eq!(pane_in_direction(&[a, b, c], 2, "up"), Some(1));
+        assert_eq!(pane_in_direction(&[a, b, c], 2, "left"), Some(0));
     }
 }

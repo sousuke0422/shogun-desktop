@@ -129,7 +129,22 @@ impl<H: ImeHost> gpui::EntityInputHandler for TerminalIme<H> {
         let (row, col, rows) = {
             let session = host.ime_session()?;
             let snap = session.snapshot.lock();
+            // The snapshot cursor is already in viewport rows (shifted by the
+            // scrollback display offset); while scrolled back it lies below
+            // the viewport and there is no honest caret to report.
             let (row, col) = snap.cursor;
+            if row >= snap.rows {
+                return None;
+            }
+            // Same column snap as the painter: off a wide char's spacer cell
+            // and back from the pending-wrap column.
+            let col = snap
+                .cells
+                .get(row)
+                .map(|cells| {
+                    crate::renderer::cursor_base_col(cells, col.min(snap.cols.saturating_sub(1)))
+                })
+                .unwrap_or(col);
             (row, col, snap.rows)
         };
 

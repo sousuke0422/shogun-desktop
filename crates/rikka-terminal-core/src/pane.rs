@@ -114,8 +114,11 @@ where
         origin,
     } = args;
     canvas(
-        |_bounds, _window, _cx| (),
-        move |bounds: Bounds<Pixels>, (), window: &mut Window, cx| {
+        // A hitbox for the pane, so presses that land on chrome painted over
+        // it (search bar, menus, scrims — anything that `occlude()`s) are
+        // not also mapped to the terminal cell underneath.
+        |bounds, window, _cx| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+        move |bounds: Bounds<Pixels>, hitbox: gpui::Hitbox, window: &mut Window, cx| {
             // Report the painted pane origin back (no notify — layout moves
             // already repaint; the value is only read on later events).
             if let Some(origin) = &origin {
@@ -167,6 +170,7 @@ where
                 window,
                 view.clone(),
                 bounds,
+                Some(hitbox),
                 pane,
                 cw,
                 ch,
