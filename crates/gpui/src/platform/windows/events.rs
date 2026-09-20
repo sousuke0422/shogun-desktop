@@ -772,10 +772,15 @@ impl WindowsWindowInner {
         // Fix auto hide taskbar not showing. This solution is based on the approach
         // used by Chrome. However, it may result in one row of pixels being obscured
         // in our client area. But as Chrome says, "there seems to be no better solution."
-        if is_maximized
-            && let Some(ref taskbar_position) =
-                self.system_settings.borrow().auto_hide_taskbar_position
-        {
+        // `try_borrow`: WM_NCCALCSIZE can arrive re-entrantly from inside a
+        // SHAppBarMessage call made while the settings are being updated; a
+        // stale read is harmless there, a panic is fatal.
+        let taskbar_position = self
+            .system_settings
+            .try_borrow()
+            .ok()
+            .and_then(|s| s.auto_hide_taskbar_position);
+        if is_maximized && let Some(ref taskbar_position) = taskbar_position {
             // For the auto-hide taskbar, adjust in by 1 pixel on taskbar edge,
             // so the window isn't treated as a "fullscreen app", which would cause
             // the taskbar to disappear.
@@ -1168,7 +1173,16 @@ impl WindowsWindowInner {
             lock.border_offset.update(handle).log_err();
             // system settings may emit a window message which wants to take the refcell lock, so drop it
             drop(lock);
-            self.system_settings.borrow_mut().update(display, wparam.0);
+            // `update` calls SHAppBarMessage, which is a synchronous SendMessage to
+            // the shell; while it runs, the shell re-enters this window procedure
+            // with WM_NCCALCSIZE, whose handler reads `system_settings`. Holding
+            // `borrow_mut` across that call therefore panics ("already mutably
+            // borrowed") and, being inside an `extern "system"` callback, aborts
+            // the process. Compute the new settings on a copy and store them after
+            // the re-entrant call returns.
+            let mut settings = *self.system_settings.borrow();
+            settings.update(display, wparam.0);
+            *self.system_settings.borrow_mut() = settings;
         } else {
             self.handle_system_theme_changed(handle, lparam)?;
         };
