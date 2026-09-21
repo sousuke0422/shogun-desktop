@@ -5131,12 +5131,18 @@ fn open_inherited(cx: &mut App, launch: &cli::Launch) -> bool {
     let Some(a) = &launch.attach else {
         return false;
     };
-    let args = attach_request(a, launch);
+    let mut args = attach_request(a, launch);
     match attach::local_attach(&args).and_then(|pulled| {
         let palette = pulled.palette();
-        pulled.into_session().map(|s| (s, palette))
+        let icon = attached_icon(&pulled);
+        pulled.into_session().map(|s| (s, palette, icon))
     }) {
-        Ok((session, palette)) => {
+        Ok((session, palette, icon)) => {
+            // An OS handoff carries no icon on the wire; resolve it from the
+            // client program the handoff handed us (a tab that arrived this
+            // way used to have no icon at all — the "first tab" of every
+            // window opened by the default-terminal path).
+            args.startup.icon = args.startup.icon.take().or(icon);
             open_attached(cx, session, args.startup, palette);
             true
         }
@@ -5228,8 +5234,9 @@ fn handle_attach(
         Ok(()) => Ok(()),
         Err(e) => {
             log::warn!("attach relay failed, adopting in-process: {e:#}");
-            let startup = pulled.startup.clone();
+            let mut startup = pulled.startup.clone();
             let palette = pulled.palette();
+            startup.icon = startup.icon.take().or_else(|| attached_icon(&pulled));
             let session = pulled.into_session()?;
             tx.unbounded_send(Forwarded::Attach(Box::new(session), startup, palette))
                 .map_err(|_| anyhow::anyhow!("monarch is shutting down"))?;
@@ -5888,8 +5895,9 @@ fn adopt_prepared_attach(
     drop_at: Option<(i32, i32)>,
     target: Option<u64>,
 ) -> Result<()> {
-    let startup = pulled.startup.clone();
+    let mut startup = pulled.startup.clone();
     let palette = pulled.palette();
+    startup.icon = startup.icon.take().or_else(|| attached_icon(&pulled));
     let session = pulled.into_session()?;
     tx.unbounded_send(Forwarded::AdoptTab(
         Box::new(session),
@@ -6015,6 +6023,14 @@ fn open_attached(
     entry.0.set_theme(wire_theme(palette));
     entry.0.set_icon(wire_icon(&startup));
     open_tabs_window_opts(cx, vec![entry], &launch);
+}
+
+/// Resolve an attached console client's icon from its image path (see
+/// `LocalAttach::client_image_path`), in wire form for `StartupInfo.icon`.
+#[cfg(windows)]
+fn attached_icon(pulled: &attach::LocalAttach) -> Option<ipc::WireIcon> {
+    let path = pulled.client_image_path()?;
+    tab_icon::resolve(path.to_str()?, &[], None).map(|i| i.to_wire())
 }
 
 /// The icon that rode an attach/move; an OS handoff carries none, so fall

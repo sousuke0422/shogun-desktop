@@ -23,7 +23,28 @@ use windows::Win32::Foundation::{
     DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HANDLE_FLAG_INHERIT,
     SetHandleInformation,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_NAME_WIN32,
+    QueryFullProcessImageNameW,
+};
+
+/// Full Win32 image path of a process handle (needs
+/// PROCESS_QUERY_LIMITED_INFORMATION, which handoff/keepalive handles carry).
+fn image_path_of(process: HANDLE) -> Option<std::path::PathBuf> {
+    let mut path = vec![0u16; 32768];
+    let mut len = path.len() as u32;
+    unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(path.as_mut_ptr()),
+            &mut len,
+        )
+    }
+    .ok()?;
+    path.truncate(len as usize);
+    Some(std::path::PathBuf::from(String::from_utf16(&path).ok()?))
+}
 
 const MAX_COLS: u16 = 512;
 const MAX_ROWS: u16 = 256;
@@ -269,6 +290,18 @@ impl LocalAttach {
     /// [`Self::into_session`] consumes the attach).
     pub fn palette(&self) -> Option<Vec<u32>> {
         self.palette.clone()
+    }
+
+    /// Full image path of the console client (the program the OS handed
+    /// off — pwsh.exe, cmd.exe, a custom console app), from the client
+    /// process handle the handoff carries; the shell handle of a local
+    /// tab-move as a fallback. `None` when neither handle is here or the
+    /// query is refused. Read before [`Self::into_session`].
+    pub fn client_image_path(&self) -> Option<std::path::PathBuf> {
+        [&self.client, &self.shell]
+            .into_iter()
+            .flatten()
+            .find_map(|h| image_path_of(HANDLE(h.as_raw_handle())))
     }
 
     /// Assemble the engine session in this process. The startup seeds the
@@ -588,5 +621,18 @@ mod tests {
             .expect("reference still held: peer saw no EOF");
         assert_eq!(n, 0, "expected EOF on the reference peer");
         drop(session);
+    }
+}
+
+#[cfg(test)]
+mod image_path_tests {
+    #[test]
+    fn image_path_of_reads_the_current_process() {
+        let me = std::env::current_exe().unwrap();
+        let got = super::image_path_of(unsafe { super::GetCurrentProcess() }).unwrap();
+        assert_eq!(
+            got.file_name().unwrap().to_ascii_lowercase(),
+            me.file_name().unwrap().to_ascii_lowercase()
+        );
     }
 }
