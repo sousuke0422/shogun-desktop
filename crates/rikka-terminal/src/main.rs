@@ -3706,11 +3706,15 @@ impl Render for TabsWindow {
             + 32.0
             + 6.0;
         let menu_left = chevron_x.clamp(8.0, (vp.width / px(1.) - 208.0).max(8.0));
-        // RIKKA_DEBUG_TABICON=<path>: one line per CHANGE of the strip's
-        // icon inputs (per tab: progress state, icon kind, title), so a tab
-        // whose icon does not come back after progress can be diagnosed
-        // from the data the strip actually saw.
-        if let Some(path) = std::env::var_os("RIKKA_DEBUG_TABICON") {
+        // Tab-icon instrument, always on and cheap: one line whenever a
+        // tab's (progress shown?, icon kind) pair changes — a handful of
+        // lines per progress cycle — into %TEMP%\shogun-tsf\tabicon.log
+        // next to panic.log. The reported "first tab's icon does not come
+        // back after progress" never reproduced in isolation and has no
+        // known trigger, so the next occurrence must record itself.
+        // RIKKA_DEBUG_TABICON=<path> redirects and also logs title changes.
+        {
+            let verbose = std::env::var_os("RIKKA_DEBUG_TABICON");
             let line: String = self
                 .tabs
                 .iter()
@@ -3722,23 +3726,47 @@ impl Render for TabsWindow {
                         Some(tab_icon::TabIcon::Glyph { .. }) => "glyph",
                         None => "none",
                     };
-                    format!(
-                        "[{ix}{} prog={:?} icon={icon} title={:?}]",
-                        if ix == active_ix { "*" } else { "" },
-                        tab_progress(&e.0.session),
-                        e.0.session.title.lock().as_deref().unwrap_or("")
-                    )
+                    let prog = tab_progress(&e.0.session);
+                    if verbose.is_some() {
+                        format!(
+                            "[{ix}{} prog={prog:?} icon={icon} title={:?}]",
+                            if ix == active_ix { "*" } else { "" },
+                            e.0.session.title.lock().as_deref().unwrap_or("")
+                        )
+                    } else {
+                        format!(
+                            "[{ix}{} prog={} icon={icon}]",
+                            if ix == active_ix { "*" } else { "" },
+                            prog.map_or("-", |(s, _)| match s {
+                                rikka_terminal_core::progress::ProgressState::Normal => "normal",
+                                rikka_terminal_core::progress::ProgressState::Error => "error",
+                                rikka_terminal_core::progress::ProgressState::Indeterminate =>
+                                    "indet",
+                                rikka_terminal_core::progress::ProgressState::Warning => "warn",
+                            })
+                        )
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
             if *self.tabicon_debug_last.borrow() != line {
                 use std::io::Write as _;
+                let path = verbose.map(std::path::PathBuf::from).unwrap_or_else(|| {
+                    let dir = std::env::temp_dir().join("shogun-tsf");
+                    let _ = std::fs::create_dir_all(&dir);
+                    dir.join("tabicon.log")
+                });
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(path)
                 {
-                    let _ = writeln!(f, "{:?} {line}", std::time::SystemTime::now());
+                    let _ = writeln!(
+                        f,
+                        "{} pid={} {line}",
+                        chrono_free_timestamp(),
+                        std::process::id()
+                    );
                 }
                 *self.tabicon_debug_last.borrow_mut() = line;
             }
@@ -4722,6 +4750,34 @@ impl Render for TabsWindow {
 /// than as depth. `DWMNCRP_DISABLED` turns off non-client rendering for that
 /// window only. DWM attribute only — no gpui changes, same as the dark
 /// titlebar pass below.
+/// `YYYY-MM-DD HH:MM:SS` in UTC for the always-on instrument (no chrono
+/// dependency; the log is read with the panic log, which is also UTC).
+fn chrono_free_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // Civil-from-days (Howard Hinnant), proleptic Gregorian.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
 /// Move our (only) tool window so the chip sits `grab_phys` physical pixels
 /// up-left of the physical pointer. Returns false when there is no such
 /// window (or off Windows), so the caller can fall back to gpui.
