@@ -12,6 +12,7 @@ members = [
     "crates/rikka-terminal-windows-integration",
     "crates/rikka-terminal-ipc",
     "crates/shogun-core",
+    "crates/shogun-desktop",
 ]
 exclude = ["crates/alacritty_terminal", "crates/gpui", "crates/vte"]
 

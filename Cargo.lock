@@ -6708,6 +6708,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "shogun-desktop-legacy"
+version = "0.6.1"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "arboard",
+ "base64",
+ "chrono",
+ "dirs 6.0.0",
+ "flate2",
+ "futures",
+ "gpui",
+ "gpui-component",
+ "image",
+ "keyring",
+ "mac-notification-sys",
+ "parking_lot",
+ "portable-pty",
+ "regex",
+ "rfd",
+ "rikka-terminal-agent-integration",
+ "rikka-terminal-core",
+ "rikka-terminal-gpui-ime",
+ "rikka-terminal-ssh-integration",
+ "russh",
+ "serde",
+ "serde_yml",
+ "shogun-core",
+ "tauri-winrt-notification",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+ "unicode-width 0.2.2",
+ "windows 0.61.3",
+ "winres",
+]
+
+[[package]]
 name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
