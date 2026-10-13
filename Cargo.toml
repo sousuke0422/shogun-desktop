@@ -17,7 +17,7 @@ members = [
 exclude = ["crates/alacritty_terminal", "crates/gpui", "crates/vte"]
 
 [package]
-name = "shogun-desktop"
+name = "honden-desktop"
 version = "0.6.1"
 edition = "2024"
 

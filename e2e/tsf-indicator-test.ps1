@@ -14,7 +14,7 @@
 #   pwsh.exe -NoProfile -File 'C:\...\shogun-desktop\e2e\tsf-indicator-test.ps1'
 
 param(
-    [string]$ExePath = "$PSScriptRoot\..\target\release\shogun-desktop.exe",
+    [string]$ExePath = "$PSScriptRoot\..\target\release\honden-desktop.exe",
     [string]$OutDir = "$env:TEMP\shogun-tsf",
     [int]$ConnectWaitSec = 12
 )

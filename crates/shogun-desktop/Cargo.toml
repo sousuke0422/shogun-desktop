@@ -1,23 +1,22 @@
 # shogun-desktop for the old multi-agent-shogun layout, kept as-is while the
-# root app becomes honden-desktop. A copy of the root app, not a move: the
-# root package keeps the `shogun-desktop` name, so this one is renamed to
-# `shogun-desktop-legacy` (one workspace cannot hold two packages or two bins
-# of the same name).
+# root app becomes honden-desktop. A copy of the root app, not a move; the
+# root package is now `honden-desktop`, so this one keeps the original
+# `shogun-desktop` name. Only the fontprobe diagnostic bin keeps the
+# `-legacy` suffix: the root still has its own `fontprobe`, and same-named
+# bins would overwrite each other in target/<profile>/.
 #
 # [patch.crates-io] and the workspace live in the root Cargo.toml and apply
 # here too. The bundled fonts are read from the root's assets/ (see
 # src/main.rs) instead of being copied; only the icon is kept locally.
 [package]
-name = "shogun-desktop-legacy"
+name = "shogun-desktop"
 version = "0.6.1"
 edition = "2024"
 publish = false
-# fontprobe would collide with the root's bin of the same name in
-# target/<profile>/, so both bins are named explicitly.
 autobins = false
 
 [[bin]]
-name = "shogun-desktop-legacy"
+name = "shogun-desktop"
 path = "src/main.rs"
 
 [[bin]]

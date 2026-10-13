@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 # scripts/bundle_macos.sh
-# shogun-desktop macOS .app バンドルを作成する
+# honden-desktop macOS .app バンドルを作成する
 # 使用法: bash scripts/bundle_macos.sh [binary_path] [output_dir]
-#   binary_path: shogun-desktop バイナリのパス（デフォルト: target/release/shogun-desktop）
+#   binary_path: honden-desktop バイナリのパス（デフォルト: target/release/honden-desktop）
 #   output_dir:  出力先ディレクトリ（デフォルト: dist/）
 
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BINARY="${1:-$REPO_ROOT/target/release/shogun-desktop}"
+BINARY="${1:-$REPO_ROOT/target/release/honden-desktop}"
 OUT_DIR="${2:-$REPO_ROOT/dist}"
 # The zip carries one top-level folder holding the .app plus a
 # double-clickable first-run helper, so unzipping never scatters files.
-PKG_DIR="$OUT_DIR/shogun-desktop-macos"
+PKG_DIR="$OUT_DIR/honden-desktop-macos"
 APP="$PKG_DIR/Shogun Desktop.app"
 
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 
-cp "$BINARY"               "$APP/Contents/MacOS/shogun-desktop"
+cp "$BINARY"               "$APP/Contents/MacOS/honden-desktop"
 # Inject the crate version into the bundle plist (the asset file carries a
 # placeholder so the two can never drift apart).
 VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
@@ -29,7 +29,7 @@ else
     echo "Warning: assets/icon.icns not found. App will use default icon." >&2
 fi
 
-chmod +x "$APP/Contents/MacOS/shogun-desktop"
+chmod +x "$APP/Contents/MacOS/honden-desktop"
 
 # First-run helper: strips the Gatekeeper quarantine that the zip download
 # puts on the app, then launches it. Double-clickable from Finder
@@ -49,5 +49,5 @@ chmod +x "$PKG_DIR/setup.command"
 
 # zip for distribution (one folder at the zip root)
 cd "$OUT_DIR"
-zip -r "shogun-desktop-macos.zip" "shogun-desktop-macos"
-echo "Created: $OUT_DIR/shogun-desktop-macos.zip"
+zip -r "honden-desktop-macos.zip" "honden-desktop-macos"
+echo "Created: $OUT_DIR/honden-desktop-macos.zip"

@@ -55,13 +55,13 @@ jobs:
       - name: Package .app bundle
         run: |
           mkdir -p dist
-          bash scripts/bundle_macos.sh target/release/shogun-desktop dist
+          bash scripts/bundle_macos.sh target/release/honden-desktop dist
 
       - name: Upload .app bundle
         uses: actions/upload-artifact@v4
         with:
-          name: shogun-desktop-macos14-app
-          path: dist/shogun-desktop-macos.zip
+          name: honden-desktop-macos14-app
+          path: dist/honden-desktop-macos.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -97,8 +97,8 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: shogun-desktop-windows-x86_64
-          path: target/release/shogun-desktop.exe
+          name: honden-desktop-windows-x86_64
+          path: target/release/honden-desktop.exe
           if-no-files-found: error
           retention-days: 30
 
@@ -147,8 +147,8 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: shogun-desktop-linux-x86_64
-          path: target/release/shogun-desktop
+          name: honden-desktop-linux-x86_64
+          path: target/release/honden-desktop
           if-no-files-found: error
           retention-days: 30
 
@@ -198,22 +198,22 @@ jobs:
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
         with:
-          name: shogun-desktop-macos14-app
+          name: honden-desktop-macos14-app
           path: dist/
 
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: shogun-desktop-windows-x86_64
+          name: honden-desktop-windows-x86_64
           path: dist/
 
       - name: Rename Windows binary
-        run: mv dist/shogun-desktop.exe dist/shogun-desktop-windows-x86_64.exe
+        run: mv dist/honden-desktop.exe dist/honden-desktop-windows-x86_64.exe
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/shogun-desktop-macos.zip
-            dist/shogun-desktop-windows-x86_64.exe
+            dist/honden-desktop-macos.zip
+            dist/honden-desktop-windows-x86_64.exe
           generate_release_notes: true

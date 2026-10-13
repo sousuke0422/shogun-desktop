@@ -21,7 +21,7 @@
 #     [-ExePath <path>] [-ScreenshotPath <path>]
 
 param(
-    [string]$ExePath = "$PSScriptRoot\..\target\release\shogun-desktop.exe",
+    [string]$ExePath = "$PSScriptRoot\..\target\release\honden-desktop.exe",
     [string]$ScreenshotPath = "$env:TEMP\shogun-e2e-sel.png",
     # Seconds to wait for the SSH/tmux session to connect and render.
     [int]$ConnectWaitSec = 12,
