@@ -1,0 +1,8 @@
+# Recordings and captures never go into git: a real `script` recording can
+# carry tokens, paths and private text.
+timing
+typescript
+*.timing
+*.typescript
+rec*/
+out*/

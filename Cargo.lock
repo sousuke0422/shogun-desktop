@@ -138,6 +138,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "anim-shift-probe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "windows 0.61.3",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"

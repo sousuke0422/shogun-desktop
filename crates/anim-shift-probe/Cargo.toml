@@ -1,0 +1,41 @@
+# Measurement tool, not product code: finds frames where an animated region
+# of a terminal window (rt) drifts away from where it was in the first frame.
+# Two halves: `capture` (Windows only — one PNG per DWM update of the target
+# window, with QPC timestamps) and `analyze` (any OS — reads a saved PNG
+# sequence, so tests and re-analysis never need a live window).
+#
+# Not part of any release artifact: the root `cargo build --release` builds
+# the default member only.
+[package]
+name = "anim-shift-probe"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1"
+# Same version and features as rikka-terminal, so the lockfile only gains
+# this package's own entry.
+image = "0.25"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.61"
+features = [
+    "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+]
