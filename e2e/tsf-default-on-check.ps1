@@ -6,7 +6,7 @@
 # Keep this file ASCII-only.
 
 param(
-    [string]$ExePath = "$PSScriptRoot\..\target\release\shogun-desktop.exe",
+    [string]$ExePath = "$PSScriptRoot\..\target\release\honden-desktop.exe",
     [int]$WaitSec = 12
 )
 

@@ -6,7 +6,7 @@
 # the highlight rides the text when scrolled. Keep this file ASCII-only.
 
 param(
-    [string]$ExePath = "$PSScriptRoot\..\target\release\shogun-desktop.exe",
+    [string]$ExePath = "$PSScriptRoot\..\target\release\honden-desktop.exe",
     [string]$OutDir = "$env:TEMP\shogun-tsf",
     [int]$ConnectWaitSec = 14
 )

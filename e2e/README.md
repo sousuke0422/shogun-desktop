@@ -18,7 +18,7 @@ CI には組み込めない（対話デスクトップと SSH/tmux 接続が必�
 
 ```bash
 pwsh.exe -NoProfile -File "$REPO\\e2e\\drag-copy-test.ps1" \
-  -ExePath "$REPO\\target-verify\\release\\shogun-desktop.exe"
+  -ExePath "$REPO\\target-verify\\release\\honden-desktop.exe"
 
 pwsh.exe -NoProfile -File "$REPO\\e2e\\scan-highlight.ps1"
 ```

@@ -4,7 +4,7 @@
 # Keep this file ASCII-only.
 
 param(
-    [string]$ExePath = "$PSScriptRoot\..\target\release\shogun-desktop.exe",
+    [string]$ExePath = "$PSScriptRoot\..\target\release\honden-desktop.exe",
     [string]$OutDir = "$env:TEMP\shogun-tsf",
     [int]$ConnectWaitSec = 12,
     [int]$CatWaitSec = 30
@@ -38,7 +38,7 @@ public class E2E {
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 function Get-AppWindows {
-    $procs = Get-Process -Name 'shogun-desktop' -ErrorAction SilentlyContinue
+    $procs = Get-Process -Name 'honden-desktop' -ErrorAction SilentlyContinue
     if (-not $procs) { return @() }
     $pids = @($procs | ForEach-Object { $_.Id })
     $found = New-Object System.Collections.ArrayList
@@ -136,6 +136,6 @@ foreach ($w2 in Get-AppWindows) {
     Start-Sleep -Milliseconds 800
 }
 Start-Sleep -Seconds 2
-$left = Get-Process -Name 'shogun-desktop' -ErrorAction SilentlyContinue
+$left = Get-Process -Name 'honden-desktop' -ErrorAction SilentlyContinue
 if ($left) { $left | Stop-Process -Force }
 Write-Output 'RUN-DONE'

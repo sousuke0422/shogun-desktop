@@ -1,4 +1,4 @@
-# E2E probe: launch `shogun-desktop.exe --shell-window` (the lean single-shell
+# E2E probe: launch `honden-desktop.exe --shell-window` (the lean single-shell
 # surface added for pane testing), wait for the SSH connect, and screenshot the
 # initial state. Proves the --shell-window path renders (migrated pane_overlay)
 # without hunting UI buttons in the full app. Reports whether the shell reached
@@ -6,7 +6,7 @@
 # Keep this file ASCII-only.
 
 param(
-    [string]$ExePath = "$PSScriptRoot\..\target\release\shogun-desktop.exe",
+    [string]$ExePath = "$PSScriptRoot\..\target\release\honden-desktop.exe",
     [string]$OutDir = "$env:TEMP\shogun-tsf",
     [int]$ConnectWaitSec = 14
 )
